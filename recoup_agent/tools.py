@@ -87,11 +87,16 @@ def submit_for_approval(tool_context) -> dict:
     findings = _state(tool_context).get("findings") or []
     queue = []
     for f in findings:
-        f["status"] = "pending_approval"
-        queue.append({"finding_id": f["finding_id"], "customer_name": f["customer_name"],
-                      "monthly_recoverable": f["monthly_recoverable"], "status": "pending_approval"})
-        append_audit({"event": "submitted_for_approval",
-                      "finding_id": f["finding_id"], "amount": f["monthly_recoverable"]})
+        current_status = f.get("status")
+        if current_status not in ("approved", "rejected"):
+            f["status"] = "pending_approval"
+            queue.append({"finding_id": f["finding_id"], "customer_name": f["customer_name"],
+                          "monthly_recoverable": f["monthly_recoverable"], "status": "pending_approval"})
+            append_audit({"event": "submitted_for_approval",
+                          "finding_id": f["finding_id"], "amount": f["monthly_recoverable"]})
+        else:
+            queue.append({"finding_id": f["finding_id"], "customer_name": f["customer_name"],
+                          "monthly_recoverable": f["monthly_recoverable"], "status": current_status})
     _state(tool_context)["findings"] = findings
     return {"awaiting_approval": queue,
             "message": "All items require explicit human approval before any invoice is issued."}
