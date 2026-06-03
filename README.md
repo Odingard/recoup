@@ -75,14 +75,65 @@ In the dev UI, send `Run the recovery pipeline`. The agents will ingest, reconci
 
 ## Deploy to Cloud Run
 
+Copy-paste; set the two variables at the top.
+
 ```bash
+export PROJECT_ID="your-gcp-project-id"
+export REGION="us-central1"
+
+# one-time: select project + enable APIs
+gcloud config set project "$PROJECT_ID"
+gcloud services enable run.googleapis.com aiplatform.googleapis.com artifactregistry.googleapis.com
+
+# build the container, deploy to Cloud Run, and include the dev UI
 adk deploy cloud_run \
-  --project=$GOOGLE_CLOUD_PROJECT \
-  --region=$GOOGLE_CLOUD_LOCATION \
+  --project="$PROJECT_ID" \
+  --region="$REGION" \
+  --service_name=recoup \
+  --with_ui \
   recoup_agent
+# when prompted "Allow unauthenticated invocations?" answer: y
+
+# set the Vertex env vars on the deployed service
+gcloud run services update recoup --region="$REGION" \
+  --set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT="$PROJECT_ID",GOOGLE_CLOUD_LOCATION="$REGION"
+
+# grant the Cloud Run service account access to Vertex AI (and Search, if using RAG)
+export SA="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="roles/aiplatform.user"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="roles/discoveryengine.viewer"
+
+# print your public URL -> this is your "Testing access" submission link
+gcloud run services describe recoup --region="$REGION" --format='value(status.url)'
 ```
 
-The resulting public URL is your **Testing access** link for the submission.
+If you enabled the RAG upgrade below, also append
+`,VERTEX_AI_SEARCH_ENGINE_ID=<your-engine-id>,VERTEX_AI_SEARCH_LOCATION=global` to the `--set-env-vars`.
+
+## Vertex AI Search RAG upgrade (optional)
+
+By default, clause grounding uses a local lookup. To run it as true RAG over a
+contract corpus with Vertex AI Search, set it up once - the code switches over
+automatically when `VERTEX_AI_SEARCH_ENGINE_ID` is set, and falls back to local
+if it is not, so this can never break the demo.
+
+```bash
+export PROJECT_ID="your-gcp-project-id"
+
+# 1. generate the corpus (28 contracts -> recoup_agent/data/corpus/*.txt)
+python -m recoup_agent.synthetic_data
+
+# 2. upload the corpus to a Cloud Storage bucket
+export BUCKET="gs://${PROJECT_ID}-recoup-contracts"
+gcloud storage buckets create "$BUCKET" --location=us
+gcloud storage cp recoup_agent/data/corpus/*.txt "$BUCKET/"
+```
+
+3. Create a Vertex AI Search app (Console is easiest): **AI Applications -> Apps -> Create -> Search (Generic)**. For the data store, choose **Cloud Storage**, point it at the bucket folder, and select **Unstructured documents**. Note the **App / Engine ID** it creates.
+
+4. Point Recoup at it - locally add `VERTEX_AI_SEARCH_ENGINE_ID` (and optionally `VERTEX_AI_SEARCH_LOCATION`) to `recoup_agent/.env`; on Cloud Run add them to the `--set-env-vars` above.
+
+The `investigation_agent` will then ground each finding in clauses retrieved from Vertex AI Search instead of the local record. Implemented in `vertex_search.py`; wired in `tools.py`.
 
 ## Notes
 

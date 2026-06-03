@@ -1,0 +1,5 @@
+CONTRACT C-ENCOM-2025 - Encom
+
+Section 3.1 - Encom commits to a minimum monthly platform fee of $15,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 2,000 monthly units is billed at $3.31 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.

@@ -29,9 +29,10 @@ def compute_findings(period: str = "2026-06") -> list[dict]:
     invoices = {(i["customer_id"], i["period"]): i for i in data["invoices"]}
     findings: list[dict] = []
     for c in data["contracts"]:
-        u = usage.get((c["customer_id"], period), {"units": 0})
-        inv = invoices.get((c["customer_id"], period), {})
-        findings.extend(reconcile(c, u, inv, period))
+        key = (c["customer_id"], period)
+        if key not in usage or key not in invoices:
+            continue  # corpus-only contract: indexed for RAG, but no billing data this period
+        findings.extend(reconcile(c, usage[key], invoices[key], period))
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
     return findings
 

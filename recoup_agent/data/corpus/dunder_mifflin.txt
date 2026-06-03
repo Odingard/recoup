@@ -1,0 +1,5 @@
+CONTRACT C-DUNDER_MIF-2025 - Dunder Mifflin
+
+Section 3.1 - Dunder Mifflin commits to a minimum monthly platform fee of $50,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 2,000 monthly units is billed at $2.20 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.

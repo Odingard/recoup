@@ -60,5 +60,455 @@
       "discount": "",
       "escalator": "Section 5.3 - Fees increase 4% annually effective each May 1."
     }
+  },
+  {
+    "customer_id": "soylent_systems",
+    "customer_name": "Soylent Systems",
+    "contract_id": "C-SOYLENT_SY-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 70000,
+    "included_units": 15000,
+    "overage_rate": 4.35,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Soylent Systems commits to a minimum monthly platform fee of $70,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 15,000 monthly units is billed at $4.35 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "hooli",
+    "customer_name": "Hooli",
+    "contract_id": "C-HOOLI-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 70000,
+    "included_units": 3000,
+    "overage_rate": 4.8,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Hooli commits to a minimum monthly platform fee of $70,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 3,000 monthly units is billed at $4.80 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "pied_piper",
+    "customer_name": "Pied Piper",
+    "contract_id": "C-PIED_PIPER-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 50000,
+    "included_units": 15000,
+    "overage_rate": 5.5,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Pied Piper commits to a minimum monthly platform fee of $50,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 15,000 monthly units is billed at $5.50 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "vehement_capital",
+    "customer_name": "Vehement Capital",
+    "contract_id": "C-VEHEMENT_C-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 45000,
+    "included_units": 19000,
+    "overage_rate": 2.8,
+    "annual_escalator_pct": 0.05,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Vehement Capital commits to a minimum monthly platform fee of $45,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 19,000 monthly units is billed at $2.80 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "massive_dynamic",
+    "customer_name": "Massive Dynamic",
+    "contract_id": "C-MASSIVE_DY-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 40000,
+    "included_units": 5000,
+    "overage_rate": 5.88,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Massive Dynamic commits to a minimum monthly platform fee of $40,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 5,000 monthly units is billed at $5.88 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "stark_industries",
+    "customer_name": "Stark Industries",
+    "contract_id": "C-STARK_INDU-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 45000,
+    "included_units": 14000,
+    "overage_rate": 3.69,
+    "annual_escalator_pct": 0.04,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Stark Industries commits to a minimum monthly platform fee of $45,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 14,000 monthly units is billed at $3.69 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "wonka_industries",
+    "customer_name": "Wonka Industries",
+    "contract_id": "C-WONKA_INDU-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 35000,
+    "included_units": 3000,
+    "overage_rate": 2.14,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Wonka Industries commits to a minimum monthly platform fee of $35,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 3,000 monthly units is billed at $2.14 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "cyberdyne",
+    "customer_name": "Cyberdyne",
+    "contract_id": "C-CYBERDYNE-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 75000,
+    "included_units": 3000,
+    "overage_rate": 5.0,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Cyberdyne commits to a minimum monthly platform fee of $75,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 3,000 monthly units is billed at $5.00 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "tyrell_corp",
+    "customer_name": "Tyrell Corp",
+    "contract_id": "C-TYRELL_COR-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 50000,
+    "included_units": 16000,
+    "overage_rate": 2.7,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Tyrell Corp commits to a minimum monthly platform fee of $50,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 16,000 monthly units is billed at $2.70 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "wayne_enterprises",
+    "customer_name": "Wayne Enterprises",
+    "contract_id": "C-WAYNE_ENTE-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 20000,
+    "included_units": 2000,
+    "overage_rate": 3.44,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Wayne Enterprises commits to a minimum monthly platform fee of $20,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 2,000 monthly units is billed at $3.44 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "nakatomi_trading",
+    "customer_name": "Nakatomi Trading",
+    "contract_id": "C-NAKATOMI_T-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 60000,
+    "included_units": 9000,
+    "overage_rate": 3.67,
+    "annual_escalator_pct": 0.05,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Nakatomi Trading commits to a minimum monthly platform fee of $60,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 9,000 monthly units is billed at $3.67 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "oscorp",
+    "customer_name": "Oscorp",
+    "contract_id": "C-OSCORP-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 35000,
+    "included_units": 10000,
+    "overage_rate": 1.15,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Oscorp commits to a minimum monthly platform fee of $35,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 10,000 monthly units is billed at $1.15 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "gekko_and_co",
+    "customer_name": "Gekko and Co",
+    "contract_id": "C-GEKKO_AND_-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 35000,
+    "included_units": 7000,
+    "overage_rate": 1.72,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Gekko and Co commits to a minimum monthly platform fee of $35,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 7,000 monthly units is billed at $1.72 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "bluth_company",
+    "customer_name": "Bluth Company",
+    "contract_id": "C-BLUTH_COMP-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 80000,
+    "included_units": 17000,
+    "overage_rate": 4.83,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Bluth Company commits to a minimum monthly platform fee of $80,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 17,000 monthly units is billed at $4.83 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "dunder_mifflin",
+    "customer_name": "Dunder Mifflin",
+    "contract_id": "C-DUNDER_MIF-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 50000,
+    "included_units": 2000,
+    "overage_rate": 2.2,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Dunder Mifflin commits to a minimum monthly platform fee of $50,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 2,000 monthly units is billed at $2.20 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "prestige_worldwide",
+    "customer_name": "Prestige Worldwide",
+    "contract_id": "C-PRESTIGE_W-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 15000,
+    "included_units": 11000,
+    "overage_rate": 5.39,
+    "annual_escalator_pct": 0.05,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Prestige Worldwide commits to a minimum monthly platform fee of $15,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 11,000 monthly units is billed at $5.39 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "vandelay_industries",
+    "customer_name": "Vandelay Industries",
+    "contract_id": "C-VANDELAY_I-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 35000,
+    "included_units": 14000,
+    "overage_rate": 3.73,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Vandelay Industries commits to a minimum monthly platform fee of $35,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 14,000 monthly units is billed at $3.73 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "sterling_cooper",
+    "customer_name": "Sterling Cooper",
+    "contract_id": "C-STERLING_C-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 45000,
+    "included_units": 15000,
+    "overage_rate": 1.95,
+    "annual_escalator_pct": 0.0,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Sterling Cooper commits to a minimum monthly platform fee of $45,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 15,000 monthly units is billed at $1.95 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "aperture_labs",
+    "customer_name": "Aperture Labs",
+    "contract_id": "C-APERTURE_L-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 40000,
+    "included_units": 14000,
+    "overage_rate": 4.55,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Aperture Labs commits to a minimum monthly platform fee of $40,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 14,000 monthly units is billed at $4.55 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "monarch_sciences",
+    "customer_name": "Monarch Sciences",
+    "contract_id": "C-MONARCH_SC-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 10000,
+    "included_units": 12000,
+    "overage_rate": 2.07,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Monarch Sciences commits to a minimum monthly platform fee of $10,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 12,000 monthly units is billed at $2.07 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "encom",
+    "customer_name": "Encom",
+    "contract_id": "C-ENCOM-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 15000,
+    "included_units": 2000,
+    "overage_rate": 3.31,
+    "annual_escalator_pct": 0.05,
+    "escalator_effective_date": "2026-05-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Encom commits to a minimum monthly platform fee of $15,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 2,000 monthly units is billed at $3.31 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "weyland_corp",
+    "customer_name": "Weyland Corp",
+    "contract_id": "C-WEYLAND_CO-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 50000,
+    "included_units": 18000,
+    "overage_rate": 1.89,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Weyland Corp commits to a minimum monthly platform fee of $50,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 18,000 monthly units is billed at $1.89 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "virtucon",
+    "customer_name": "Virtucon",
+    "contract_id": "C-VIRTUCON-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 20000,
+    "included_units": 15000,
+    "overage_rate": 5.65,
+    "annual_escalator_pct": 0.04,
+    "escalator_effective_date": null,
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Virtucon commits to a minimum monthly platform fee of $20,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 15,000 monthly units is billed at $5.65 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "abstergo",
+    "customer_name": "Abstergo",
+    "contract_id": "C-ABSTERGO-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 45000,
+    "included_units": 16000,
+    "overage_rate": 3.39,
+    "annual_escalator_pct": 0.03,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Abstergo commits to a minimum monthly platform fee of $45,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 16,000 monthly units is billed at $3.39 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
+  },
+  {
+    "customer_id": "initrode",
+    "customer_name": "Initrode",
+    "contract_id": "C-INITRODE-2025",
+    "effective_date": "2025-01-01",
+    "committed_minimum_monthly": 70000,
+    "included_units": 2000,
+    "overage_rate": 3.42,
+    "annual_escalator_pct": 0.05,
+    "escalator_effective_date": "2026-01-01",
+    "discounts": [],
+    "clauses": {
+      "committed_minimum": "Section 3.1 - Initrode commits to a minimum monthly platform fee of $70,000, billed regardless of actual usage.",
+      "overage": "Section 4.2 - Usage above the included 2,000 monthly units is billed at $3.42 per additional unit.",
+      "discount": "",
+      "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary."
+    }
   }
 ]

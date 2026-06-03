@@ -7,9 +7,18 @@ fallback dict keeps the tools runnable even if state access differs by ADK versi
 from __future__ import annotations
 
 from .pipeline import load_data, compute_findings, build_corrective_memo, append_audit
+from . import vertex_search
 
 PERIOD = "2026-06"
 _fallback_state: dict = {}
+
+# Maps a finding's clause_ref to natural-language search terms for Vertex AI Search.
+CLAUSE_TOPIC = {
+    "committed_minimum": "committed monthly minimum platform fee",
+    "overage": "usage overage rate per unit above included units",
+    "discount": "promotional discount and its expiry date",
+    "escalator": "annual price escalator increase",
+}
 
 
 def _state(tool_context):
@@ -60,14 +69,21 @@ def get_findings(tool_context) -> dict:
 def lookup_contract_clause(customer_id: str, clause_ref: str, tool_context) -> dict:
     """Return the governing contract clause text for a finding.
 
-    Demo uses an in-record clause lookup. In production, swap this for a Vertex AI
-    Search query against a data store built from the contract corpus (true RAG).
+    Uses Vertex AI Search RAG when VERTEX_AI_SEARCH_ENGINE_ID is configured; otherwise
+    falls back to the local clause record so the demo always runs.
     """
-    for c in load_data()["contracts"]:
-        if c["customer_id"] == customer_id:
-            clause = c.get("clauses", {}).get(clause_ref) or "Clause text not found."
-            return {"customer_id": customer_id, "clause_ref": clause_ref, "clause_text": clause}
-    return {"customer_id": customer_id, "clause_ref": clause_ref, "clause_text": "Customer not found."}
+    contract = next((c for c in load_data()["contracts"] if c["customer_id"] == customer_id), None)
+    local_clause = (contract or {}).get("clauses", {}).get(clause_ref) or "Clause text not found."
+    customer_name = (contract or {}).get("customer_name", customer_id)
+
+    if vertex_search.is_enabled():
+        topic = CLAUSE_TOPIC.get(clause_ref, clause_ref)
+        retrieved = vertex_search.search_clause(f"{customer_name} {topic}")
+        if retrieved:
+            return {"customer_id": customer_id, "clause_ref": clause_ref,
+                    "clause_text": retrieved, "source": "vertex_ai_search"}
+    return {"customer_id": customer_id, "clause_ref": clause_ref,
+            "clause_text": local_clause, "source": "local"}
 
 
 def draft_corrective_invoice(customer_id: str, tool_context) -> dict:
