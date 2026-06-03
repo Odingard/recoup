@@ -1,0 +1,17 @@
+[
+  {
+    "customer_id": "acme",
+    "period": "2026-06",
+    "units": 11200
+  },
+  {
+    "customer_id": "globex",
+    "period": "2026-06",
+    "units": 8000
+  },
+  {
+    "customer_id": "initech",
+    "period": "2026-06",
+    "units": 5000
+  }
+]
