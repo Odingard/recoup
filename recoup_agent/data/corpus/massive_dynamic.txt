@@ -1,0 +1,5 @@
+CONTRACT C-MASSIVE_DY-2025 - Massive Dynamic
+
+Section 3.1 - Massive Dynamic commits to a minimum monthly platform fee of $40,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 5,000 monthly units is billed at $5.88 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.

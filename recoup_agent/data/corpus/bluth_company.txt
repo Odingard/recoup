@@ -1,0 +1,5 @@
+CONTRACT C-BLUTH_COMP-2025 - Bluth Company
+
+Section 3.1 - Bluth Company commits to a minimum monthly platform fee of $80,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 17,000 monthly units is billed at $4.83 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.

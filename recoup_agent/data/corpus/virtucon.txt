@@ -1,0 +1,5 @@
+CONTRACT C-VIRTUCON-2025 - Virtucon
+
+Section 3.1 - Virtucon commits to a minimum monthly platform fee of $20,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 15,000 monthly units is billed at $5.65 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.

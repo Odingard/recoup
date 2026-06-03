@@ -1,0 +1,5 @@
+CONTRACT C-ABSTERGO-2025 - Abstergo
+
+Section 3.1 - Abstergo commits to a minimum monthly platform fee of $45,000, billed regardless of actual usage.
+Section 4.2 - Usage above the included 16,000 monthly units is billed at $3.39 per additional unit.
+Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.
