@@ -1,0 +1,28 @@
+[
+  {
+    "customer_id": "acme",
+    "period": "2026-06",
+    "base_charge": 42000,
+    "overage_charge": 0,
+    "discounts_applied": [
+      {
+        "name": "Q1 2025 onboarding promo",
+        "amount": 2000
+      }
+    ]
+  },
+  {
+    "customer_id": "globex",
+    "period": "2026-06",
+    "base_charge": 20000,
+    "overage_charge": 0,
+    "discounts_applied": []
+  },
+  {
+    "customer_id": "initech",
+    "period": "2026-06",
+    "base_charge": 25000,
+    "overage_charge": 0,
+    "discounts_applied": []
+  }
+]
