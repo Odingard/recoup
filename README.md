@@ -2,7 +2,7 @@
 
 **The revenue you're already owed.** An autonomous, multi-agent system that continuously reconciles what a B2B company *should* be billing against what it *is* billing — and recovers the gap.
 
-![Recoup architecture](architecture.png)
+
 
 ## Problem
 
