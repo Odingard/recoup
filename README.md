@@ -28,3 +28,4 @@ Customer contracts (PDF/DOCX), usage and metering data, invoice and billing reco
 ## Challenge
 
 Google for Startups AI Agents Challenge — Track 1 (Build, Net-New Agents) · Region: AMERS.
+![Recoup architecture](architecture.png)
