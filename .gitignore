@@ -4,3 +4,8 @@ __pycache__/
 .env
 recoup_agent/data/audit_log.jsonl
 **/.adk/
+node_modules/
+*.log
+*.db
+test_*.py
+seed_db.py

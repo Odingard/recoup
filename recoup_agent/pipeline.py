@@ -10,29 +10,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .reconciliation import reconcile
+from .billing.csv_provider import CSVBillingProvider
+from .ingestion_doc import extract_entitlements
+import os
 
-DATA_DIR = Path(__file__).parent / "data"
-
-
-def load_data() -> dict:
-    def _load(name: str):
-        with open(DATA_DIR / name) as fh:
-            return json.load(fh)
-    return {"contracts": _load("contracts.json"),
-            "usage": _load("usage.json"),
-            "invoices": _load("invoices.json")}
-
+from . import db
 
 def compute_findings(period: str = "2026-06") -> list[dict]:
-    data = load_data()
-    usage = {(u["customer_id"], u["period"]): u for u in data["usage"]}
-    invoices = {(i["customer_id"], i["period"]): i for i in data["invoices"]}
+    # Fetch live data from Firestore instead of mock JSON files
+    contracts = db.get_all_contracts()
+    usage_list = db.get_all_usage()
+    invoices_list = db.get_all_invoices()
+    
+    usage = {(u["customer_id"], u["period"]): u for u in usage_list}
+    invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
+    
     findings: list[dict] = []
-    for c in data["contracts"]:
+    for c in contracts:
         key = (c["customer_id"], period)
         if key not in usage or key not in invoices:
-            continue  # corpus-only contract: indexed for RAG, but no billing data this period
+            continue  # missing billing data this period
         findings.extend(reconcile(c, usage[key], invoices[key], period))
+    
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
     return findings
 
