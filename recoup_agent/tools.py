@@ -6,8 +6,9 @@ fallback dict keeps the tools runnable even if state access differs by ADK versi
 """
 from __future__ import annotations
 
-from .pipeline import load_data, compute_findings, build_corrective_memo, append_audit
+from .pipeline import compute_findings, build_corrective_memo, append_audit
 from . import vertex_search
+from . import db
 
 PERIOD = "2026-06"
 _fallback_state: dict = {}
@@ -30,7 +31,7 @@ def _state(tool_context):
 
 def list_contracts(tool_context) -> dict:
     """Load the customer contract and billing book; returns each customer's key billing terms."""
-    contracts = load_data()["contracts"]
+    contracts = db.get_all_contracts()
     summary = [{
         "customer_id": c["customer_id"], "customer_name": c["customer_name"],
         "committed_minimum_monthly": c.get("committed_minimum_monthly"),
@@ -72,7 +73,7 @@ def lookup_contract_clause(customer_id: str, clause_ref: str, tool_context) -> d
     Uses Vertex AI Search RAG when VERTEX_AI_SEARCH_ENGINE_ID is configured; otherwise
     falls back to the local clause record so the demo always runs.
     """
-    contract = next((c for c in load_data()["contracts"] if c["customer_id"] == customer_id), None)
+    contract = next((c for c in db.get_all_contracts() if c["customer_id"] == customer_id), None)
     local_clause = (contract or {}).get("clauses", {}).get(clause_ref) or "Clause text not found."
     customer_name = (contract or {}).get("customer_name", customer_id)
 

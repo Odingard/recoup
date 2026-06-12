@@ -1,2 +1,7 @@
 google-adk
 google-cloud-discoveryengine
+fastapi
+uvicorn
+pydantic
+google-cloud-firestore
+firebase-admin

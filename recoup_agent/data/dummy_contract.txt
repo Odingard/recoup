@@ -1,0 +1,14 @@
+This is a Master Services Agreement between Acme Corp (the "Customer") and Recoup Software (the "Provider").
+Effective Date: 2026-01-01
+
+1. Committed Minimums
+Customer agrees to a committed monthly minimum platform fee of $50,000, which includes 10,000 API requests per month.
+
+2. Overage Rates
+Any usage exceeding the included 10,000 API requests will be billed at an overage rate of $3.50 per request.
+
+3. Promotional Discount
+Customer receives a 10% promotional discount on the platform fee. This discount expires on 2026-12-31.
+
+4. Annual Escalator
+Upon renewal on 2027-01-01, all fees will increase by an annual escalator of 5%.
