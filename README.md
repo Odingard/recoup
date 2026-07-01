@@ -23,6 +23,19 @@ Money math is **deterministic Python** (`reconciliation.py`) — every dollar fi
 
 On the included synthetic book, Recoup surfaces **$14,200/mo ($170,400/yr) of recoverable revenue for Acme Corp** across three findings, correctly flags **Initech** for a missed escalator, and correctly leaves **Globex** alone.
 
+## Phase 1 (Wedge) — production-ready demo
+
+The Phase 1 build turns the demo into something a rep can put in front of a customer:
+
+- **Real contract extraction** with confidence gating — Gemini extracts terms with a confidence score and provenance; anything below 0.85 or missing required input is flagged `needs_review` instead of producing a number.
+- **Read-only Stripe connector** — reconcile against live customers, subscriptions, invoices, metered usage, and discounts. Unmappable data becomes `needs_review`, never a silent assumption.
+- **Firebase auth + multi-tenancy** — every account is isolated in Firestore under `accounts/{account_id}/...`. No hardcoded project id or mock token.
+- **Outcome-based pricing** — Recoup bills **20% of dollars actually recovered** (proposed → approved → recovered), invoiced through Recoup's own **separate** Stripe account.
+- **Robust by default** — corrupt/scanned/unsupported files, empty Stripe accounts, and missing fields are flagged with actionable messages; no ingestion path returns a 500.
+- **Sample mode** — `RECOUP_SAMPLE_MODE=1` runs the whole thing offline on the synthetic book, no credentials required.
+
+See **[docs/OPERATIONS.md](docs/OPERATIONS.md)** for the operator guide (env vars, Cloud Run deploy, onboarding flow) and **[docs/DATA_HANDLING.md](docs/DATA_HANDLING.md)** for the plain-language data-handling statement. All configuration is via environment variables (`recoup_agent/.env.example`).
+
 ## Tech stack
 
 - **Gemini 2.5 Flash** (via Vertex AI) — reasoning, clause grounding, drafting
