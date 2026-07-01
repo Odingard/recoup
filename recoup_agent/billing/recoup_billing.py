@@ -57,11 +57,13 @@ def create_success_fee_invoice(
     try:
         import stripe
 
-        stripe.api_key = key
+        # Pass the billing key explicitly on every call rather than mutating the
+        # process-wide ``stripe.api_key``, so concurrent requests can never have
+        # this write key clobbered by (or clobber) a per-tenant connector key.
         customer = (
-            stripe.Customer.create(email=customer_email)
+            stripe.Customer.create(email=customer_email, api_key=key)
             if customer_email
-            else stripe.Customer.create()
+            else stripe.Customer.create(api_key=key)
         )
         amount_cents = int(round(amount_dollars * 100))
         invoice = stripe.Invoice.create(
@@ -69,6 +71,7 @@ def create_success_fee_invoice(
             collection_method="send_invoice",
             days_until_due=14,
             description=f"Recoup success fee — {current_month}",
+            api_key=key,
         )
         stripe.InvoiceItem.create(
             customer=customer.id,
@@ -76,8 +79,9 @@ def create_success_fee_invoice(
             amount=amount_cents,
             currency="usd",
             description=description or f"Recoup success fee ({current_month})",
+            api_key=key,
         )
-        invoice = stripe.Invoice.finalize_invoice(invoice.id)
+        invoice = stripe.Invoice.finalize_invoice(invoice.id, api_key=key)
         return {
             "status": "success",
             "invoice_id": invoice.id,
