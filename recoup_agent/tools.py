@@ -6,7 +6,8 @@ fallback dict keeps the tools runnable even if state access differs by ADK versi
 """
 from __future__ import annotations
 
-from .pipeline import compute_findings, build_corrective_memo, append_audit
+from .pipeline import compute_findings, compute_findings_and_review, build_corrective_memo, append_audit
+from .synthetic_data import all_contracts
 from . import vertex_search
 from . import db
 
@@ -29,9 +30,15 @@ def _state(tool_context):
         return _fallback_state
 
 
+def _period_and_account(tool_context) -> tuple[str, str | None]:
+    state = _state(tool_context)
+    return state.get("period", PERIOD), state.get("account_id")
+
+
 def list_contracts(tool_context) -> dict:
     """Load the customer contract and billing book; returns each customer's key billing terms."""
-    contracts = db.get_all_contracts()
+    period, account_id = _period_and_account(tool_context)
+    contracts = db.get_all_contracts(account_id) if account_id is not None else all_contracts()
     summary = [{
         "customer_id": c["customer_id"], "customer_name": c["customer_name"],
         "committed_minimum_monthly": c.get("committed_minimum_monthly"),
@@ -40,13 +47,16 @@ def list_contracts(tool_context) -> dict:
         "annual_escalator_pct": c.get("annual_escalator_pct"),
     } for c in contracts]
     _state(tool_context)["_loaded"] = True
-    return {"period": PERIOD, "customers": summary}
+    return {"period": period, "customers": summary}
 
 
 def run_reconciliation(tool_context) -> dict:
     """Reconcile entitlements against billing. Returns findings and total recoverable (deterministic)."""
-    findings = compute_findings(PERIOD)
-    _state(tool_context)["findings"] = findings
+    period, account_id = _period_and_account(tool_context)
+    findings, needs_review = compute_findings_and_review(period, account_id=account_id)
+    state = _state(tool_context)
+    state["findings"] = findings
+    state["needs_review"] = needs_review
     by_customer: dict[str, float] = {}
     for f in findings:
         by_customer[f["customer_name"]] = by_customer.get(f["customer_name"], 0.0) + f["monthly_recoverable"]
@@ -55,6 +65,8 @@ def run_reconciliation(tool_context) -> dict:
         "total_monthly_recoverable": total,
         "annualized_recoverable": round(total * 12, 2),
         "finding_count": len(findings),
+        "needs_review_count": len(needs_review),
+        "needs_review": needs_review,
         "by_customer": {k: round(v, 2) for k, v in by_customer.items()},
         "findings": findings,
     }
@@ -62,7 +74,8 @@ def run_reconciliation(tool_context) -> dict:
 
 def get_findings(tool_context) -> dict:
     """Return the reconciliation findings produced earlier in the pipeline."""
-    findings = _state(tool_context).get("findings") or compute_findings(PERIOD)
+    period, account_id = _period_and_account(tool_context)
+    findings = _state(tool_context).get("findings") or compute_findings(period, account_id=account_id)
     _state(tool_context)["findings"] = findings
     return {"findings": findings}
 
@@ -73,7 +86,9 @@ def lookup_contract_clause(customer_id: str, clause_ref: str, tool_context) -> d
     Uses Vertex AI Search RAG when VERTEX_AI_SEARCH_ENGINE_ID is configured; otherwise
     falls back to the local clause record so the demo always runs.
     """
-    contract = next((c for c in db.get_all_contracts() if c["customer_id"] == customer_id), None)
+    _, account_id = _period_and_account(tool_context)
+    contracts = db.get_all_contracts(account_id) if account_id is not None else all_contracts()
+    contract = next((c for c in contracts if c["customer_id"] == customer_id), None)
     local_clause = (contract or {}).get("clauses", {}).get(clause_ref) or "Clause text not found."
     customer_name = (contract or {}).get("customer_name", customer_id)
 
@@ -89,11 +104,12 @@ def lookup_contract_clause(customer_id: str, clause_ref: str, tool_context) -> d
 
 def draft_corrective_invoice(customer_id: str, tool_context) -> dict:
     """Draft a corrective invoice / credit memo for one customer's findings."""
-    findings = _state(tool_context).get("findings") or compute_findings(PERIOD)
+    period, account_id = _period_and_account(tool_context)
+    findings = _state(tool_context).get("findings") or compute_findings(period, account_id=account_id)
     cust = [f for f in findings if f["customer_id"] == customer_id]
     if not cust:
         return {"customer_id": customer_id, "memo": "No recoverable findings for this customer."}
-    memo, total = build_corrective_memo(customer_id, cust, PERIOD)
+    memo, total = build_corrective_memo(customer_id, cust, period)
     _state(tool_context).setdefault("drafts", {})[customer_id] = {
         "memo": memo, "total": total, "finding_ids": [f["finding_id"] for f in cust]}
     return {"customer_id": customer_id, "total_recoverable": total, "memo": memo}
