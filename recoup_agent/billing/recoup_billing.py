@@ -1,30 +1,56 @@
 """Recoup's OWN billing of its 20% success fee.
 
-This is intentionally isolated from the read-only customer Stripe connector in
-``stripe_provider.py``. The customer's Stripe account is only ever read; Recoup's
-own fee is charged through a SEPARATE Stripe account whose secret key is provided
-via ``RECOUP_BILLING_STRIPE_API_KEY``. The two keys must never be shared.
+Recoup's fee is charged through a Stripe account whose secret key is provided via
+``RECOUP_BILLING_STRIPE_API_KEY``. In production this should be a SEPARATE account
+(and key) from the read-only customer connector in ``stripe_provider.py`` so the
+key used to *read* a customer's billing can never *write*.
+
+For a single-account pilot, if ``RECOUP_BILLING_STRIPE_API_KEY`` is not set we fall
+back to the ``STRIPE`` / ``STRIPE_API_KEY`` value. ``using_shared_key()`` reports
+when that fallback is active so the caller can surface the caveat.
 """
 from __future__ import annotations
 
 import os
 
 RECOUP_BILLING_KEY_ENV = "RECOUP_BILLING_STRIPE_API_KEY"
+_FALLBACK_KEY_ENVS = ("STRIPE_API_KEY", "STRIPE")
+_KEY_PREFIXES = (f"{RECOUP_BILLING_KEY_ENV}=", "STRIPE_API_KEY=", "STRIPE=")
+
+
+def _strip_prefix(raw: str) -> str:
+    for prefix in _KEY_PREFIXES:
+        if raw.startswith(prefix):
+            return raw[len(prefix):].strip()
+    return raw.strip()
+
+
+def _dedicated_key() -> str | None:
+    raw = os.getenv(RECOUP_BILLING_KEY_ENV)
+    return _strip_prefix(raw) or None if raw else None
 
 
 def _billing_key() -> str | None:
-    raw = os.getenv(RECOUP_BILLING_KEY_ENV)
-    if not raw:
-        return None
-    for prefix in (f"{RECOUP_BILLING_KEY_ENV}=", "STRIPE_API_KEY=", "STRIPE="):
-        if raw.startswith(prefix):
-            raw = raw[len(prefix):]
-            break
-    return raw.strip() or None
+    key = _dedicated_key()
+    if key:
+        return key
+    for env_name in _FALLBACK_KEY_ENVS:
+        raw = os.getenv(env_name)
+        if raw:
+            stripped = _strip_prefix(raw)
+            if stripped:
+                return stripped
+    return None
 
 
 def is_configured() -> bool:
     return _billing_key() is not None
+
+
+def using_shared_key() -> bool:
+    """True when billing is falling back to the read-only customer connector key
+    instead of a dedicated, separate billing key."""
+    return _billing_key() is not None and _dedicated_key() is None
 
 
 def create_success_fee_invoice(
@@ -80,6 +106,7 @@ def create_success_fee_invoice(
             "hosted_invoice_url": getattr(invoice, "hosted_invoice_url", None),
             "amount": round(amount_dollars, 2),
             "current_month": current_month,
+            "shared_key": using_shared_key(),
         }
     except Exception as exc:  # never bubble a 500 to the operator
         return {"status": "error", "message": f"Recoup billing failed: {exc}"}
