@@ -43,7 +43,7 @@ def compute_findings_and_review(
     account_id: str | None = None,
     billing_provider=None,
 ) -> tuple[list[dict], list[dict]]:
-    provider = _selected_billing_provider(billing_provider)
+    provider = _selected_billing_provider(billing_provider) if account_id is not None else None
     contracts = _load_contracts(account_id)
     usage = invoices = None
     if provider is None:
