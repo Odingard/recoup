@@ -5,3 +5,5 @@ uvicorn
 pydantic
 google-cloud-firestore
 firebase-admin
+
+stripe==15.3.0
