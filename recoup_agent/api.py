@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 import threading
-from typing import List, Dict
+from pathlib import Path
+from typing import Any, Dict, List
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pypdf import PdfReader
 
 from . import db
-from .pipeline import compute_findings
+from .ingestion_doc import ContractEntitlements, extract_entitlements
+from .normalizer import normalize_contract_entitlements
+from .pipeline import compute_findings_and_review
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -81,9 +89,9 @@ def verify_token(authorization: str | None = Header(default=None)):
     account_id = decoded.get("account_id") or uid
     return {"uid": uid, "email": email, "account_id": account_id}
 
+
 app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform")
 
-# Enable CORS for the local React frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -92,14 +100,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(_, exc: RequestValidationError):
+    fields: list[dict[str, str]] = []
+    for error in exc.errors():
+        loc = [part for part in error.get("loc", []) if part not in {"body", "query", "path", "header"}]
+        field = ".".join(str(part) for part in loc) if loc else "request"
+        fields.append({"field": field, "message": error.get("msg", "Invalid input")})
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "needs_review",
+            "message": "Invalid input; please correct the highlighted field(s).",
+            "error": "Validation failed",
+            "fields": fields,
+        },
+    )
+
+
 class StatusUpdate(BaseModel):
     status: str
     reason: str = ""
+
 
 class UsagePayload(BaseModel):
     customer_id: str
     period: str
     units: int
+
 
 class InvoicePayload(BaseModel):
     customer_id: str
@@ -107,6 +136,7 @@ class InvoicePayload(BaseModel):
     base_charge: float
     overage_charge: float = 0
     discounts_applied: list = []
+
 
 class ContractPayload(BaseModel):
     customer_id: str
@@ -120,82 +150,226 @@ class ContractPayload(BaseModel):
     clauses: dict = {}
 
 
+VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt"}
+DEFAULT_PERIOD = "2026-06"
+
+
 def _account_id(user: dict) -> str | None:
     return user.get("account_id")
 
 
+def _is_valid_period(period: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}", period))
+
+
+def _needs_review_payload(message: str, *, fields: list[dict[str, str]] | None = None, extra: dict[str, Any] | None = None) -> dict:
+    payload = {
+        "status": "needs_review",
+        "message": message,
+    }
+    if fields is not None:
+        payload["fields"] = fields
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _offline_findings():
-    return compute_findings(account_id=None)
+    return compute_findings_and_review(account_id=None)[0]
+
+
+def _save_contract_if_needed(account_id: str | None, normalized: dict) -> None:
+    if account_id is not None:
+        db.save_contract(account_id, normalized)
+
+
+def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict] | None = None, message: str = "Contract extracted successfully") -> dict:
+    payload = {
+        "status": "success",
+        "message": message,
+        "saved": saved,
+        "contract": normalized,
+    }
+    if needs_review:
+        payload["needs_review"] = needs_review
+        payload["needs_review_count"] = len(needs_review)
+    return payload
+
+
+def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
+    try:
+        reader = PdfReader(file_path)
+    except Exception:
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+
+    if not getattr(reader, "pages", None):
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+
+    text = []
+    try:
+        for page in reader.pages:
+            try:
+                text.append(page.extract_text() or "")
+            except Exception:
+                continue
+    except Exception:
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+
+    if not "".join(text).strip():
+        return False, "This looks like a scanned/image PDF. A text-based PDF is required (OCR is on the roadmap)."
+    return True, None
+
+
+def _extract_and_normalize_contract(file_path: str) -> tuple[dict | None, list[dict], str | None]:
+    extracted = extract_entitlements(file_path)
+    if not isinstance(extracted, ContractEntitlements):
+        return None, [], "Could not extract terms; please confirm manually."
+    if not extracted.entitlements:
+        return None, [], "Could not extract terms; please confirm manually."
+    normalized = normalize_contract_entitlements(extracted)
+    if not normalized.get("customer_name") or normalized.get("customer_name") == "Unknown":
+        return None, [], "Could not extract terms; please confirm manually."
+    return normalized, [], None
+
 
 @app.get("/api/findings/pending")
 def get_pending_findings(user: dict = Depends(verify_token)) -> List[Dict]:
-    """Returns all findings currently awaiting human review."""
     account_id = _account_id(user)
     if account_id is None:
         return _offline_findings()
     return db.get_pending_findings(account_id)
 
+
 @app.get("/api/findings")
 def get_all_findings(user: dict = Depends(verify_token)) -> List[Dict]:
-    """Returns all findings across all statuses."""
     account_id = _account_id(user)
     if account_id is None:
         return _offline_findings()
     return db.get_all_findings(account_id)
 
+
 @app.post("/api/reconcile")
-def trigger_reconciliation(period: str = "2026-06", user: dict = Depends(verify_token)):
-    """Triggers the reconciliation engine to compute findings and save to DB."""
+def trigger_reconciliation(period: str = DEFAULT_PERIOD, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if not _is_valid_period(period):
+        return _needs_review_payload(
+            "Invalid billing period; use YYYY-MM.",
+            extra={
+                "findings_found": 0,
+                "needs_review_count": 1,
+                "needs_review": [
+                    {
+                        "customer_id": None,
+                        "customer_name": None,
+                        "term": "period",
+                        "reason": "Period must use YYYY-MM.",
+                    }
+                ],
+            },
+        )
+
     try:
-        # In a full system, this would trigger the multi-agent ADK run.
-        # For the fast API demo, we run the deterministic engine.
-        account_id = _account_id(user)
-        findings = compute_findings(period, account_id=account_id)
+        findings, needs_review = compute_findings_and_review(period, account_id=account_id)
         if account_id is not None:
             db.save_findings(account_id, findings)
-        return {"status": "success", "findings_found": len(findings)}
+        response = {
+            "status": "success",
+            "findings_found": len(findings),
+            "needs_review_count": len(needs_review),
+        }
+        if needs_review:
+            response["needs_review"] = needs_review
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/findings/{finding_id}/approve")
 def approve_finding(finding_id: str, user: dict = Depends(verify_token)):
-    """Marks a finding as approved in the DB and audit log."""
     account_id = _account_id(user)
     if account_id is not None:
         db.update_finding_status(account_id, finding_id, "approved", f"ui_approval_by_{user.get('email', 'unknown')}")
     return {"status": "approved", "finding_id": finding_id}
 
+
 @app.post("/api/findings/{finding_id}/reject")
 def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(verify_token)):
-    """Marks a finding as rejected in the DB and audit log, with an optional reason."""
     account_id = _account_id(user)
     if account_id is not None:
         db.update_finding_status(account_id, finding_id, "rejected", f"ui_rejection_by_{user.get('email', 'unknown')}_{update.reason}")
     return {"status": "rejected", "finding_id": finding_id}
 
+
 @app.post("/api/ingest/usage")
 def ingest_usage(payload: UsagePayload, user: dict = Depends(verify_token)):
-    """Ingests usage metrics into the DB."""
     account_id = _account_id(user)
     if account_id is not None:
         db.save_usage(account_id, payload.model_dump())
     return {"status": "success", "message": "Usage ingested successfully"}
 
+
 @app.post("/api/ingest/invoice")
 def ingest_invoice(payload: InvoicePayload, user: dict = Depends(verify_token)):
-    """Ingests invoice records into the DB."""
     account_id = _account_id(user)
     if account_id is not None:
         db.save_invoice(account_id, payload.model_dump())
     return {"status": "success", "message": "Invoice ingested successfully"}
 
+
 @app.post("/api/ingest/contract")
 def ingest_contract(payload: ContractPayload, user: dict = Depends(verify_token)):
-    """Ingests contract records into the DB. 
-    In a full implementation, this might accept a PDF and run Gemini extraction."""
     account_id = _account_id(user)
     if account_id is not None:
         db.save_contract(account_id, payload.model_dump())
     return {"status": "success", "message": "Contract ingested successfully"}
+
+
+@app.post("/api/ingest/contract/document")
+async def ingest_contract_document(file: UploadFile = File(...), user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    filename = file.filename or ""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in VALID_UPLOAD_SUFFIXES:
+        return _needs_review_payload("Unsupported file type; upload a PDF, DOCX, or TXT.")
+
+    try:
+        content = await file.read()
+    except Exception:
+        return _needs_review_payload("Could not read uploaded file; please upload a valid PDF, DOCX, or TXT.")
+
+    if not content:
+        return _needs_review_payload("The uploaded file is empty; please upload a valid document.")
+
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(content)
+            temp_path = tmp.name
+
+        if suffix == ".pdf":
+            has_text, error_message = _pdf_has_text_layer(temp_path)
+            if not has_text:
+                return _needs_review_payload(error_message or "Could not extract text from uploaded PDF.")
+
+        try:
+            normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
+        except Exception:
+            return _needs_review_payload("Could not extract terms; please confirm manually.")
+
+        if error_message or normalized is None:
+            return _needs_review_payload(error_message or "Could not extract terms; please confirm manually.")
+
+        saved = account_id is not None
+        if saved:
+            _save_contract_if_needed(account_id, normalized)
+
+        return _contract_preview(normalized, saved=saved, needs_review=needs_review)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
 
 # Run with: uvicorn recoup_agent.api:app --reload
