@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
+
+# Secret Manager secret IDs allow only [A-Za-z0-9_-]. Validating here also blocks
+# path-separator characters (e.g. "../") from ever reaching a resource name.
+_ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 
 
 def _strip_prefix(raw: str | None, *, env_name: str) -> str | None:
@@ -28,6 +33,8 @@ def _project_id() -> str | None:
 
 
 def _secret_name(account_id: str) -> str:
+    if not _ACCOUNT_ID_RE.match(account_id or ""):
+        raise ValueError("Invalid account_id for Secret Manager name")
     return f"recoup-connector-{account_id}"
 
 
@@ -60,8 +67,8 @@ def resolve_connector_key(account_id: str | None) -> str | None:
     project_id = _project_id()
     client = _client()
     if client is not None and project_id:
-        secret_id = _secret_name(account_id)
         try:
+            secret_id = _secret_name(account_id)
             value = _latest_secret_value(client, project_id, secret_id)
             if value:
                 return _strip_prefix(value, env_name=secret_id)
@@ -80,7 +87,10 @@ def store_connector_key(account_id: str, key: str) -> dict[str, Any]:
             "message": "Secret Manager is not available; cannot store connector key.",
         }
 
-    secret_id = _secret_name(account_id)
+    try:
+        secret_id = _secret_name(account_id)
+    except ValueError:
+        return {"status": "error", "message": "Invalid account identifier."}
     parent = f"projects/{project_id}"
     normalized_key = _strip_prefix(key, env_name=secret_id) or key.strip()
 

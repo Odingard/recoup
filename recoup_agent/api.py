@@ -419,11 +419,19 @@ def connect_stripe_key(payload: ConnectorStripeKeyPayload, user: dict = Depends(
             "Please provide a restricted read-only key beginning with rk_. Full-access sk_ keys are not accepted."
         )
 
+    billing_key = recoup_billing._billing_key()
+    if billing_key and key == billing_key:
+        return _needs_review_payload(
+            "This key matches Recoup's own billing (write) key. The connector key must be a "
+            "separate restricted READ-ONLY key so it can never write to your account."
+        )
+
     try:
         import stripe
 
-        stripe.api_key = key
-        stripe.Customer.list(limit=1)
+        # Verify with the submitted key explicitly (no global stripe.api_key
+        # mutation) so a concurrent request can never pick up this tenant's key.
+        stripe.Customer.list(limit=1, api_key=key)
     except Exception as exc:
         return _needs_review_payload(f"Stripe key verification failed; please confirm a restricted read-only key is configured. Details: {exc}")
 

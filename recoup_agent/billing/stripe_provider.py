@@ -77,11 +77,11 @@ def _iter_collection(collection):
     return collection
 
 
-def _retrieve_discount_name(stripe, discount_id: str) -> str | None:
+def _retrieve_discount_name(stripe, discount_id: str, api_key: str | None = None) -> str | None:
     if not discount_id:
         return None
     try:
-        discount = stripe.Discount.retrieve(discount_id)
+        discount = stripe.Discount.retrieve(discount_id, api_key=api_key)
     except Exception:
         return None
     coupon = _value(discount, "coupon")
@@ -98,13 +98,15 @@ class StripeBillingProvider(BillingProvider):
         self._stripe = None
 
     def _client(self):
+        # Return the stripe module WITHOUT mutating the process-wide
+        # ``stripe.api_key``. Each call passes ``api_key=self._api_key`` so
+        # concurrent per-tenant providers never leak credentials across threads.
         if self._stripe is not None:
             return self._stripe
         if not self._api_key:
             return None
         import stripe  # lazy import so sample mode stays offline
 
-        stripe.api_key = self._api_key
         self._stripe = stripe
         return self._stripe
 
@@ -113,7 +115,7 @@ class StripeBillingProvider(BillingProvider):
         if stripe is None:
             return None
         try:
-            customer = stripe.Customer.retrieve(customer_id)
+            customer = stripe.Customer.retrieve(customer_id, api_key=self._api_key)
         except Exception:
             return None
         return NormalizedCustomer(
@@ -126,44 +128,44 @@ class StripeBillingProvider(BillingProvider):
         stripe = self._client()
         if stripe is None:
             return []
+        rows: list[NormalizedCustomer] = []
         try:
-            customers = stripe.Customer.list(limit=100)
+            customers = stripe.Customer.list(limit=100, api_key=self._api_key)
+            for customer in _iter_collection(customers):
+                rows.append(NormalizedCustomer(
+                    customer_id=_value(customer, "id"),
+                    customer_name=_customer_name(customer),
+                    email=_customer_email(customer),
+                ))
         except Exception:
             return []
-        rows: list[NormalizedCustomer] = []
-        for customer in _iter_collection(customers):
-            rows.append(NormalizedCustomer(
-                customer_id=_value(customer, "id"),
-                customer_name=_customer_name(customer),
-                email=_customer_email(customer),
-            ))
         return rows
 
     def get_subscriptions(self, customer_id: str) -> List[NormalizedSubscription]:
         stripe = self._client()
         if stripe is None:
             return []
+        rows: list[NormalizedSubscription] = []
         try:
-            subscriptions = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
+            subscriptions = stripe.Subscription.list(customer=customer_id, status="all", limit=100, api_key=self._api_key)
+            for sub in _iter_collection(subscriptions):
+                start_ts = _value(sub, "current_period_start") or _value(sub, "start_date")
+                if not start_ts:
+                    continue
+                end_ts = _value(sub, "current_period_end") or _value(sub, "ended_at")
+                items = _value(sub, "items")
+                item_rows = _value(items, "data") if items is not None else []
+                plan_name = _plan_name_from_item(item_rows[0]) if item_rows else "unknown"
+                rows.append(NormalizedSubscription(
+                    subscription_id=_value(sub, "id"),
+                    customer_id=customer_id,
+                    plan_name=plan_name,
+                    status=_value(sub, "status", "unknown"),
+                    start_date=_date_from_ts(start_ts),
+                    end_date=_date_from_ts(end_ts) if end_ts else None,
+                ))
         except Exception:
             return []
-        rows: list[NormalizedSubscription] = []
-        for sub in _iter_collection(subscriptions):
-            start_ts = _value(sub, "current_period_start") or _value(sub, "start_date")
-            if not start_ts:
-                continue
-            end_ts = _value(sub, "current_period_end") or _value(sub, "ended_at")
-            items = _value(sub, "items")
-            item_rows = _value(items, "data") if items is not None else []
-            plan_name = _plan_name_from_item(item_rows[0]) if item_rows else "unknown"
-            rows.append(NormalizedSubscription(
-                subscription_id=_value(sub, "id"),
-                customer_id=customer_id,
-                plan_name=plan_name,
-                status=_value(sub, "status", "unknown"),
-                start_date=_date_from_ts(start_ts),
-                end_date=_date_from_ts(end_ts) if end_ts else None,
-            ))
         return rows
 
     def get_usage(self, customer_id: str, period: str) -> NormalizedUsage:
@@ -172,7 +174,7 @@ class StripeBillingProvider(BillingProvider):
             return NormalizedUsage(customer_id=customer_id, period=period, total_units=0)
         total_units = 0
         try:
-            subscriptions = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
+            subscriptions = stripe.Subscription.list(customer=customer_id, status="all", limit=100, api_key=self._api_key)
             for sub in _iter_collection(subscriptions):
                 items = _value(sub, "items")
                 for item in (_value(items, "data") if items is not None else []):
@@ -184,11 +186,11 @@ class StripeBillingProvider(BillingProvider):
                     summaries = None
                     if hasattr(stripe.SubscriptionItem, "list_usage_record_summaries"):
                         try:
-                            summaries = stripe.SubscriptionItem.list_usage_record_summaries(item_id, limit=100)
+                            summaries = stripe.SubscriptionItem.list_usage_record_summaries(item_id, limit=100, api_key=self._api_key)
                         except TypeError:
-                            summaries = stripe.SubscriptionItem.list_usage_record_summaries(subscription_item=item_id, limit=100)
+                            summaries = stripe.SubscriptionItem.list_usage_record_summaries(subscription_item=item_id, limit=100, api_key=self._api_key)
                     elif hasattr(stripe, "UsageRecordSummary") and hasattr(stripe.UsageRecordSummary, "list"):
-                        summaries = stripe.UsageRecordSummary.list(subscription_item=item_id, limit=100)
+                        summaries = stripe.UsageRecordSummary.list(subscription_item=item_id, limit=100, api_key=self._api_key)
                     for summary in _iter_collection(summaries):
                         ts = _value(summary, "timestamp")
                         if period and ts and not _in_period(ts, period):
@@ -205,7 +207,7 @@ class StripeBillingProvider(BillingProvider):
         start, end = _period_bounds(period)
         rows: list[NormalizedInvoice] = []
         try:
-            invoices = stripe.Invoice.list(customer=customer_id, limit=100)
+            invoices = stripe.Invoice.list(customer=customer_id, limit=100, api_key=self._api_key)
             for invoice in _iter_collection(invoices):
                 created = _value(invoice, "created")
                 period_start = _value(invoice, "period_start")
@@ -255,7 +257,7 @@ class StripeBillingProvider(BillingProvider):
                     coupon_name = _value(coupon, "name") if not isinstance(coupon, dict) else coupon.get("name")
                     discount_name = coupon_name or _value(coupon, "id") or _value(discount, "id")
                     if not discount_name:
-                        discount_name = _retrieve_discount_name(stripe, _value(discount, "id"))
+                        discount_name = _retrieve_discount_name(stripe, _value(discount, "id"), api_key=self._api_key)
                     amount = 0
                     for discount_amount in _value(invoice, "total_discount_amounts") or []:
                         if _value(discount_amount, "discount") == _value(discount, "id"):

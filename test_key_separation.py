@@ -52,6 +52,34 @@ def test_no_cross_use():
     assert "RECOUP_BILLING_STRIPE_API_KEY" not in stripe_provider_source
 
 
+def test_connector_provider_isolates_per_tenant_key(monkeypatch):
+    """Each provider passes its own key per call and never mutates the global
+    stripe.api_key, so concurrent tenants can't leak credentials into each other."""
+    import sys
+    import types
+
+    calls: list[str | None] = []
+
+    class _Empty:
+        def auto_paging_iter(self):
+            return iter([])
+
+    class Customer:
+        @staticmethod
+        def list(limit=100, api_key=None):
+            calls.append(api_key)
+            return _Empty()
+
+    fake_stripe = types.SimpleNamespace(api_key="SENTINEL_GLOBAL", Customer=Customer)
+    monkeypatch.setitem(sys.modules, "stripe", fake_stripe)
+
+    StripeBillingProvider(api_key="rk_tenant_a").list_customers()
+    StripeBillingProvider(api_key="rk_tenant_b").list_customers()
+
+    assert calls == ["rk_tenant_a", "rk_tenant_b"]
+    assert fake_stripe.api_key == "SENTINEL_GLOBAL"  # global never mutated
+
+
 def test_read_only_cannot_write(monkeypatch):
     key = os.getenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY")
     if not key:
