@@ -87,17 +87,21 @@ def create_success_fee_invoice(
             else stripe.Customer.create()
         )
         amount_cents = int(round(amount_dollars * 100))
-        stripe.InvoiceItem.create(
-            customer=customer.id,
-            amount=amount_cents,
-            currency="usd",
-            description=description or f"Recoup success fee ({current_month})",
-        )
         invoice = stripe.Invoice.create(
             customer=customer.id,
             collection_method="send_invoice",
             days_until_due=14,
             description=f"Recoup success fee — {current_month}",
+        )
+        # Attach the line item to THIS invoice explicitly. Recent Stripe API versions
+        # do not auto-pull pending invoice items, so a customer-scoped item would
+        # otherwise leave the invoice at $0.
+        stripe.InvoiceItem.create(
+            customer=customer.id,
+            invoice=invoice.id,
+            amount=amount_cents,
+            currency="usd",
+            description=description or f"Recoup success fee ({current_month})",
         )
         invoice = stripe.Invoice.finalize_invoice(invoice.id)
         return {
