@@ -11,14 +11,20 @@ from recoup_agent.security import assert_key_separation
 
 
 def test_keys_are_separate(monkeypatch):
-    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_test_same")
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_same")
+    # Billing (write) key must never equal the connector (read-only) key.
+    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "rk_same")
+    monkeypatch.setenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY", "rk_same")
     with pytest.raises(RuntimeError):
         assert_key_separation()
 
-    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_test_billing")
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_legacy")
-    monkeypatch.setenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY", "sk_test_connector")
+    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_live_billing")
+    monkeypatch.setenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY", "rk_connector")
+    assert_key_separation()
+
+    # A full-access key used for billing alone (no connector key) is allowed.
+    monkeypatch.delenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY", raising=False)
+    monkeypatch.setenv("STRIPE", "sk_live_billing")
+    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_live_billing")
     assert_key_separation()
 
 

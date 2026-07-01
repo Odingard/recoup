@@ -18,13 +18,20 @@ def _env_value(name: str) -> str | None:
 
 
 def assert_key_separation() -> None:
+    """Fail closed if the write (billing) key and the read-only connector key are
+    the same value. That overlap is the one that would let a key used to *read* a
+    customer's Stripe also *write* — it must never happen.
+
+    A single full-access key MAY be used for billing on its own (e.g. before a
+    dedicated restricted key exists); the connector always resolves its own
+    per-tenant read-only key, so reusing the legacy value for billing alone is
+    allowed.
+    """
     billing = _env_value("RECOUP_BILLING_STRIPE_API_KEY")
-    legacy = _env_value("STRIPE_API_KEY") or _env_value("STRIPE")
     connector_test = _env_value("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY")
 
-    if billing and legacy and billing == legacy:
-        raise RuntimeError("Recoup billing key must be separate from legacy Stripe env keys.")
     if billing and connector_test and billing == connector_test:
-        raise RuntimeError("Recoup billing key must be separate from the connector test key.")
-    if legacy and connector_test and legacy == connector_test:
-        raise RuntimeError("Legacy Stripe env keys must not be reused for the connector test key.")
+        raise RuntimeError(
+            "Recoup's billing (write) key and connector (read-only) key must be "
+            "different values. Refusing to start."
+        )
