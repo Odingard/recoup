@@ -18,10 +18,12 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 
 from . import db
+from .billing.connector_keys import store_connector_key
 from .billing import recoup_billing
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import compute_findings_and_review
+from .security import assert_key_separation
 from .success_fee import compute_metrics
 
 _firebase_lock = threading.Lock()
@@ -95,6 +97,7 @@ def verify_token(authorization: str | None = Header(default=None)):
 
 
 app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform")
+assert_key_separation()
 
 app.add_middleware(
     CORSMiddleware,
@@ -154,6 +157,10 @@ class ContractPayload(BaseModel):
     clauses: dict = {}
 
 
+class ConnectorStripeKeyPayload(BaseModel):
+    stripe_key: str
+
+
 VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt"}
 DEFAULT_PERIOD = "2026-06"
 
@@ -198,6 +205,14 @@ def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict]
         payload["needs_review"] = needs_review
         payload["needs_review_count"] = len(needs_review)
     return payload
+
+
+def _looks_like_restricted_key(key: str) -> bool:
+    return key.startswith("rk_")
+
+
+def _looks_like_write_key(key: str) -> bool:
+    return key.startswith("sk_live_") or key.startswith("sk_test_")
 
 
 def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
@@ -384,6 +399,42 @@ def ingest_contract(payload: ContractPayload, user: dict = Depends(verify_token)
     if account_id is not None:
         db.save_contract(account_id, payload.model_dump())
     return {"status": "success", "message": "Contract ingested successfully"}
+
+
+@app.post("/api/connector/stripe-key")
+def connect_stripe_key(payload: ConnectorStripeKeyPayload, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode does not store connector keys.")
+
+    key = payload.stripe_key.strip()
+    if not key:
+        return _needs_review_payload("Stripe key is required.")
+    if _looks_like_write_key(key):
+        return _needs_review_payload(
+            "This looks like a full-access Stripe key. Create a restricted READ-ONLY key with read access to Charges, Invoices, Invoice Items, Subscriptions, Usage Records, Customers, and Coupons; write access must be none."
+        )
+    if not _looks_like_restricted_key(key):
+        return _needs_review_payload(
+            "Please provide a restricted read-only key beginning with rk_. Full-access sk_ keys are not accepted."
+        )
+
+    try:
+        import stripe
+
+        stripe.api_key = key
+        stripe.Customer.list(limit=1)
+    except Exception as exc:
+        return _needs_review_payload(f"Stripe key verification failed; please confirm a restricted read-only key is configured. Details: {exc}")
+
+    result = store_connector_key(account_id, key)
+    if result.get("status") != "success":
+        return _needs_review_payload(result.get("message", "Could not store connector key."))
+    return {
+        "status": "success",
+        "message": "Stripe connector key stored.",
+        **result,
+    }
 
 
 @app.post("/api/ingest/contract/document")

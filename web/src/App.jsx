@@ -133,6 +133,9 @@ function App() {
   const [selectedFileName, setSelectedFileName] = useState('')
   const [contractSubmitting, setContractSubmitting] = useState(false)
   const [metrics, setMetrics] = useState(null)
+  const [connectorKey, setConnectorKey] = useState('')
+  const [connectorSubmitting, setConnectorSubmitting] = useState(false)
+  const [connectorStatus, setConnectorStatus] = useState('')
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -171,6 +174,37 @@ function App() {
     const text = await res.text()
     return text ? JSON.parse(text) : null
   }, [firebaseUser, isSampleMode])
+
+  const submitConnectorKey = useCallback(async () => {
+    const key = connectorKey.trim()
+    if (!key) {
+      setConnectorStatus('Enter your restricted read-only Stripe key.')
+      return
+    }
+    if (key.startsWith('sk_live_') || key.startsWith('sk_test_')) {
+      setConnectorStatus('That is a full-access key. Create a restricted READ-ONLY key (starts with rk_) with every write scope set to none.')
+      return
+    }
+    if (!key.startsWith('rk_')) {
+      setConnectorStatus('Please paste a restricted key beginning with rk_.')
+      return
+    }
+    setConnectorSubmitting(true)
+    setConnectorStatus('')
+    try {
+      const result = await apiRequest('/connector/stripe-key', { method: 'POST', body: { stripe_key: key } })
+      if (result?.status === 'success') {
+        setConnectorStatus('Read-only Stripe key saved securely.')
+        setConnectorKey('')
+      } else {
+        setConnectorStatus(result?.message || 'Could not save the key.')
+      }
+    } catch (error) {
+      setConnectorStatus(error.message || 'Could not save the key.')
+    } finally {
+      setConnectorSubmitting(false)
+    }
+  }, [apiRequest, connectorKey])
 
   const loadMetrics = useCallback(async () => {
     if (!apiReady) return
@@ -600,17 +634,45 @@ function App() {
                   <h2>Connect Stripe</h2>
                 </div>
                 <span className="connected-pill">
-                  <CheckCircle2 size={14} /> Server-side connected
+                  <ShieldCheck size={14} /> Read-only
                 </span>
               </div>
               <div className="stacked-copy">
                 <div className="info-box glass-panel">
                   <ShieldCheck size={18} />
                   <div>
-                    <strong>Read-only Stripe access</strong>
-                    <p>The Stripe API key stays on the server. This screen only confirms billing is available for reconciliation.</p>
+                    <strong>Create a restricted, read-only key</strong>
+                    <p>
+                      In your <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noreferrer">Stripe API keys</a> dashboard, click <em>Create restricted key</em>. Grant <strong>Read</strong> on Charges, Invoices, Invoice Items, Subscriptions, Usage Records, Customers, and Coupons. Leave every <strong>Write</strong> scope set to <strong>None</strong>. Recoup can never write to your Stripe account.
+                    </p>
                   </div>
                 </div>
+                {isSampleMode ? (
+                  <div className="info-box glass-panel">
+                    <FileText size={18} />
+                    <div>
+                      <strong>Sample mode</strong>
+                      <p>Connecting a live Stripe key is available after you sign in. Sample mode runs on synthetic data.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="stacked-copy">
+                    <label className="field-label" htmlFor="connector-key">Restricted read-only key (starts with rk_)</label>
+                    <input
+                      id="connector-key"
+                      type="password"
+                      placeholder="rk_live_..."
+                      value={connectorKey}
+                      onChange={(event) => setConnectorKey(event.target.value)}
+                      autoComplete="off"
+                    />
+                    <button className="btn-primary action-button" onClick={submitConnectorKey} disabled={connectorSubmitting}>
+                      {connectorSubmitting ? <RefreshCw className="spin" size={16} /> : <ShieldCheck size={16} />}
+                      {connectorSubmitting ? 'Saving…' : 'Save read-only key'}
+                    </button>
+                    {connectorStatus && <div className="status-message">{connectorStatus}</div>}
+                  </div>
+                )}
                 <div className="info-box glass-panel">
                   <DollarSign size={18} />
                   <div>

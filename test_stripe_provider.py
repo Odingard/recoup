@@ -138,10 +138,9 @@ def _install_fake_stripe(monkeypatch):
 
 
 def test_stripe_provider_methods_and_adapter(monkeypatch):
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_fake")
     _install_fake_stripe(monkeypatch)
 
-    provider = StripeBillingProvider()
+    provider = StripeBillingProvider(api_key="sk_test_fake")
 
     customer = provider.get_customer("cus_1")
     assert customer.customer_id == "cus_1"

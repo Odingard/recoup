@@ -21,7 +21,9 @@ Plain-language summary of what Recoup reads, computes, and stores.
   account cannot see another's data.
 - Contract terms, usage, invoices, findings, and an append-only audit log of every
   approve/reject/recover decision.
-- **Sample mode** stores nothing — it runs entirely on an in-memory synthetic book.
+- Per-tenant connector Stripe keys live in Google Secret Manager as
+  `recoup-connector-{account_id}`.
+- Sample mode stores nothing — it runs entirely on an in-memory synthetic book.
 
 ## Secrets
 - Stripe and Firebase credentials are provided via environment variables / Secret
