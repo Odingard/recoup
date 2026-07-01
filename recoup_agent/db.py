@@ -72,7 +72,10 @@ def update_finding_status(account_id: str, finding_id: str, status: str, event_n
     
     # Update finding
     doc_ref = _collection(db, account_id, "findings").document(finding_id)
-    doc_ref.update({"status": status})
+    update_fields = {"status": status}
+    if status == "recovered":
+        update_fields["recovered_at"] = now
+    doc_ref.update(update_fields)
     
     # Insert audit log
     audit_ref = _collection(db, account_id, "audit_log").document()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -11,14 +13,16 @@ from typing import Any, Dict, List
 from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from pypdf import PdfReader
 
 from . import db
+from .billing import recoup_billing
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import compute_findings_and_review
+from .success_fee import compute_metrics
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -298,6 +302,64 @@ def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(v
     if account_id is not None:
         db.update_finding_status(account_id, finding_id, "rejected", f"ui_rejection_by_{user.get('email', 'unknown')}_{update.reason}")
     return {"status": "rejected", "finding_id": finding_id}
+
+
+@app.post("/api/findings/{finding_id}/recovered")
+def mark_finding_recovered(finding_id: str, user: dict = Depends(verify_token)):
+    """Mark an approved finding as RECOVERED. Recoup's 20% fee applies only to
+    dollars that reach this state."""
+    account_id = _account_id(user)
+    if account_id is not None:
+        db.update_finding_status(account_id, finding_id, "recovered", f"ui_recovered_by_{user.get('email', 'unknown')}")
+    return {"status": "recovered", "finding_id": finding_id}
+
+
+def _findings_for(account_id: str | None) -> list[dict]:
+    if account_id is None:
+        return _offline_findings()
+    return db.get_all_findings(account_id)
+
+
+@app.get("/api/metrics")
+def get_metrics(user: dict = Depends(verify_token)):
+    """Recovered-to-date and Recoup's success fee this month."""
+    account_id = _account_id(user)
+    return compute_metrics(_findings_for(account_id))
+
+
+@app.post("/api/billing/charge-success-fee")
+def charge_success_fee(user: dict = Depends(verify_token)):
+    """Bill Recoup's 20% success fee on THIS MONTH's recovered dollars through
+    Recoup's own (separate) Stripe account."""
+    account_id = _account_id(user)
+    metrics = compute_metrics(_findings_for(account_id))
+    result = recoup_billing.create_success_fee_invoice(
+        customer_email=user.get("email"),
+        amount_dollars=metrics["success_fee_this_month"],
+        current_month=metrics["current_month"],
+    )
+    return {"metrics": metrics, "billing": result}
+
+
+@app.get("/api/findings/export")
+def export_findings(user: dict = Depends(verify_token)):
+    """Export findings as CSV for the operator's records."""
+    account_id = _account_id(user)
+    findings = _findings_for(account_id)
+    columns = [
+        "finding_id", "customer_id", "customer_name", "period", "title",
+        "monthly_recoverable", "status", "recovered_at", "confidence_score", "clause_ref",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for finding in findings:
+        writer.writerow({col: finding.get(col, "") for col in columns})
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=recoup_findings.csv"},
+    )
 
 
 @app.post("/api/ingest/usage")
