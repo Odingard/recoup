@@ -10,29 +10,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .reconciliation import reconcile
-from .billing.csv_provider import CSVBillingProvider
-from .ingestion_doc import extract_entitlements
-import os
-
+from .synthetic_data import all_contracts, USAGE, INVOICES
 from . import db
 
-def compute_findings(period: str = "2026-06") -> list[dict]:
-    # Fetch live data from Firestore instead of mock JSON files
-    contracts = db.get_all_contracts()
-    usage_list = db.get_all_usage()
-    invoices_list = db.get_all_invoices()
-    
+DATA_DIR = Path(__file__).parent / "data"
+
+
+def _load_book(account_id: str | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+    if account_id is None:
+        return all_contracts(), USAGE, INVOICES
+    return db.get_all_contracts(account_id), db.get_all_usage(account_id), db.get_all_invoices(account_id)
+
+
+def compute_findings_and_review(period: str = "2026-06", account_id: str | None = None) -> tuple[list[dict], list[dict]]:
+    contracts, usage_list, invoices_list = _load_book(account_id)
     usage = {(u["customer_id"], u["period"]): u for u in usage_list}
     invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
-    
+
     findings: list[dict] = []
+    needs_review: list[dict] = []
     for c in contracts:
         key = (c["customer_id"], period)
         if key not in usage or key not in invoices:
             continue  # missing billing data this period
-        findings.extend(reconcile(c, usage[key], invoices[key], period))
-    
+        findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
+
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
+    return findings, needs_review
+
+
+def compute_findings(period: str = "2026-06", account_id: str | None = None) -> list[dict]:
+    findings, _ = compute_findings_and_review(period, account_id=account_id)
     return findings
 
 
@@ -52,6 +60,7 @@ def build_corrective_memo(customer_id: str, findings: list[dict], period: str = 
 
 def append_audit(entry: dict) -> None:
     entry = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(DATA_DIR / "audit_log.jsonl", "a") as fh:
         fh.write(json.dumps(entry) + "\n")
 

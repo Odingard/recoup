@@ -93,14 +93,26 @@ def save_contract(payload: dict):
     db = get_client()
     db.collection("contracts").document(payload["customer_id"]).set(payload, merge=True)
 
-def get_all_usage() -> list[dict]:
+def get_all_usage(account_id: str | None = None) -> list[dict]:
     db = get_client()
-    return [doc.to_dict() for doc in db.collection("usage").stream()]
+    docs = db.collection("usage").stream()
+    rows = [doc.to_dict() for doc in docs]
+    if account_id is not None:
+        rows = [row for row in rows if row.get("account_id") == account_id]
+    return rows
 
-def get_all_invoices() -> list[dict]:
+def get_all_invoices(account_id: str | None = None) -> list[dict]:
     db = get_client()
-    return [doc.to_dict() for doc in db.collection("invoices").stream()]
+    docs = db.collection("invoices").stream()
+    rows = [doc.to_dict() for doc in docs]
+    if account_id is not None:
+        rows = [row for row in rows if row.get("account_id") == account_id]
+    return rows
 
-def get_all_contracts() -> list[dict]:
+def get_all_contracts(account_id: str | None = None) -> list[dict]:
     db = get_client()
-    return [doc.to_dict() for doc in db.collection("contracts").stream()]
+    docs = db.collection("contracts").stream()
+    rows = [doc.to_dict() for doc in docs]
+    if account_id is not None:
+        rows = [row for row in rows if row.get("account_id") == account_id]
+    return rows
