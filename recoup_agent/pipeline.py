@@ -6,6 +6,7 @@ the set of functions the ADK tools wrap.
 """
 from __future__ import annotations
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,25 +23,58 @@ def _load_book(account_id: str | None = None) -> tuple[list[dict], list[dict], l
     return db.get_all_contracts(account_id), db.get_all_usage(account_id), db.get_all_invoices(account_id)
 
 
-def compute_findings_and_review(period: str = "2026-06", account_id: str | None = None) -> tuple[list[dict], list[dict]]:
-    contracts, usage_list, invoices_list = _load_book(account_id)
-    usage = {(u["customer_id"], u["period"]): u for u in usage_list}
-    invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
+def _load_contracts(account_id: str | None = None) -> list[dict]:
+    if account_id is None:
+        return all_contracts()
+    return db.get_all_contracts(account_id)
+
+
+def _selected_billing_provider(billing_provider=None):
+    if billing_provider is not None:
+        return billing_provider
+    if os.getenv("RECOUP_BILLING_SOURCE", "").lower() == "stripe":
+        from .billing.stripe_provider import StripeBillingProvider
+        return StripeBillingProvider()
+    return None
+
+
+def compute_findings_and_review(
+    period: str = "2026-06",
+    account_id: str | None = None,
+    billing_provider=None,
+) -> tuple[list[dict], list[dict]]:
+    provider = _selected_billing_provider(billing_provider)
+    contracts = _load_contracts(account_id)
+    usage = invoices = None
+    if provider is None:
+        _, usage_list, invoices_list = _load_book(account_id)
+        usage = {(u["customer_id"], u["period"]): u for u in usage_list}
+        invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
 
     findings: list[dict] = []
     needs_review: list[dict] = []
     for c in contracts:
         key = (c["customer_id"], period)
-        if key not in usage or key not in invoices:
-            continue  # missing billing data this period
-        findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
+        if provider is not None:
+            from .billing.stripe_provider import map_stripe_billing_to_reconcile_inputs
+            normalized_usage = provider.get_usage(c["customer_id"], period)
+            normalized_invoices = provider.get_invoices(c["customer_id"], period)
+            usage_dict, invoice_dict, review_items = map_stripe_billing_to_reconcile_inputs(
+                c["customer_id"], c["customer_name"], period, normalized_usage, normalized_invoices
+            )
+            needs_review.extend(review_items)
+            findings.extend(reconcile(c, usage_dict, invoice_dict, period, needs_review=needs_review))
+        else:
+            if key not in usage or key not in invoices:
+                continue  # missing billing data this period
+            findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
 
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
     return findings, needs_review
 
 
-def compute_findings(period: str = "2026-06", account_id: str | None = None) -> list[dict]:
-    findings, _ = compute_findings_and_review(period, account_id=account_id)
+def compute_findings(period: str = "2026-06", account_id: str | None = None, billing_provider=None) -> list[dict]:
+    findings, _ = compute_findings_and_review(period, account_id=account_id, billing_provider=billing_provider)
     return findings
 
 
