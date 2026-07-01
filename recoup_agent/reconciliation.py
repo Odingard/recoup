@@ -131,6 +131,13 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 "annual_escalator_pct/escalator_effective_date",
                 f"missing or low-confidence escalator terms (confidence={min(esc_conf, esc_date_conf):.2f})",
             )
+        elif base is None or minimum is None:
+            _needs_review(
+                needs_review,
+                contract,
+                "annual_escalator_pct",
+                "escalator rule requires both base charge and committed minimum to be present",
+            )
         elif period_d and period_d >= esc_date and abs(base - minimum) < 0.01:
             expected_base = minimum * (1 + esc)
             if expected_base - base > 0.01:
