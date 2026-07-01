@@ -5,6 +5,8 @@ import {
   Building2,
   ChevronRight,
   CheckCircle2,
+  DollarSign,
+  Download,
   FileText,
   LogIn,
   LogOut,
@@ -21,7 +23,7 @@ import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, FileText, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, XCircle, BadgeCheck]
+void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, XCircle, BadgeCheck]
 
 const STEPS = [
   { id: 1, title: 'Upload contracts', icon: Upload },
@@ -29,6 +31,7 @@ const STEPS = [
   { id: 3, title: 'Run reconciliation', icon: RefreshCw },
   { id: 4, title: 'Confirm extracted terms', icon: BadgeCheck },
   { id: 5, title: 'Review findings', icon: FileText },
+  { id: 6, title: 'Recovered & billing', icon: DollarSign },
 ]
 
 const emptyContractDraft = {
@@ -129,6 +132,7 @@ function App() {
   const [contractDraft, setContractDraft] = useState(emptyContractDraft)
   const [selectedFileName, setSelectedFileName] = useState('')
   const [contractSubmitting, setContractSubmitting] = useState(false)
+  const [metrics, setMetrics] = useState(null)
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -168,12 +172,23 @@ function App() {
     return text ? JSON.parse(text) : null
   }, [firebaseUser, isSampleMode])
 
+  const loadMetrics = useCallback(async () => {
+    if (!apiReady) return
+    try {
+      const result = await apiRequest('/metrics')
+      setMetrics(result)
+    } catch (error) {
+      console.error(error)
+    }
+  }, [apiReady, apiRequest])
+
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
     const [pending, all] = await Promise.all([
       apiRequest('/findings/pending'),
       apiRequest('/findings'),
     ])
+    void loadMetrics()
     setFindings(Array.isArray(pending) ? pending : [])
     setAllFindings(Array.isArray(all) ? all : [])
     setSelectedFinding((current) => {
@@ -182,7 +197,7 @@ function App() {
       }
       return (pending && pending[0]) || all[0] || null
     })
-  }, [apiReady, apiRequest])
+  }, [apiReady, apiRequest, loadMetrics])
 
   useEffect(() => {
     if (!apiReady) return
@@ -298,6 +313,60 @@ function App() {
       setStatusMessage('Could not update the finding.')
     }
   }
+
+  const markRecovered = async (findingId) => {
+    try {
+      await apiRequest(`/findings/${findingId}/recovered`, { method: 'POST' })
+      setStatusMessage('Finding marked recovered.')
+      await refreshFindings()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not mark the finding recovered.')
+    }
+  }
+
+  const exportFindings = async () => {
+    try {
+      const headers = {}
+      if (!isSampleMode) {
+        if (!firebaseUser) throw new Error('Please sign in first')
+        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
+      }
+      const res = await fetch(`${API_BASE}/findings/export`, { headers })
+      if (!res.ok) throw new Error(await res.text())
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'recoup_findings.csv'
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Export failed.')
+    }
+  }
+
+  const chargeSuccessFee = async () => {
+    try {
+      const result = await apiRequest('/billing/charge-success-fee', { method: 'POST' })
+      const billing = result?.billing || {}
+      setStatusMessage(billing.message || `Success fee status: ${billing.status}`)
+      await loadMetrics()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not charge the success fee.')
+    }
+  }
+
+  const approvedFindings = useMemo(
+    () => allFindings.filter((finding) => finding.status === 'approved'),
+    [allFindings],
+  )
+  const recoveredFindings = useMemo(
+    () => allFindings.filter((finding) => finding.status === 'recovered'),
+    [allFindings],
+  )
 
   const needsHumanReview = useMemo(() => {
     const unconfirmedContracts = uploadedContracts.filter((item) => !item.confirmed)
@@ -543,10 +612,10 @@ function App() {
                   </div>
                 </div>
                 <div className="info-box glass-panel">
-                  <AlertCircle size={18} />
+                  <DollarSign size={18} />
                   <div>
-                    <strong>Recovered &amp; billing comes next</strong>
-                    <p>Task 5 will add recovered lifecycle and success-fee metrics after this workflow is in place.</p>
+                    <strong>Outcome-based pricing</strong>
+                    <p>Recoup charges 20% of dollars actually recovered — tracked on the Recovered &amp; billing step.</p>
                   </div>
                 </div>
               </div>
@@ -650,6 +719,89 @@ function App() {
             </section>
           )}
 
+          {activeStep === 6 && (
+            <section className="glass-panel panel-card onboarding-card">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Step 6</p>
+                  <h2>Recovered &amp; billing</h2>
+                </div>
+                <span className="connected-pill">
+                  <DollarSign size={14} /> 20% success fee
+                </span>
+              </div>
+
+              <div className="metric-grid">
+                <div className="glass-panel metric-card">
+                  <span className="metric-label">Recovered to date</span>
+                  <strong className="metric-value">{formatCurrency(metrics?.recovered_to_date)}</strong>
+                </div>
+                <div className="glass-panel metric-card">
+                  <span className="metric-label">Your success fee this month</span>
+                  <strong className="metric-value">{formatCurrency(metrics?.success_fee_this_month)}</strong>
+                  <small>20% of {formatCurrency(metrics?.recovered_this_month)} recovered this month</small>
+                </div>
+                <div className="glass-panel metric-card">
+                  <span className="metric-label">Potential (not yet recovered)</span>
+                  <strong className="metric-value">{formatCurrency(metrics?.potential_monthly_recoverable)}</strong>
+                </div>
+              </div>
+
+              <div className="review-actions">
+                <button className="btn-secondary" onClick={exportFindings}>
+                  <Download size={16} /> Export findings (CSV)
+                </button>
+                <button className="btn-primary" onClick={chargeSuccessFee}>
+                  <DollarSign size={16} /> Bill success fee this month
+                </button>
+              </div>
+
+              <div className="contract-review-list">
+                <h3 className="queue-title">Approved — awaiting recovery</h3>
+                {approvedFindings.length === 0 ? (
+                  <div className="empty-state glass-panel">
+                    <CheckCircle2 size={22} />
+                    <p>No approved findings awaiting recovery.</p>
+                  </div>
+                ) : (
+                  approvedFindings.map((finding) => (
+                    <article key={finding.finding_id} className="glass-panel contract-review-card">
+                      <div className="review-header">
+                        <div>
+                          <h3>{finding.customer_name}</h3>
+                          <p>{finding.title}</p>
+                        </div>
+                        <span className="amount">{formatCurrency(finding.monthly_recoverable)}</span>
+                      </div>
+                      <div className="review-actions">
+                        <button className="btn-primary" onClick={() => markRecovered(finding.finding_id)}>
+                          <DollarSign size={16} /> Mark recovered
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                )}
+
+                {recoveredFindings.length > 0 && (
+                  <>
+                    <h3 className="queue-title">Recovered</h3>
+                    {recoveredFindings.map((finding) => (
+                      <article key={finding.finding_id} className="glass-panel contract-review-card">
+                        <div className="review-header">
+                          <div>
+                            <h3>{finding.customer_name}</h3>
+                            <p>{finding.title}</p>
+                          </div>
+                          <span className="badge badge-approved">Recovered • {formatCurrency(finding.monthly_recoverable)}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+
           {activeStep === 5 && (
             <section className="glass-panel panel-card review-card">
               <div className="panel-heading review-heading">
@@ -748,6 +900,9 @@ function App() {
                       </button>
                       <button className="btn-success action-button" onClick={() => handleAction(selectedFinding.finding_id, 'approve')}>
                         <CheckCircle2 size={16} /> Approve &amp; draft invoice
+                      </button>
+                      <button className="btn-primary action-button" onClick={() => markRecovered(selectedFinding.finding_id)}>
+                        <DollarSign size={16} /> Mark recovered
                       </button>
                     </div>
                   </div>

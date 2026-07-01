@@ -502,3 +502,32 @@
     gap: 10px;
   }
 }
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+}
+
+.metric-label {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.metric-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.metric-card small {
+  opacity: 0.6;
+  font-size: 0.72rem;
+}
