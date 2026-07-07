@@ -23,7 +23,7 @@ import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, XCircle, BadgeCheck]
+void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle]
 
 const STEPS = [
   { id: 1, title: 'Upload contracts', icon: Upload },
@@ -133,9 +133,9 @@ function App() {
   const [selectedFileName, setSelectedFileName] = useState('')
   const [contractSubmitting, setContractSubmitting] = useState(false)
   const [metrics, setMetrics] = useState(null)
-  const [connectorKey, setConnectorKey] = useState('')
   const [connectorSubmitting, setConnectorSubmitting] = useState(false)
   const [connectorStatus, setConnectorStatus] = useState('')
+  const [connectorConnection, setConnectorConnection] = useState(null)
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -175,36 +175,16 @@ function App() {
     return text ? JSON.parse(text) : null
   }, [firebaseUser, isSampleMode])
 
-  const submitConnectorKey = useCallback(async () => {
-    const key = connectorKey.trim()
-    if (!key) {
-      setConnectorStatus('Enter your restricted read-only Stripe key.')
-      return
-    }
-    if (key.startsWith('sk_live_') || key.startsWith('sk_test_')) {
-      setConnectorStatus('That is a full-access key. Create a restricted READ-ONLY key (starts with rk_) with every write scope set to none.')
-      return
-    }
-    if (!key.startsWith('rk_')) {
-      setConnectorStatus('Please paste a restricted key beginning with rk_.')
-      return
-    }
-    setConnectorSubmitting(true)
-    setConnectorStatus('')
+  const loadConnectorStatus = useCallback(async () => {
+    if (!apiReady) return
     try {
-      const result = await apiRequest('/connector/stripe-key', { method: 'POST', body: { stripe_key: key } })
-      if (result?.status === 'success') {
-        setConnectorStatus('Read-only Stripe key saved securely.')
-        setConnectorKey('')
-      } else {
-        setConnectorStatus(result?.message || 'Could not save the key.')
-      }
+      const result = await apiRequest('/connector/stripe/status')
+      setConnectorConnection(result)
+      setConnectorStatus(result?.message || '')
     } catch (error) {
-      setConnectorStatus(error.message || 'Could not save the key.')
-    } finally {
-      setConnectorSubmitting(false)
+      console.error(error)
     }
-  }, [apiRequest, connectorKey])
+  }, [apiReady, apiRequest])
 
   const loadMetrics = useCallback(async () => {
     if (!apiReady) return
@@ -239,6 +219,30 @@ function App() {
     void refreshFindings()
   }, [apiReady, refreshFindings])
 
+  useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => {
+      void loadConnectorStatus()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, loadConnectorStatus])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const stripeConnect = params.get('stripe_connect')
+    if (!stripeConnect) return
+    const handle = window.setTimeout(() => {
+      if (stripeConnect === 'success') {
+        setConnectorStatus('Stripe App connected successfully.')
+        setActiveStep(2)
+      } else if (stripeConnect === 'error') {
+        setConnectorStatus(params.get('message') || 'Stripe connection failed.')
+        setActiveStep(2)
+      }
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [])
+
   const sampleModeLogin = async () => {
     setLoadingAuth(true)
     try {
@@ -272,6 +276,9 @@ function App() {
       setAllFindings([])
       setSelectedFinding(null)
       setStatusMessage('')
+      setConnectorConnection(null)
+      setMetrics(null)
+      setConnectorStatus('')
     }
   }
 
@@ -408,6 +415,29 @@ function App() {
   }, [findings, uploadedContracts])
 
   const reviewLabel = isSampleMode ? 'Sample data' : firebaseUser?.email || 'Authenticated'
+
+  const startStripeInstall = useCallback(async () => {
+    if (isSampleMode) {
+      setConnectorStatus('Sample mode does not connect to Stripe.')
+      return
+    }
+    setConnectorSubmitting(true)
+    setConnectorStatus('')
+    try {
+      const result = await apiRequest('/connector/stripe/oauth/start', { method: 'POST' })
+      if (result?.install_url) {
+        setConnectorStatus('Redirecting to Stripe App install…')
+        window.location.href = result.install_url
+        return
+      }
+      setConnectorStatus(result?.message || 'Could not start the Stripe App install.')
+    } catch (error) {
+      console.error(error)
+      setConnectorStatus(error.message || 'Could not start the Stripe App install.')
+    } finally {
+      setConnectorSubmitting(false)
+    }
+  }, [apiRequest, isSampleMode])
 
   if (loadingAuth) {
     return (
@@ -633,46 +663,18 @@ function App() {
                   <p className="eyebrow">Step 2</p>
                   <h2>Connect Stripe</h2>
                 </div>
-                <span className="connected-pill">
-                  <ShieldCheck size={14} /> Read-only
+                <span className={`connected-pill ${connectorConnection?.connected ? 'active' : ''}`}>
+                  <ShieldCheck size={14} /> {connectorConnection?.connected ? 'Connected' : 'Not connected'}
                 </span>
               </div>
               <div className="stacked-copy">
                 <div className="info-box glass-panel">
                   <ShieldCheck size={18} />
                   <div>
-                    <strong>Create a restricted, read-only key</strong>
-                    <p>
-                      In your <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noreferrer">Stripe API keys</a> dashboard, click <em>Create restricted key</em>. Grant <strong>Read</strong> on Charges, Invoices, Invoice Items, Subscriptions, Usage Records, Customers, and Coupons. Leave every <strong>Write</strong> scope set to <strong>None</strong>. Recoup can never write to your Stripe account.
-                    </p>
+                    <strong>Read-only Stripe access</strong>
+                    <p>The Stripe API key stays on the server. This screen only confirms billing is available for reconciliation.</p>
                   </div>
                 </div>
-                {isSampleMode ? (
-                  <div className="info-box glass-panel">
-                    <FileText size={18} />
-                    <div>
-                      <strong>Sample mode</strong>
-                      <p>Connecting a live Stripe key is available after you sign in. Sample mode runs on synthetic data.</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="stacked-copy">
-                    <label className="field-label" htmlFor="connector-key">Restricted read-only key (starts with rk_)</label>
-                    <input
-                      id="connector-key"
-                      type="password"
-                      placeholder="rk_live_..."
-                      value={connectorKey}
-                      onChange={(event) => setConnectorKey(event.target.value)}
-                      autoComplete="off"
-                    />
-                    <button className="btn-primary action-button" onClick={submitConnectorKey} disabled={connectorSubmitting}>
-                      {connectorSubmitting ? <RefreshCw className="spin" size={16} /> : <ShieldCheck size={16} />}
-                      {connectorSubmitting ? 'Saving…' : 'Save read-only key'}
-                    </button>
-                    {connectorStatus && <div className="status-message">{connectorStatus}</div>}
-                  </div>
-                )}
                 <div className="info-box glass-panel">
                   <DollarSign size={18} />
                   <div>
@@ -680,6 +682,37 @@ function App() {
                     <p>Recoup charges 20% of dollars actually recovered — tracked on the Recovered &amp; billing step.</p>
                   </div>
                 </div>
+                {isSampleMode ? (
+                  <div className="info-box glass-panel">
+                    <FileText size={18} />
+                    <div>
+                      <strong>Sample mode</strong>
+                      <p>Sample mode runs on synthetic data and does not connect to Stripe.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="stacked-copy">
+                    <button className="btn-primary action-button" onClick={startStripeInstall} disabled={connectorSubmitting}>
+                      {connectorSubmitting ? <RefreshCw className="spin" size={16} /> : <ShieldCheck size={16} />}
+                      {connectorSubmitting ? 'Starting…' : 'Connect with Stripe'}
+                    </button>
+                    <div className="status-message">
+                      {connectorStatus || 'Click to begin the OAuth install. Recoup stores the per-tenant read credential after Stripe redirects back.'}
+                    </div>
+                  </div>
+                )}
+                <div className="info-box glass-panel">
+                  <BadgeCheck size={18} />
+                  <div>
+                    <strong>Connection status</strong>
+                    <p>
+                      {connectorConnection?.connected
+                        ? `Connected as ${connectorConnection.stripe_account_id || 'the selected Stripe account'}.`
+                        : connectorConnection?.message || 'Awaiting Stripe App install.'}
+                    </p>
+                  </div>
+                </div>
+
               </div>
             </section>
           )}

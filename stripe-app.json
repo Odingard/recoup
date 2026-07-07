@@ -1,0 +1,38 @@
+{
+  "id": "com.odingard.recoup",
+  "version": "0.1.0",
+  "name": "Recoup",
+  "icon": "./stripe-app-icon.png",
+  "sandbox_install_compatible": true,
+  "distribution_type": "public",
+  "stripe_api_access_type": "oauth",
+  "allowed_redirect_uris": [
+    "https://recoup.odingard.com/api/connector/stripe/oauth/callback"
+  ],
+  "permissions": [
+    {
+      "permission": "charge_read",
+      "purpose": "Read charges for reconciliation."
+    },
+    {
+      "permission": "customer_read",
+      "purpose": "Resolve the merchant's Stripe customers."
+    },
+    {
+      "permission": "invoice_read",
+      "purpose": "Read invoices and invoice items for billing reconciliation."
+    },
+    {
+      "permission": "subscription_read",
+      "purpose": "Read subscription state for recurring contract recovery."
+    },
+    {
+      "permission": "usage_record_read",
+      "purpose": "Read usage records for overage reconciliation."
+    },
+    {
+      "permission": "coupon_read",
+      "purpose": "Read coupon and discount data used in contract terms."
+    }
+  ]
+}

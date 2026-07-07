@@ -6,8 +6,9 @@ Plain-language summary of what Recoup reads, computes, and stores.
 - **Contracts you upload** (PDF/DOCX/TXT or structured entry) to extract entitlements:
   committed minimums, included units, overage rates, discounts, and escalators.
 - **Your Stripe account — read-only.** We read customers, subscriptions, invoices,
-  line items, metered usage, and coupons/discounts. Recoup never creates, edits, or
-  deletes anything in your Stripe account. Use a restricted, read-only key.
+  line items, metered usage, and coupons/discounts through a Stripe App install
+  that grants read-only permissions. Stripe enforces the boundary; Recoup never
+  creates, edits, or deletes anything in your Stripe account.
 
 ## What we compute
 - All dollar figures are computed deterministically in Python from your contract
@@ -21,7 +22,7 @@ Plain-language summary of what Recoup reads, computes, and stores.
   account cannot see another's data.
 - Contract terms, usage, invoices, findings, and an append-only audit log of every
   approve/reject/recover decision.
-- Per-tenant connector Stripe keys live in Google Secret Manager as
+- Per-tenant connector Stripe OAuth credentials live in Google Secret Manager as
   `recoup-connector-{account_id}`.
 - Sample mode stores nothing — it runs entirely on an in-memory synthetic book.
 
@@ -29,7 +30,7 @@ Plain-language summary of what Recoup reads, computes, and stores.
 - Stripe and Firebase credentials are provided via environment variables / Secret
   Manager and are never written to the repository, logs, or Firestore.
 - Recoup's own success-fee billing uses a **separate** Stripe account from the
-  read-only key used to read your data.
+  app-granted connector credential used to read your data.
 
 ## Authentication
 - Access requires a verified Firebase identity. The backend derives your `account_id`
