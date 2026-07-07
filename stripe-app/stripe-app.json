@@ -34,7 +34,7 @@
   "allowed_redirect_uris": [
     "https://recoup.odingard.com/api/connector/stripe/oauth/callback"
   ],
-  "distribution_type": "public",
+  "distribution_type": "private",
   "stripe_api_access_type": "oauth",
   "sandbox_install_compatible": true
 }
