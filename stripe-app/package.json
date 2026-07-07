@@ -1,0 +1,7 @@
+{
+  "name": "recoup-stripe-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Recoup Stripe App manifest for backend-first OAuth installs",
+  "license": "UNLICENSED"
+}

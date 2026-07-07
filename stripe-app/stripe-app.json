@@ -1,14 +1,10 @@
 {
+  "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "com.odingard.recoup",
-  "version": "0.1.0",
   "name": "Recoup",
+  "version": "0.1.0",
   "icon": "./stripe-app-icon.png",
-  "sandbox_install_compatible": true,
-  "distribution_type": "public",
-  "stripe_api_access_type": "oauth",
-  "allowed_redirect_uris": [
-    "https://recoup.odingard.com/api/connector/stripe/oauth/callback"
-  ],
+  "extensions": null,
   "permissions": [
     {
       "permission": "charge_read",
@@ -34,5 +30,11 @@
       "permission": "coupon_read",
       "purpose": "Read coupon and discount data used in contract terms."
     }
-  ]
+  ],
+  "allowed_redirect_uris": [
+    "https://recoup.odingard.com/api/connector/stripe/oauth/callback"
+  ],
+  "distribution_type": "public",
+  "stripe_api_access_type": "oauth",
+  "sandbox_install_compatible": true
 }
