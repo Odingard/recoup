@@ -93,33 +93,33 @@ def _install_fake_stripe(monkeypatch):
 
     class Customer:
         @staticmethod
-        def retrieve(customer_id):
+        def retrieve(customer_id, api_key=None):
             return customers[0] if customer_id == "cus_1" else None
 
         @staticmethod
-        def list(limit=100):
+        def list(limit=100, api_key=None):
             return _Collection(customers)
 
     class Subscription:
         @staticmethod
-        def list(customer=None, status="all", limit=100):
+        def list(customer=None, status="all", limit=100, api_key=None):
             return _Collection([subscription] if customer == "cus_1" else [])
 
     class SubscriptionItem:
         @staticmethod
-        def list_usage_record_summaries(item_id, limit=100):
+        def list_usage_record_summaries(item_id, limit=100, api_key=None):
             if item_id != "si_metered_1":
                 return _Collection([])
             return _Collection([types.SimpleNamespace(timestamp=_ts(2026, 6, 15), total_usage=123)])
 
     class Invoice:
         @staticmethod
-        def list(customer=None, limit=100):
+        def list(customer=None, limit=100, api_key=None):
             return _Collection([invoice] if customer == "cus_1" else [])
 
     class Discount:
         @staticmethod
-        def retrieve(discount_id):
+        def retrieve(discount_id, api_key=None):
             return types.SimpleNamespace(
                 id=discount_id,
                 coupon=types.SimpleNamespace(id="coupon_1", name="Launch Promo"),
@@ -138,10 +138,9 @@ def _install_fake_stripe(monkeypatch):
 
 
 def test_stripe_provider_methods_and_adapter(monkeypatch):
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_fake")
     _install_fake_stripe(monkeypatch)
 
-    provider = StripeBillingProvider()
+    provider = StripeBillingProvider(api_key="sk_test_fake")
 
     customer = provider.get_customer("cus_1")
     assert customer.customer_id == "cus_1"

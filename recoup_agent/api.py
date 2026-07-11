@@ -9,19 +9,30 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from pypdf import PdfReader
 
 from . import db
+from .billing.connector_keys import get_connector_status, store_connector_key
 from .billing import recoup_billing
+from .billing.stripe_oauth import (
+    build_oauth_install_url,
+    build_oauth_state,
+    exchange_authorization_code,
+    oauth_redirect_uri,
+    oauth_web_base_url,
+    parse_oauth_state,
+)
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import compute_findings_and_review
+from .security import assert_key_separation
 from .success_fee import compute_metrics
 
 _firebase_lock = threading.Lock()
@@ -95,6 +106,7 @@ def verify_token(authorization: str | None = Header(default=None)):
 
 
 app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform")
+assert_key_separation()
 
 app.add_middleware(
     CORSMiddleware,
@@ -198,6 +210,33 @@ def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict]
         payload["needs_review"] = needs_review
         payload["needs_review_count"] = len(needs_review)
     return payload
+
+
+def _looks_like_restricted_key(key: str) -> bool:
+    return key.startswith("rk_")
+
+
+def _looks_like_write_key(key: str) -> bool:
+    return key.startswith("sk_live_") or key.startswith("sk_test_")
+
+
+def _stripe_oauth_success_url(payload: dict[str, Any], store_result: dict[str, Any]) -> str:
+    params = {
+        "stripe_connect": "success",
+        "account_id": payload.get("account_id", ""),
+        "stripe_account_id": store_result.get("stripe_account_id", "") or "",
+    }
+    return f"{oauth_web_base_url().rstrip('/')}/?{urlencode(params)}"
+
+
+def _stripe_oauth_error_url(message: str, *, account_id: str | None = None) -> str:
+    params = {
+        "stripe_connect": "error",
+        "message": message,
+    }
+    if account_id:
+        params["account_id"] = account_id
+    return f"{oauth_web_base_url().rstrip('/')}/?{urlencode(params)}"
 
 
 def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
@@ -384,6 +423,59 @@ def ingest_contract(payload: ContractPayload, user: dict = Depends(verify_token)
     if account_id is not None:
         db.save_contract(account_id, payload.model_dump())
     return {"status": "success", "message": "Contract ingested successfully"}
+
+
+@app.get("/api/connector/stripe/status")
+def connector_status(user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    return {"status": "success", **get_connector_status(account_id)}
+
+
+@app.post("/api/connector/stripe/oauth/start")
+def start_stripe_oauth(user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode does not connect to Stripe.")
+
+    state = build_oauth_state(account_id, user.get("uid") or account_id, email=user.get("email"))
+    try:
+        install_url = build_oauth_install_url(state=state)
+    except Exception as exc:
+        return _needs_review_payload(f"Could not build Stripe install link. Details: {exc}")
+    return {"status": "success", "install_url": install_url, "redirect_uri": oauth_redirect_uri()}
+
+
+@app.get("/api/connector/stripe/oauth/callback")
+def stripe_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    if error:
+        return RedirectResponse(url=_stripe_oauth_error_url(error), status_code=302)
+    if not code or not state:
+        return RedirectResponse(url=_stripe_oauth_error_url("Missing OAuth code or state."), status_code=302)
+
+    try:
+        state_payload = parse_oauth_state(state)
+    except Exception as exc:
+        return RedirectResponse(url=_stripe_oauth_error_url(f"Invalid OAuth state. Details: {exc}"), status_code=302)
+
+    account_id = state_payload.get("account_id")
+    if not account_id:
+        return RedirectResponse(url=_stripe_oauth_error_url("OAuth state did not include an account id."), status_code=302)
+
+    try:
+        credential = exchange_authorization_code(code, account_id=account_id)
+    except Exception as exc:
+        return RedirectResponse(url=_stripe_oauth_error_url(f"Stripe OAuth exchange failed. Details: {exc}", account_id=account_id), status_code=302)
+
+    result = store_connector_key(account_id, credential)
+    if result.get("status") != "success":
+        return RedirectResponse(
+            url=_stripe_oauth_error_url(result.get("message", "Could not store Stripe OAuth credential."), account_id=account_id),
+            status_code=302,
+        )
+    return RedirectResponse(
+        url=_stripe_oauth_success_url(state_payload, result),
+        status_code=302,
+    )
 
 
 @app.post("/api/ingest/contract/document")

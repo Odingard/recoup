@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .reconciliation import reconcile
+from .billing.connector_keys import resolve_connector_key
 from .synthetic_data import all_contracts, USAGE, INVOICES
 from . import db
 
@@ -29,12 +30,12 @@ def _load_contracts(account_id: str | None = None) -> list[dict]:
     return db.get_all_contracts(account_id)
 
 
-def _selected_billing_provider(billing_provider=None):
+def _selected_billing_provider(account_id: str | None, billing_provider=None):
     if billing_provider is not None:
         return billing_provider
     if os.getenv("RECOUP_BILLING_SOURCE", "").lower() == "stripe":
         from .billing.stripe_provider import StripeBillingProvider
-        return StripeBillingProvider()
+        return StripeBillingProvider(api_key=resolve_connector_key(account_id))
     return None
 
 
@@ -43,7 +44,7 @@ def compute_findings_and_review(
     account_id: str | None = None,
     billing_provider=None,
 ) -> tuple[list[dict], list[dict]]:
-    provider = _selected_billing_provider(billing_provider) if account_id is not None else None
+    provider = _selected_billing_provider(account_id, billing_provider) if account_id is not None else None
     contracts = _load_contracts(account_id)
     usage = invoices = None
     if provider is None:
