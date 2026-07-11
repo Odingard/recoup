@@ -12,14 +12,26 @@ See `recoup_agent/.env.example`. Nothing is hardcoded — set these at deploy ti
 
 | Variable | Purpose |
 | --- | --- |
-| `GOOGLE_CLOUD_PROJECT` | GCP project for Firestore + Vertex AI |
+| `GOOGLE_CLOUD_PROJECT` | GCP project for Firestore, Secret Manager, and Vertex AI |
 | `GOOGLE_GENAI_USE_VERTEXAI` | `TRUE` to use Gemini via Vertex AI |
 | `RECOUP_SAMPLE_MODE` | `1` = offline synthetic demo, no auth/Firestore. `0` in production |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Service-account JSON or path (omit on Cloud Run to use ADC) |
-| `STRIPE_API_KEY` (or `STRIPE`) | **Read-only** key for the customer's Stripe account |
+| `RECOUP_CONNECTOR_TEST_STRIPE_API_KEY` | Local/dev Stripe App access token fallback for the connector |
+| `RECOUP_STRIPE_APP_CLIENT_ID` | Stripe App OAuth client ID |
+| `RECOUP_STRIPE_APP_SECRET` | Stripe App OAuth secret used to exchange/refresh access tokens |
+| `RECOUP_STRIPE_APP_REDIRECT_URI` | Public HTTPS OAuth callback URL for the Stripe App manifest |
+| `RECOUP_STRIPE_APP_AUTHORIZE_URL` | Stripe OAuth authorize URL (default marketplace authorize endpoint) |
+| `RECOUP_STRIPE_APP_TOKEN_URL` | Stripe OAuth token exchange URL |
+| `RECOUP_STRIPE_APP_STATE_SECRET` | Optional signing secret for OAuth state tokens |
+| `RECOUP_WEB_BASE_URL` | Public Recoup web app URL used after Stripe redirects back |
+| `RECOUP_BILLING_STRIPE_API_KEY` | Dedicated Stripe key used only for Recoup success-fee billing |
 | `RECOUP_BILLING_SOURCE` | `stripe` to reconcile from Stripe instead of the synthetic/Firestore book |
-| `RECOUP_BILLING_STRIPE_API_KEY` | **Separate** Stripe account used to invoice Recoup's success fee |
 | `PORT` | Server port (Cloud Run injects this) |
+
+Per-tenant connector OAuth credentials live in **Secret Manager** under
+`recoup-connector-{account_id}`. The stored payload includes the access token,
+refresh token, and Stripe account metadata; the runtime resolves the current
+access token on demand and passes it explicitly as `api_key=`.
 
 ## 2. Run locally
 
@@ -38,11 +50,16 @@ cd web && npm install && VITE_API_BASE=http://127.0.0.1:8001/api npm run dev
 
 ## 3. Deploy to Cloud Run
 
+Use the one-time stack from `docs/SECURITY_ONEPAGER.md` / the deployment-security
+brief: Cloud Run for the app, Firestore for tenant data, Secret Manager for
+per-tenant connector credentials and billing secrets, Firebase Auth for sign-in,
+and a custom domain for the hosted SaaS URL.
+
 ```bash
 gcloud run deploy recoup --source . \
   --region us-central1 \
   --set-env-vars GOOGLE_CLOUD_PROJECT=your-project,GOOGLE_GENAI_USE_VERTEXAI=TRUE
-# Provide STRIPE_API_KEY, RECOUP_BILLING_STRIPE_API_KEY, etc. via --set-secrets from Secret Manager.
+# Provide RECOUP_BILLING_STRIPE_API_KEY via Secret Manager.
 ```
 
 Store Stripe/Firebase secrets in **Secret Manager** and mount them with
@@ -54,7 +71,8 @@ Store Stripe/Firebase secrets in **Secret Manager** and mount them with
    `accounts/{account_id}/...`.
 2. **Upload contracts** — structured form now, or `POST /api/ingest/contract/document`
    with a text-based PDF/DOCX/TXT (Gemini extracts terms with confidence + provenance).
-3. **Connect Stripe** — provide a read-only key server-side.
+3. **Connect Stripe** — click the Stripe App install flow. Stripe grants Recoup
+   read-only access through the manifest; no customer key copy/paste is involved.
 4. **Run reconciliation** for a billing period.
 5. **Confirm extracted terms** — anything below 0.85 confidence is flagged.
 6. **Review findings** — approve or reject each.
