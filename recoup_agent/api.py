@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -11,10 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from pypdf import PdfReader
 
@@ -31,7 +33,8 @@ from .billing.stripe_oauth import (
 )
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
-from .pipeline import compute_findings_and_review
+from .pipeline import _load_book, compute_findings_and_review, run_book
+from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
 
@@ -401,6 +404,81 @@ def export_findings(user: dict = Depends(verify_token)):
     )
 
 
+def _report_for_account(account_id: str | None) -> dict:
+    """Audit report over stored findings (account) or the local book (sample mode)."""
+    if account_id is None:
+        contracts, usage, invoices = _load_book(None)
+        findings_by_period, needs_review = run_book(contracts, usage, invoices)
+        return build_report(findings_by_period, needs_review, contracts)
+    findings = db.get_all_findings(account_id)
+    by_period: dict[str, list[dict]] = {}
+    for f in findings:
+        f.setdefault("math", f.get("detail", ""))
+        f.setdefault("clause_text", f.get("detail", ""))
+        by_period.setdefault(f.get("period", ""), []).append(f)
+    return build_report(by_period, [], db.get_all_contracts(account_id))
+
+
+def _share_token(account_id: str) -> str:
+    secret = os.getenv("RECOUP_REPORT_SHARE_SECRET")
+    if not secret:
+        raise HTTPException(status_code=503,
+                            detail="RECOUP_REPORT_SHARE_SECRET is not configured; report sharing is disabled.")
+    return hmac.new(secret.encode(), account_id.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+@app.get("/api/report")
+def get_report(user: dict = Depends(verify_token)):
+    return _report_for_account(_account_id(user))
+
+
+@app.get("/api/report.pdf")
+def get_report_pdf(user: dict = Depends(verify_token)):
+    pdf = render_pdf(_report_for_account(_account_id(user)))
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": "attachment; filename=recoup_report.pdf"})
+
+
+@app.post("/api/report/share")
+def share_report(request: Request, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    base = os.getenv("RECOUP_WEB_BASE_URL") or str(request.base_url).rstrip("/")
+    if account_id is None:
+        return {"url": f"{base.rstrip('/')}/report/sample"}
+    token = _share_token(account_id)
+    return {"url": f"{base.rstrip('/')}/report/{account_id}/{token}"}
+
+
+@app.get("/report/sample")
+def sample_report_html():
+    if not _sample_mode_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    return HTMLResponse(render_html(_report_for_account(None)))
+
+
+@app.get("/report/sample.pdf")
+def sample_report_pdf():
+    if not _sample_mode_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=render_pdf(_report_for_account(None)), media_type="application/pdf")
+
+
+@app.get("/report/{account_id}/{token}")
+def shared_report(account_id: str, token: str):
+    wants_pdf = token.endswith(".pdf")
+    raw_token = token[:-4] if wants_pdf else token
+    secret = os.getenv("RECOUP_REPORT_SHARE_SECRET")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Report sharing is not configured.")
+    expected = hmac.new(secret.encode(), account_id.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(expected, raw_token):
+        raise HTTPException(status_code=403, detail="Invalid share token.")
+    report = _report_for_account(account_id)
+    if wants_pdf:
+        return Response(content=render_pdf(report), media_type="application/pdf")
+    return HTMLResponse(render_html(report))
+
+
 @app.post("/api/ingest/usage")
 def ingest_usage(payload: UsagePayload, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
@@ -524,6 +602,13 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+
+# Serve the built web app (if present) at /; mounted LAST so API routes win.
+_web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+if _web_dist.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_web_dist), html=True), name="web")
 
 
 # Run with: uvicorn recoup_agent.api:app --reload

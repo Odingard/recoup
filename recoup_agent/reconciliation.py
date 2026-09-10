@@ -20,6 +20,18 @@ def _parse(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
 
+def _fmt_rate(x) -> str:
+    return "$" + f"{x:,.4f}".rstrip("0").rstrip(".")
+
+
+def _clause_text(contract: dict, clause_ref: str, term_field: str) -> str:
+    return (
+        contract.get("clauses", {}).get(clause_ref)
+        or contract.get("term_meta", {}).get(term_field, {}).get("provenance")
+        or ""
+    )
+
+
 def _confidence(contract: dict, field: str) -> float:
     return float(contract.get("term_meta", {}).get(field, {}).get("confidence", 1.0))
 
@@ -41,16 +53,21 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     cid, cname = contract["customer_id"], contract["customer_name"]
     seq = 1
 
-    def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str) -> None:
+    def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str,
+            math: str = "", clause_text: str = "", assumption: str | None = None) -> None:
         nonlocal seq
-        findings.append({
+        finding = {
             "finding_id": f"F-{cid.upper()}-{seq:03d}",
             "customer_id": cid, "customer_name": cname,
             "type": ftype, "title": title,
             "monthly_recoverable": round(float(amount), 2),
             "clause_ref": clause_ref, "detail": detail,
+            "math": math, "clause_text": clause_text,
             "status": "open",
-        })
+        }
+        if assumption:
+            finding["assumption"] = assumption
+        findings.append(finding)
         seq += 1
 
     period_d = _parse(period + "-01")
@@ -67,9 +84,12 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             f"missing or low-confidence committed minimum (confidence={minimum_conf:.2f})",
         )
     elif minimum and base + 1e-9 < minimum:
+        amount = minimum - base
         add("unenforced_minimum", "Committed monthly minimum not enforced",
-            minimum - base, "committed_minimum",
-            f"Contract commits to a ${minimum:,.0f}/mo minimum; only ${base:,.0f} was billed.")
+            amount, "committed_minimum",
+            f"Contract commits to a ${minimum:,.0f}/mo minimum; only ${base:,.0f} was billed.",
+            math=f"committed minimum ${minimum:,.0f}/mo − billed ${base:,.0f}/mo = ${amount:,.0f}/mo",
+            clause_text=_clause_text(contract, "committed_minimum", "committed_minimum_monthly"))
 
     # Rule 2 - usage overage not billed
     included = contract.get("included_units")
@@ -89,10 +109,17 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         overage_units = max(0, used - included)
         expected_overage = overage_units * rate
         if expected_overage - billed_overage > 0.01:
+            amount = expected_overage - billed_overage
+            math = (f"{used:,} units − {included:,} included = {overage_units:,} units "
+                    f"× {_fmt_rate(rate)} = ${expected_overage:,.2f}/mo")
+            if billed_overage > 0.005:
+                math += f" − ${billed_overage:,.2f} already billed = ${amount:,.2f}/mo"
             add("unbilled_overage", "Usage overage not billed",
-                expected_overage - billed_overage, "overage",
+                amount, "overage",
                 f"{used:,} units used vs {included:,} included; {overage_units:,} overage units "
-                f"at ${rate:,.2f} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.")
+                f"at {_fmt_rate(rate)} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.",
+                math=math,
+                clause_text=_clause_text(contract, "overage", "overage_rate"))
 
     # Rule 3 - expired discount still applied
     discounts = contract.get("discounts")
@@ -112,10 +139,14 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             exp = _parse(d.get("expires")) if d else None
             if exp and period_d and period_d > exp:
                 amount = applied.get("amount", 0)
+                pct = f"{d['value'] * 100:.0f}" if d.get("type") == "percent" else str(d.get("value"))
                 add("expired_discount", "Expired discount still applied",
                     amount, "discount",
                     f"'{applied['name']}' expired {d['expires']} but ${amount:,.0f} was still "
-                    f"deducted in {period}.")
+                    f"deducted in {period}.",
+                    math=(f"'{applied['name']}' discount of {pct}% is past its expiry but "
+                         f"${amount:,.0f}/mo is still deducted = ${amount:,.0f}/mo"),
+                    clause_text=d.get("provenance") or _clause_text(contract, "discount", "discounts"))
 
     # Rule 4 - annual escalator not applied
     esc = contract.get("annual_escalator_pct")
@@ -141,9 +172,14 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         elif period_d and period_d >= esc_date and abs(base - minimum) < 0.01:
             expected_base = minimum * (1 + esc)
             if expected_base - base > 0.01:
+                amount = expected_base - base
                 add("missed_escalator", "Annual price escalator not applied",
-                    expected_base - base, "escalator",
+                    amount, "escalator",
                     f"{esc*100:.0f}% escalator effective {contract['escalator_effective_date']} "
-                    f"not applied; base should be ${expected_base:,.0f} vs ${base:,.0f} billed.")
+                    f"not applied; base should be ${expected_base:,.0f} vs ${base:,.0f} billed.",
+                    math=(f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
+                         f"− billed ${base:,.0f}/mo = ${amount:,.0f}/mo"),
+                    clause_text=_clause_text(contract, "escalator", "annual_escalator_pct"),
+                    assumption="Applies a single escalator step; earlier anniversaries are not compounded.")
 
     return findings

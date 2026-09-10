@@ -43,12 +43,18 @@ def compute_findings_and_review(
     period: str = "2026-06",
     account_id: str | None = None,
     billing_provider=None,
+    book: tuple[list[dict], list[dict], list[dict]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     provider = _selected_billing_provider(account_id, billing_provider) if account_id is not None else None
-    contracts = _load_contracts(account_id)
+    if book is not None:
+        contracts, usage_list, invoices_list = book
+    else:
+        contracts = _load_contracts(account_id)
+        usage_list = invoices_list = []
     usage = invoices = None
     if provider is None:
-        _, usage_list, invoices_list = _load_book(account_id)
+        if book is None:
+            _, usage_list, invoices_list = _load_book(account_id)
         usage = {(u["customer_id"], u["period"]): u for u in usage_list}
         invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
 
@@ -72,6 +78,26 @@ def compute_findings_and_review(
 
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
     return findings, needs_review
+
+
+def run_book(contracts: list[dict], usage_list: list[dict], invoices_list: list[dict],
+             seed_review: list[dict] = ()) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Reconcile every period present in the book; returns findings_by_period and
+    a combined needs_review list (identical entries deduped)."""
+    findings_by_period: dict[str, list[dict]] = {}
+    needs_review: list[dict] = list(seed_review)
+    for period in book_periods(usage_list, invoices_list):
+        findings, review = compute_findings_and_review(period, book=(contracts, usage_list, invoices_list))
+        findings_by_period[period] = findings
+        needs_review.extend(review)
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for item in needs_review:
+        key = json.dumps(item, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return findings_by_period, deduped
 
 
 def compute_findings(period: str = "2026-06", account_id: str | None = None, billing_provider=None) -> list[dict]:
@@ -101,12 +127,31 @@ def append_audit(entry: dict) -> None:
 
 
 def main() -> None:
-    contracts, usage, invoices = load_book()
-    periods = book_periods(usage, invoices) or ["2026-06"]
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Recoup revenue leakage reconciliation demo")
+    parser.add_argument("--data-dir", type=Path, default=None,
+                        help="Directory containing contracts/usage/invoices JSON (clean schema or internal)")
+    parser.add_argument("--dir", type=Path, default=None,
+                        help="Directory of contract documents + billing/usage CSVs (messy book)")
+    parser.add_argument("--report-html", type=Path, default=None, help="Write the audit report HTML here")
+    parser.add_argument("--report-pdf", type=Path, default=None, help="Write the audit report PDF here")
+    parser.add_argument("--report-json", type=Path, default=None, help="Write the audit report JSON here")
+    args = parser.parse_args()
+
+    seed_review: list[dict] = []
+    if args.dir is not None:
+        from .ingest_dir import load_book_from_dir
+        contracts, usage, invoices, seed_review = load_book_from_dir(args.dir)
+    else:
+        contracts, usage, invoices = load_book(args.data_dir) if args.data_dir else load_book()
+
+    findings_by_period, needs_review = run_book(contracts, usage, invoices, seed_review)
+    periods = list(findings_by_period) or ["2026-06"]
     grand_total = 0.0
 
     for period in periods:
-        findings = compute_findings(period)
+        findings = findings_by_period.get(period, [])
         total = sum(f["monthly_recoverable"] for f in findings)
         grand_total += total
 
@@ -128,6 +173,27 @@ def main() -> None:
 
     if len(periods) > 1:
         print(f"\nALL PERIODS ({periods[0]}..{periods[-1]}) total recoverable: ${grand_total:,.2f}")
+
+    print(f"\nNEEDS REVIEW ({len(needs_review)})")
+    for item in needs_review:
+        name = item.get("customer_name") or item.get("customer_id") or "?"
+        print(f"  - {name} | {item.get('term')}: {item.get('reason')}")
+
+    if args.report_html or args.report_pdf or args.report_json:
+        from .report import build_report, render_html, render_pdf
+        report = build_report(findings_by_period, needs_review, contracts)
+        if args.report_json:
+            args.report_json.parent.mkdir(parents=True, exist_ok=True)
+            args.report_json.write_text(json.dumps(report, indent=2))
+            print(f"Report JSON written to {args.report_json}")
+        if args.report_html:
+            args.report_html.parent.mkdir(parents=True, exist_ok=True)
+            args.report_html.write_text(render_html(report))
+            print(f"Report HTML written to {args.report_html}")
+        if args.report_pdf:
+            args.report_pdf.parent.mkdir(parents=True, exist_ok=True)
+            args.report_pdf.write_bytes(render_pdf(report))
+            print(f"Report PDF written to {args.report_pdf}")
 
     print("\nHuman approval gate (demo): findings await sign-off before any invoice issues.")
     print(f"Audit log written to {DATA_DIR / 'audit_log.jsonl'}")

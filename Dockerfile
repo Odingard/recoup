@@ -5,6 +5,16 @@
 # Build:  docker build -t recoup .
 # Run:    docker run -p 8080:8080 --env-file recoup_agent/.env recoup
 # Deploy: gcloud run deploy recoup --source . --set-env-vars GOOGLE_CLOUD_PROJECT=...,...
+
+# --- Stage 1: build the React web app ---
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ .
+RUN VITE_API_BASE=/api npm run build
+
+# --- Stage 2: Python backend serving API + built web app ---
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -13,6 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=web /web/dist web/dist
 
 # Config defaults only — real values come from the environment at runtime.
 ENV GOOGLE_GENAI_USE_VERTEXAI=TRUE
