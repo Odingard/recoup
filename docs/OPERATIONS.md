@@ -17,10 +17,10 @@ See `recoup_agent/.env.example`. Nothing is hardcoded — set these at deploy ti
 | `RECOUP_SAMPLE_MODE` | `1` = offline synthetic demo, no auth/Firestore. `0` in production |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Service-account JSON or path (omit on Cloud Run to use ADC) |
 | `RECOUP_CONNECTOR_TEST_STRIPE_API_KEY` | Local/dev Stripe App access token fallback for the connector |
-| `RECOUP_STRIPE_APP_CLIENT_ID` | Stripe App OAuth client ID |
-| `RECOUP_STRIPE_APP_SECRET` | Stripe App OAuth secret used to exchange/refresh access tokens |
+| `RECOUP_STRIPE_APP_CLIENT_ID` | OAuth client ID. A Stripe Connect client ID (`ca_…`, Settings → Connect → Onboarding options → OAuth) routes to `connect.stripe.com/oauth/authorize` with `scope=read_only`; a Stripe App client ID routes to the marketplace authorize endpoint |
+| `RECOUP_STRIPE_APP_SECRET` | Platform secret key (`sk_live_…`) used as Basic auth when exchanging/refreshing OAuth tokens |
 | `RECOUP_STRIPE_APP_REDIRECT_URI` | Public HTTPS OAuth callback URL for the Stripe App manifest |
-| `RECOUP_STRIPE_APP_AUTHORIZE_URL` | Stripe OAuth authorize URL (default marketplace authorize endpoint) |
+| `RECOUP_STRIPE_APP_AUTHORIZE_URL` | Override for the OAuth authorize URL (default chosen from the client ID type) |
 | `RECOUP_STRIPE_APP_TOKEN_URL` | Stripe OAuth token exchange URL |
 | `RECOUP_STRIPE_APP_STATE_SECRET` | Optional signing secret for OAuth state tokens |
 | `RECOUP_WEB_BASE_URL` | Public Recoup web app URL used after Stripe redirects back |

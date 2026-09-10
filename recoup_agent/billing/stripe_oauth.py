@@ -14,6 +14,8 @@ from typing import Any
 
 
 DEFAULT_AUTHORIZE_URL = "https://marketplace.stripe.com/oauth/v2/authorize"
+CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
+CONNECT_SCOPE = "read_only"
 DEFAULT_TOKEN_URL = "https://api.stripe.com/v1/oauth/token"
 DEFAULT_REDIRECT_URI = "https://recoup.odingard.com/api/connector/stripe/oauth/callback"
 DEFAULT_WEB_BASE_URL = "https://recoup.odingard.com"
@@ -41,8 +43,13 @@ def oauth_client_secret() -> str | None:
     return _env_value("RECOUP_STRIPE_APP_SECRET")
 
 
-def oauth_authorize_url() -> str:
-    return _env_value("RECOUP_STRIPE_APP_AUTHORIZE_URL", DEFAULT_AUTHORIZE_URL) or DEFAULT_AUTHORIZE_URL
+def is_connect_client_id(client_id: str | None) -> bool:
+    return bool(client_id) and client_id.startswith("ca_")
+
+
+def oauth_authorize_url(client_id: str | None = None) -> str:
+    default = CONNECT_AUTHORIZE_URL if is_connect_client_id(client_id) else DEFAULT_AUTHORIZE_URL
+    return _env_value("RECOUP_STRIPE_APP_AUTHORIZE_URL", default) or default
 
 
 def oauth_token_url() -> str:
@@ -109,14 +116,16 @@ def build_oauth_install_url(*, state: str, redirect_uri: str | None = None, clie
     client_id = client_id or oauth_client_id()
     if not client_id:
         raise RuntimeError("RECOUP_STRIPE_APP_CLIENT_ID is not configured.")
-    params = urllib.parse.urlencode(
-        {
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-        }
-    )
-    return f"{oauth_authorize_url()}?{params}"
+    query: dict[str, str] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    if is_connect_client_id(client_id):
+        query["response_type"] = "code"
+        query["scope"] = CONNECT_SCOPE
+    params = urllib.parse.urlencode(query)
+    return f"{oauth_authorize_url(client_id)}?{params}"
 
 
 def _post_form(url: str, data: dict[str, str], *, secret: str | None = None) -> dict[str, Any]:
