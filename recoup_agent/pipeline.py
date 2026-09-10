@@ -72,8 +72,28 @@ def compute_findings_and_review(
             needs_review.extend(review_items)
             findings.extend(reconcile(c, usage_dict, invoice_dict, period, needs_review=needs_review))
         else:
-            if key not in usage or key not in invoices:
-                continue  # missing billing data this period
+            missing_usage = key not in usage
+            missing_invoice = key not in invoices
+            if missing_usage or missing_invoice:
+                has_any = any(u["customer_id"] == c["customer_id"] for u in usage_list) or \
+                          any(i["customer_id"] == c["customer_id"] for i in invoices_list)
+                if not has_any:
+                    needs_review.append({
+                        "customer_id": c["customer_id"], "customer_name": c["customer_name"],
+                        "term": "billing_data",
+                        "reason": "No billing or usage data on file for this customer",
+                        "suggested_action": "Confirm the customer appears in the billing and usage exports under a recognizable name",
+                    })
+                else:
+                    missing = "/".join(part for part, miss in
+                                       (("usage", missing_usage), ("invoice", missing_invoice)) if miss)
+                    needs_review.append({
+                        "customer_id": c["customer_id"], "customer_name": c["customer_name"],
+                        "term": "billing_data",
+                        "reason": f"No {missing} data found for this customer in the billing period",
+                        "suggested_action": "Confirm the customer appears in the billing and usage exports under a recognizable name",
+                    })
+                continue
             findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
 
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)

@@ -25,7 +25,7 @@ def test_normalizer_maps_entitlements_and_metadata():
 
     normalized = normalize_contract_entitlements(contract)
 
-    assert normalized["customer_id"] == "acme_corp"
+    assert normalized["customer_id"] == "acme"
     assert normalized["customer_name"] == "Acme Corp"
     assert normalized["committed_minimum_monthly"] == 50000
     assert normalized["discounts"][0]["expires"] == "2026-03-31"

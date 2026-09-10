@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import re
-
+from .identity import canonical_key
 from .ingestion_doc import ContractEntitlements, Entitlement
 
 
 def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-    return slug or "unknown"
+    return canonical_key(value) or "unknown"
 
 
 def _term_meta(ent: Entitlement) -> dict:
