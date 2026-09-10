@@ -69,6 +69,7 @@ def normalize_contract(raw: dict) -> dict:
             "type": "percent",
             "value": d.get("amount_pct"),
             "applies_to": "base",
+            "starts": d.get("starts"),
             "expires": d.get("expires"),
         })
     esc_month = raw.get("escalator_effective_month")

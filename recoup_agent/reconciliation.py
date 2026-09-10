@@ -13,6 +13,8 @@ Four leakage rules:
 from __future__ import annotations
 from datetime import date
 
+from .book_loader import match_discount
+
 CONFIDENCE_THRESHOLD = 0.85
 
 
@@ -164,7 +166,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         )
     else:
         for applied in applied_discounts:
-            d = by_name.get(applied["name"])
+            d = by_name.get(match_discount(discounts, applied["name"]))
             exp = _parse(d.get("expires")) if d else None
             if exp and period_d and period_d > exp:
                 amount = applied.get("amount", 0)

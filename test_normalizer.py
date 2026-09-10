@@ -16,7 +16,7 @@ def test_normalizer_maps_entitlements_and_metadata():
             Entitlement(
                 term_type="discount",
                 value=0.05,
-                effective_date="2026-03-31",
+                end_date="2026-03-31",
                 confidence_score=0.88,
                 provenance="Section 7.4",
             ),

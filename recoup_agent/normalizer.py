@@ -51,14 +51,19 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             normalized["term_meta"]["overage_rate"] = meta
         elif ent.term_type == "discount":
             discount = {
-                "name": "extracted discount",
+                "name": ent.label or "extracted discount",
                 "type": "percent" if 0 < ent.value <= 1 else "amount",
                 "value": ent.value,
                 "applies_to": "base",
-                "expires": ent.effective_date,
+                "starts": ent.start_date,
+                "expires": ent.end_date,
                 "confidence_score": ent.confidence_score,
                 "provenance": ent.provenance,
             }
+            if ent.end_date is None and ent.effective_date:
+                normalized.setdefault("term_meta", {}).setdefault("discounts", {})["note"] = (
+                    f"discount effective_date {ent.effective_date} was set but no end date; "
+                    "not treated as an expiry")
             normalized["discounts"].append(discount)
             discount_confidences.append(float(ent.confidence_score))
             discount_provenance.append(ent.provenance)
@@ -75,9 +80,10 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         normalized["committed_minimum_monthly"] = latest["amount"]
 
     if normalized["discounts"]:
-        normalized["term_meta"]["discounts"] = {
+        normalized["term_meta"].setdefault("discounts", {})
+        normalized["term_meta"]["discounts"].update({
             "confidence": min(discount_confidences) if discount_confidences else 1.0,
             "provenance": " | ".join(discount_provenance),
-        }
+        })
 
     return normalized
