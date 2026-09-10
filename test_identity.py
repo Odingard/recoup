@@ -53,3 +53,21 @@ def test_resolver_ambiguous_returns_none():
     r = CustomerResolver(contracts)
     assert r.resolve("sterling") is None
     assert "ambiguous" in r.explain("sterling")
+
+
+def test_unmatched_csv_label_lands_in_needs_review(tmp_path):
+    from recoup_agent.ingest_csv import load_usage_csv
+
+    csv_file = tmp_path / "usage.csv"
+    csv_file.write_text(
+        "account,month,metric,qty\n"
+        "northpeak-logistics,2026-06,api_calls,1340000\n"
+        "unknown-widget-co,2026-06,seats,5\n"
+        "unknown-widget-co,2026-07,seats,7\n"
+    )
+    usage, needs_review = load_usage_csv(csv_file, CustomerResolver(_CONTRACTS))
+    assert usage == [{"customer_id": "northpeak_logistics", "period": "2026-06", "units": 1340000.0}]
+    unmatched = [i for i in needs_review if i["term"] == "customer_identity"]
+    assert len(unmatched) == 1  # once per distinct label, not per row
+    assert unmatched[0]["customer_name"] == "unknown-widget-co"
+    assert "no contract matches" in unmatched[0]["reason"]

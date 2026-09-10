@@ -118,6 +118,20 @@ def normalize_usage(raw: dict) -> dict:
     }
 
 
+def match_discount(contract_discounts: list[dict], description: str) -> str:
+    """Resolve an applied discount's display name against a contract's discounts.
+    Case-insensitive containment either direction; falls back to the single
+    contract discount, then to the raw description."""
+    desc = (description or "").lower()
+    for d in contract_discounts:
+        name = (d.get("name") or "").lower()
+        if name and (name in desc or desc in name):
+            return d["name"]
+    if len(contract_discounts) == 1:
+        return contract_discounts[0]["name"]
+    return description
+
+
 def normalize_invoice(raw: dict, contract: dict | None) -> dict:
     """Clean test set invoice (line_items) -> internal schema."""
     base_charge = 0.0
@@ -129,13 +143,8 @@ def normalize_invoice(raw: dict, contract: dict | None) -> dict:
         description = item.get("description", "")
         desc = description.lower()
         if amount < 0:
-            matched = next(
-                (d["name"] for d in contract_discounts if d["name"].lower() in desc),
-                None,
-            )
-            if matched is None and len(contract_discounts) == 1:
-                matched = contract_discounts[0]["name"]
-            discounts_applied.append({"name": matched or description, "amount": abs(amount)})
+            matched = match_discount(contract_discounts, description)
+            discounts_applied.append({"name": matched, "amount": abs(amount)})
         elif "overage" in desc:
             overage_charge += amount
         else:

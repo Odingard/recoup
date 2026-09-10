@@ -24,6 +24,7 @@ class CustomerResolver:
     """Maps a billing/usage label to a contract customer_id."""
 
     def __init__(self, contracts: list[dict]) -> None:
+        self.contracts = contracts
         self._by_key: dict[str, str] = {}
         self._token_sets: dict[str, tuple[str, ...]] = {}
         for c in contracts:

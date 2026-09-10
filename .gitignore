@@ -10,3 +10,4 @@ node_modules/
 test_*.py
 seed_db.py
 .build/
+.recoup_cache/
