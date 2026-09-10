@@ -131,7 +131,7 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
     invoices: dict[tuple[str, str], dict] = {}
     needs_review: list[dict] = []
     seen_unresolved: set[str] = set()
-    discounts_by_cid = {c["customer_id"]: (c.get("discounts") or []) for c in resolver_contracts(resolver)}
+    discounts_by_cid = {c["customer_id"]: (c.get("discounts") or []) for c in resolver.contracts}
 
     for idx, row in enumerate(rows, start=2):
         status = (row.get(cols["status"], "") if "status" in cols else "").strip().lower()
@@ -225,11 +225,9 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
         if len(metrics) > 1:
             top = max(metrics.items(), key=lambda kv: kv[1])[0]
             rec["units"] = metrics[top]
+        if float(rec["units"]).is_integer():
+            rec["units"] = int(rec["units"])
     return list(usage.values()), needs_review
-
-
-def resolver_contracts(resolver: CustomerResolver) -> list[dict]:
-    return getattr(resolver, "contracts", [])
 
 
 def classify_csv(path) -> str | None:
