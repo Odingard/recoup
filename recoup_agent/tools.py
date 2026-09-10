@@ -7,7 +7,7 @@ fallback dict keeps the tools runnable even if state access differs by ADK versi
 from __future__ import annotations
 
 from .pipeline import compute_findings, compute_findings_and_review, build_corrective_memo, append_audit
-from .synthetic_data import all_contracts
+from .book_loader import load_contracts
 from . import vertex_search
 from . import db
 
@@ -38,7 +38,7 @@ def _period_and_account(tool_context) -> tuple[str, str | None]:
 def list_contracts(tool_context) -> dict:
     """Load the customer contract and billing book; returns each customer's key billing terms."""
     period, account_id = _period_and_account(tool_context)
-    contracts = db.get_all_contracts(account_id) if account_id is not None else all_contracts()
+    contracts = db.get_all_contracts(account_id) if account_id is not None else load_contracts()
     summary = [{
         "customer_id": c["customer_id"], "customer_name": c["customer_name"],
         "committed_minimum_monthly": c.get("committed_minimum_monthly"),
@@ -87,7 +87,7 @@ def lookup_contract_clause(customer_id: str, clause_ref: str, tool_context) -> d
     falls back to the local clause record so the demo always runs.
     """
     _, account_id = _period_and_account(tool_context)
-    contracts = db.get_all_contracts(account_id) if account_id is not None else all_contracts()
+    contracts = db.get_all_contracts(account_id) if account_id is not None else load_contracts()
     contract = next((c for c in contracts if c["customer_id"] == customer_id), None)
     local_clause = (contract or {}).get("clauses", {}).get(clause_ref) or "Clause text not found."
     customer_name = (contract or {}).get("customer_name", customer_id)
