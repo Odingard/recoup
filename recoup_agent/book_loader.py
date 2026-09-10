@@ -92,6 +92,20 @@ def normalize_contract(raw: dict) -> dict:
     }
     if raw.get("amendments"):
         contract["amendments"] = raw["amendments"]
+        schedule = [{
+            "amount": tier.get("base_monthly_fee") or raw.get("minimum_monthly_commit"),
+            "effective_date": raw.get("contract_start"),
+            "provenance": "original term",
+        }]
+        for amd in raw["amendments"]:
+            if "minimum" in (amd.get("change") or "").lower():
+                schedule.append({
+                    "amount": raw.get("minimum_monthly_commit"),
+                    "effective_date": amd.get("effective"),
+                    "provenance": amd.get("change"),
+                })
+        if len(schedule) > 1:
+            contract["minimum_schedule"] = schedule
     return contract
 
 

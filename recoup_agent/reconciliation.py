@@ -32,6 +32,34 @@ def _clause_text(contract: dict, clause_ref: str, term_field: str) -> str:
     )
 
 
+def minimum_for_period(contract: dict, period: str) -> tuple[float | None, str | None]:
+    """Resolve the committed minimum in force for a YYYY-MM period.
+
+    Contracts may carry a minimum_schedule (amendments): each entry is
+    {"amount", "effective_date"|None, "provenance"}. Take the qualifying entry
+    with the latest effective_date (None counts as earliest); if none qualify,
+    use the earliest-dated entry. No schedule -> committed_minimum_monthly.
+    """
+    schedule = contract.get("minimum_schedule")
+    if not schedule:
+        return contract.get("committed_minimum_monthly"), \
+            contract.get("term_meta", {}).get("committed_minimum_monthly", {}).get("provenance")
+
+    period_start = _parse(period + "-01")
+
+    def sort_key(entry: dict):
+        d = _parse(entry.get("effective_date"))
+        return (d is not None, d or date.min)
+
+    qualifying = [e for e in schedule
+                  if (d := _parse(e.get("effective_date"))) is None or (period_start and d <= period_start)]
+    if qualifying:
+        chosen = max(qualifying, key=sort_key)
+    else:
+        chosen = min(schedule, key=sort_key)
+    return chosen.get("amount"), chosen.get("provenance")
+
+
 def _confidence(contract: dict, field: str) -> float:
     return float(contract.get("term_meta", {}).get(field, {}).get("confidence", 1.0))
 
@@ -73,7 +101,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     period_d = _parse(period + "-01")
 
     # Rule 1 - committed minimum not enforced
-    minimum = contract.get("committed_minimum_monthly")
+    minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
     if minimum is None or base is None or minimum_conf < CONFIDENCE_THRESHOLD:
@@ -89,7 +117,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             amount, "committed_minimum",
             f"Contract commits to a ${minimum:,.0f}/mo minimum; only ${base:,.0f} was billed.",
             math=f"committed minimum ${minimum:,.0f}/mo − billed ${base:,.0f}/mo = ${amount:,.0f}/mo",
-            clause_text=_clause_text(contract, "committed_minimum", "committed_minimum_monthly"))
+            clause_text=(minimum_provenance
+                         or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")))
 
     # Rule 2 - usage overage not billed
     included = contract.get("included_units")
