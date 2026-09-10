@@ -1,0 +1,7 @@
+.venv
+web/node_modules
+web/dist
+__pycache__
+.git
+.recoup_cache
+*.pyc

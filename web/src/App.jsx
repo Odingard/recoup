@@ -388,6 +388,39 @@ function App() {
     }
   }
 
+  const openAuditReport = async () => {
+    try {
+      const result = await apiRequest('/report/share', { method: 'POST' })
+      if (!result?.url) throw new Error(result?.message || 'No share URL returned')
+      window.open(result.url, '_blank', 'noopener')
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not open the audit report.')
+    }
+  }
+
+  const downloadReportPdf = async () => {
+    try {
+      const headers = {}
+      if (!isSampleMode) {
+        if (!firebaseUser) throw new Error('Please sign in first')
+        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
+      }
+      const res = await fetch(`${API_BASE}/report.pdf`, { headers })
+      if (!res.ok) throw new Error(await res.text())
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'recoup_report.pdf'
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not download the PDF report.')
+    }
+  }
+
   const chargeSuccessFee = async () => {
     try {
       const result = await apiRequest('/billing/charge-success-fee', { method: 'POST' })
@@ -845,6 +878,12 @@ function App() {
               <div className="review-actions">
                 <button className="btn-secondary" onClick={exportFindings}>
                   <Download size={16} /> Export findings (CSV)
+                </button>
+                <button className="btn-secondary" onClick={openAuditReport}>
+                  <FileText size={16} /> Audit report
+                </button>
+                <button className="btn-secondary" onClick={downloadReportPdf}>
+                  <Download size={16} /> Download PDF
                 </button>
                 <button className="btn-primary" onClick={chargeSuccessFee}>
                   <DollarSign size={16} /> Bill success fee this month

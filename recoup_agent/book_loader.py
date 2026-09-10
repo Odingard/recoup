@@ -69,6 +69,7 @@ def normalize_contract(raw: dict) -> dict:
             "type": "percent",
             "value": d.get("amount_pct"),
             "applies_to": "base",
+            "starts": d.get("starts"),
             "expires": d.get("expires"),
         })
     esc_month = raw.get("escalator_effective_month")
@@ -92,6 +93,20 @@ def normalize_contract(raw: dict) -> dict:
     }
     if raw.get("amendments"):
         contract["amendments"] = raw["amendments"]
+        schedule = [{
+            "amount": tier.get("base_monthly_fee") or raw.get("minimum_monthly_commit"),
+            "effective_date": raw.get("contract_start"),
+            "provenance": "original term",
+        }]
+        for amd in raw["amendments"]:
+            if "minimum" in (amd.get("change") or "").lower():
+                schedule.append({
+                    "amount": raw.get("minimum_monthly_commit"),
+                    "effective_date": amd.get("effective"),
+                    "provenance": amd.get("change"),
+                })
+        if len(schedule) > 1:
+            contract["minimum_schedule"] = schedule
     return contract
 
 
@@ -102,6 +117,20 @@ def normalize_usage(raw: dict) -> dict:
         "period": raw["period"],
         "units": raw.get("units_consumed"),
     }
+
+
+def match_discount(contract_discounts: list[dict], description: str) -> str:
+    """Resolve an applied discount's display name against a contract's discounts.
+    Case-insensitive containment either direction; falls back to the single
+    contract discount, then to the raw description."""
+    desc = (description or "").lower()
+    for d in contract_discounts:
+        name = (d.get("name") or "").lower()
+        if name and (name in desc or desc in name):
+            return d["name"]
+    if len(contract_discounts) == 1:
+        return contract_discounts[0]["name"]
+    return description
 
 
 def normalize_invoice(raw: dict, contract: dict | None) -> dict:
@@ -115,13 +144,8 @@ def normalize_invoice(raw: dict, contract: dict | None) -> dict:
         description = item.get("description", "")
         desc = description.lower()
         if amount < 0:
-            matched = next(
-                (d["name"] for d in contract_discounts if d["name"].lower() in desc),
-                None,
-            )
-            if matched is None and len(contract_discounts) == 1:
-                matched = contract_discounts[0]["name"]
-            discounts_applied.append({"name": matched or description, "amount": abs(amount)})
+            matched = match_discount(contract_discounts, description)
+            discounts_applied.append({"name": matched, "amount": abs(amount)})
         elif "overage" in desc:
             overage_charge += amount
         else:
