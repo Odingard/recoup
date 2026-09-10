@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .reconciliation import reconcile
 from .billing.connector_keys import resolve_connector_key
-from .synthetic_data import all_contracts, USAGE, INVOICES
+from .book_loader import load_book, load_contracts, book_periods
 from . import db
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -20,13 +20,13 @@ DATA_DIR = Path(__file__).parent / "data"
 
 def _load_book(account_id: str | None = None) -> tuple[list[dict], list[dict], list[dict]]:
     if account_id is None:
-        return all_contracts(), USAGE, INVOICES
+        return load_book()
     return db.get_all_contracts(account_id), db.get_all_usage(account_id), db.get_all_invoices(account_id)
 
 
 def _load_contracts(account_id: str | None = None) -> list[dict]:
     if account_id is None:
-        return all_contracts()
+        return load_contracts()
     return db.get_all_contracts(account_id)
 
 
@@ -101,25 +101,35 @@ def append_audit(entry: dict) -> None:
 
 
 def main() -> None:
-    period = "2026-06"
-    findings = compute_findings(period)
-    total = sum(f["monthly_recoverable"] for f in findings)
+    contracts, usage, invoices = load_book()
+    periods = book_periods(usage, invoices) or ["2026-06"]
+    grand_total = 0.0
 
-    print(f"\nRECOUP - revenue leakage reconciliation - period {period}")
-    print("=" * 60)
-    by_customer: dict[str, list[dict]] = {}
-    for f in findings:
-        by_customer.setdefault(f["customer_id"], []).append(f)
-    for cid, fs in by_customer.items():
-        memo, _ = build_corrective_memo(cid, fs, period)
-        print("\n" + memo)
+    for period in periods:
+        findings = compute_findings(period)
+        total = sum(f["monthly_recoverable"] for f in findings)
+        grand_total += total
 
-    print("\n" + "=" * 60)
-    print(f"BOOK TOTAL recoverable / month: ${total:,.2f}  (annualized ${total*12:,.2f})")
+        print(f"\nRECOUP - revenue leakage reconciliation - period {period}")
+        print("=" * 60)
+        by_customer: dict[str, list[dict]] = {}
+        for f in findings:
+            by_customer.setdefault(f["customer_id"], []).append(f)
+        for cid, fs in by_customer.items():
+            memo, _ = build_corrective_memo(cid, fs, period)
+            print("\n" + memo)
+
+        print("\n" + "=" * 60)
+        print(f"BOOK TOTAL recoverable / month: ${total:,.2f}  (annualized ${total*12:,.2f})")
+
+        for f in findings:
+            append_audit({"event": "submitted_for_approval",
+                          "finding_id": f["finding_id"], "amount": f["monthly_recoverable"]})
+
+    if len(periods) > 1:
+        print(f"\nALL PERIODS ({periods[0]}..{periods[-1]}) total recoverable: ${grand_total:,.2f}")
+
     print("\nHuman approval gate (demo): findings await sign-off before any invoice issues.")
-    for f in findings:
-        append_audit({"event": "submitted_for_approval",
-                      "finding_id": f["finding_id"], "amount": f["monthly_recoverable"]})
     print(f"Audit log written to {DATA_DIR / 'audit_log.jsonl'}")
 
 
