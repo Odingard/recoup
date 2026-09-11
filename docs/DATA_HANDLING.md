@@ -35,3 +35,16 @@ Plain-language summary of what Recoup reads, computes, and stores.
 ## Authentication
 - Access requires a verified Firebase identity. The backend derives your `account_id`
   from the verified token; there is no shared or mock login in production.
+
+## Deleting your data
+`DELETE /api/account/data` (JSON body `{"confirm": "DELETE"}`) or the "Delete
+account data" button at the bottom of the app's billing step removes everything
+stored for your account:
+
+- findings, the audit log, usage records, invoices, and contracts (all
+  Firestore subcollections under your account, then the account document)
+- the Stripe connector credential in Secret Manager
+  (`recoup-connector-{account_id}`)
+
+Not removed: Recoup's own Stripe billing records for success fees already
+charged, which we must retain for accounting.
