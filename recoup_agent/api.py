@@ -779,6 +779,24 @@ def share_report(request: Request, user: dict = Depends(verify_token)):
     return {"url": f"{base.rstrip('/')}/report/{account_id}/{token}"}
 
 
+@app.get("/api/rights/customers/{customer_id}")
+def get_customer_rights_graph(customer_id: str, user: dict = Depends(verify_token)):
+    """Per-customer Rights Graph: rights, evidence, observations, expected
+    states and discrepancies derived from that account's own book. Gated like
+    the audit report since it exposes clause text."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    contracts, usage_list, invoices_list = _load_book(account_id)
+    findings_by_id = {f["finding_id"]: f for f in _findings_for(account_id)}
+    from .rights_graph import RightsGraphService
+    graph = RightsGraphService(account_id).build_for_customer(
+        customer_id, contracts, usage_list, invoices_list,
+        findings_by_id=findings_by_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found.")
+    return graph.to_dict()
+
+
 @app.get("/report/sample")
 def sample_report_html():
     return HTMLResponse(render_html(_report_for_account(None)))
