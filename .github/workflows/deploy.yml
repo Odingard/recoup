@@ -73,7 +73,14 @@ jobs:
           write_secret recoup-stripe-app-client-id "${{ secrets.RECOUP_STRIPE_APP_CLIENT_ID }}"
           write_secret recoup-stripe-app-secret    "${{ secrets.RECOUP_STRIPE_APP_SECRET }}"
           write_secret recoup-stripe-state-secret  "${{ secrets.RECOUP_STRIPE_APP_STATE_SECRET }}"
-          write_secret firebase-sa-json            "${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}"
+          FIREBASE_SA_JSON="${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}"
+          if [ -n "$FIREBASE_SA_JSON" ]; then
+            if printf '%s' "$FIREBASE_SA_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("type")=="service_account" and d.get("private_key")'; then
+              write_secret firebase-sa-json "$FIREBASE_SA_JSON"
+            else
+              echo "::warning::FIREBASE_SERVICE_ACCOUNT_JSON is not a valid service-account JSON key; keeping the existing Secret Manager version."
+            fi
+          fi
 
       - name: Grant Cloud Run SA access to secrets
         run: |
