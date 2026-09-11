@@ -80,7 +80,7 @@ def test_document_upload_flags_unsupported_and_empty(monkeypatch, filename, cont
     assert message_fragment.lower() in payload["message"].lower()
 
 
-def test_document_upload_flags_corrupt_and_scanned_pdf(monkeypatch):
+def test_document_upload_flags_corrupt_pdf(monkeypatch):
     monkeypatch.setattr(api, "extract_entitlements", lambda *_: pytest.fail("extract_entitlements should not run"))
 
     corrupt = _client().post(
@@ -92,14 +92,56 @@ def test_document_upload_flags_corrupt_and_scanned_pdf(monkeypatch):
     assert corrupt_payload["status"] == "needs_review"
     assert "corrupt" in corrupt_payload["message"].lower() or "unreadable" in corrupt_payload["message"].lower()
 
+
+def test_document_upload_scanned_pdf_goes_through_ocr(monkeypatch):
+    calls = []
+
+    def fake_extract_entitlements(file_path):
+        calls.append(file_path)
+        return ContractEntitlements(
+            customer_name="Acme Corp",
+            entitlements=[
+                Entitlement(
+                    term_type="committed_minimum",
+                    value=50000,
+                    effective_date=None,
+                    confidence_score=0.9,
+                    provenance="Clause 2.1",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(api, "extract_entitlements", fake_extract_entitlements)
+
     scanned = _client().post(
         "/api/ingest/contract/document",
         files={"file": ("scanned.pdf", _blank_pdf_bytes(), "application/pdf")},
     )
     assert scanned.status_code == 200
     scanned_payload = scanned.json()
-    assert scanned_payload["status"] == "needs_review"
-    assert "scanned/image pdf" in scanned_payload["message"].lower()
+    assert calls, "extraction should run for a scanned PDF"
+    assert scanned_payload["status"] == "success"
+    assert scanned_payload["ocr"] is True
+    assert "ocr" in scanned_payload["message"].lower()
+
+
+def test_document_upload_oversized_scanned_pdf_rejected(monkeypatch):
+    monkeypatch.setattr(api, "extract_entitlements", lambda *_: pytest.fail("extract_entitlements should not run"))
+
+    buffer = BytesIO()
+    writer = PdfWriter()
+    for _ in range(api.MAX_SCANNED_PDF_PAGES + 1):
+        writer.add_blank_page(width=72, height=72)
+    writer.write(buffer)
+
+    res = _client().post(
+        "/api/ingest/contract/document",
+        files={"file": ("big_scan.pdf", buffer.getvalue(), "application/pdf")},
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "needs_review"
+    assert "25 pages" in payload["message"]
 
 
 def test_structured_ingest_missing_fields_returns_field_flags():
