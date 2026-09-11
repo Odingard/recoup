@@ -27,6 +27,12 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         "annual_escalator_pct": None,
         "escalator_effective_date": None,
         "term_meta": {},
+        "term_start": None,
+        "term_end": None,
+        "auto_renew_months": None,
+        "renewal_notice_days": None,
+        "committed_seats": None,
+        "seat_price": None,
     }
 
     discount_confidences: list[float] = []
@@ -82,6 +88,21 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             normalized["escalator_effective_date"] = ent.effective_date
             normalized["term_meta"]["annual_escalator_pct"] = meta
             normalized["term_meta"]["escalator_effective_date"] = meta
+        elif ent.term_type in ("term_start", "term_end"):
+            normalized[ent.term_type] = ent.effective_date
+            normalized["term_meta"][ent.term_type] = meta
+        elif ent.term_type == "auto_renewal":
+            normalized["auto_renew_months"] = int(ent.value)
+            normalized["term_meta"]["auto_renew_months"] = meta
+        elif ent.term_type == "renewal_notice_days":
+            normalized["renewal_notice_days"] = int(ent.value)
+            normalized["term_meta"]["renewal_notice_days"] = meta
+        elif ent.term_type == "committed_seats":
+            normalized["committed_seats"] = int(ent.value)
+            normalized["term_meta"]["committed_seats"] = meta
+        elif ent.term_type == "seat_price":
+            normalized["seat_price"] = ent.value
+            normalized["term_meta"]["seat_price"] = meta
 
     if normalized["minimum_schedule"]:
         # Display value = the entry with the latest effective date (None = earliest).

@@ -34,7 +34,10 @@ ANCHORS = [
             "overage": "Section 4.2 - Usage above the included 10,000 monthly units is billed at $3.50 per additional unit.",
             "discount": "Section 7.4 - A 5% onboarding discount applies to the base fee through 2026-03-31; standard rates resume thereafter.",
             "escalator": "Section 5.3 - Annual fees increase by the stated escalator on each contract anniversary.",
+            "term": "Section 9.1 - Initial term runs through 2026-12-31 and renews automatically for successive 12-month terms unless notice is given 60 days before expiry.",
         },
+        "term_start": "2025-01-01", "term_end": "2026-12-31",
+        "auto_renew_months": 12, "renewal_notice_days": 60,
     },
     {
         "customer_id": "globex", "customer_name": "Globex Inc", "contract_id": "C-GLOBEX-2025",
@@ -57,7 +60,10 @@ ANCHORS = [
             "overage": "Section 4.2 - Usage above 5,000 units billed at $5.00 per unit.",
             "discount": "",
             "escalator": "Section 5.3 - Fees increase 4% annually effective each May 1.",
+            "term": "Section 9.2 - Initial term ends 2026-10-15; either party may cancel with 45 days written notice.",
         },
+        "term_start": "2024-05-01", "term_end": "2026-10-15",
+        "renewal_notice_days": 45,
     },
 ]
 

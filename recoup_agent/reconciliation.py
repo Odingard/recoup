@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import date
 
 from .book_loader import match_discount
+from .line_roles import SEAT_RE
 
 CONFIDENCE_THRESHOLD = 0.85
 
@@ -140,6 +141,11 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
+    # Rule 6 precompute: a missing base line with other charges present is
+    # handled by Rule 6 instead of Rule 1 (avoids double-counting).
+    base_missing = base is not None and base <= 0.005
+    has_other_lines = (invoice.get("overage_charge") or 0) > 0.005 or bool(
+        invoice.get("discounts_applied") or invoice.get("credits_applied"))
     if prorated:
         pass
     elif minimum is None or base is None or minimum_conf < CONFIDENCE_THRESHOLD:
@@ -149,7 +155,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             "committed_minimum_monthly",
             f"missing or low-confidence committed minimum (confidence={minimum_conf:.2f})",
         )
-    elif minimum and base + 1e-9 < minimum:
+    elif minimum and base + 1e-9 < minimum and not (base_missing and has_other_lines):
         amount = minimum - base
         add("unenforced_minimum", "Committed monthly minimum not enforced",
             amount, "committed_minimum",
@@ -304,6 +310,70 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     confidence=min(esc_conf, esc_date_conf), term="annual_escalator_pct",
                     assumption="Escalator compounds annually on each anniversary of the effective date.",
                     extra={"escalator_steps": steps})
+
+    # Rule 5 - post-term billing (review only, no dollars)
+    term_end = _parse(contract.get("term_end"))
+    if term_end and period_d and period_d > term_end:
+        if not contract.get("auto_renew_months"):
+            _needs_review(
+                needs_review, contract, "term_end",
+                f"contract term ended {contract['term_end']}; invoices continue with no "
+                "auto-renewal clause — confirm renewal terms/rates",
+            )
+        elif esc and esc_date_raw is None:
+            _needs_review(
+                needs_review, contract, "term_end",
+                f"contract term ended {contract['term_end']} and auto-renews; escalator has no "
+                "effective date — check renewal pricing",
+            )
+
+    # Rule 6 - missing base line item (invoice carries non-base charges but no
+    # base line against a committed minimum; replaces Rule 1 for this period to
+    # avoid double-counting the same shortfall)
+    if (not prorated and minimum and minimum_conf >= CONFIDENCE_THRESHOLD
+            and base is not None and base_missing and has_other_lines):
+        add("missing_base_charge", "Committed minimum base charge missing from invoice",
+            minimum, "committed_minimum",
+            f"Contract commits to a ${minimum:,.2f}/mo minimum; the invoice has other "
+            "line items but no base charge.",
+            math=f"committed minimum ${minimum:,.2f}/mo − billed base $0.00 = ${minimum:,.2f}",
+            clause_text=(minimum_provenance
+                         or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")),
+            confidence=minimum_conf, term="committed_minimum_monthly")
+
+    # Rule 7 - seats underbilled
+    committed_seats = contract.get("committed_seats")
+    seat_price = contract.get("seat_price")
+    if committed_seats and seat_price:
+        billed_seats = invoice.get("seat_units")
+        usage_metric = (usage.get("metric") or "").lower()
+        usage_metrics = usage.get("_metrics") or {}
+        seat_metric = SEAT_RE.search(usage_metric) or any(
+            SEAT_RE.search(m or "") for m in usage_metrics)
+        actual_seats = usage.get("units") if seat_metric else None
+        if billed_seats is None:
+            _needs_review(
+                needs_review, contract, "committed_seats",
+                f"contract commits {committed_seats:g} seats at ${seat_price:,.2f} but no seat "
+                "line found on invoice",
+            )
+        else:
+            expected_seats = max(committed_seats, actual_seats or 0)
+            if expected_seats - billed_seats >= 1:
+                short = expected_seats - billed_seats
+                amount = short * seat_price
+                detail_bits = f"committed {committed_seats:g}" + (
+                    f", active {actual_seats:g}" if actual_seats is not None else "")
+                add("underbilled_seats", "Committed seats not fully billed",
+                    amount, "seats",
+                    f"Contract commits {committed_seats:g} seats at ${seat_price:,.2f}; "
+                    f"only {billed_seats:g} were billed.",
+                    math=(f"expected {expected_seats:g} seats ({detail_bits}) − billed "
+                          f"{billed_seats:g} = {short:g} × ${seat_price:,.2f} = ${amount:,.2f}"),
+                    clause_text=_clause_text(contract, "seats", "committed_seats"),
+                    confidence=min(_confidence(contract, "committed_seats"),
+                                   _confidence(contract, "seat_price")),
+                    term="committed_seats/seat_price")
 
     # Credits/refunds never offset base or discounts_applied; if this customer
     # produced findings this period, flag the credits for a human to confirm
