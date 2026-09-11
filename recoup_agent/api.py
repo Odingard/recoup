@@ -80,7 +80,14 @@ def _firebase_credential():
     if os.path.exists(raw):
         with open(raw, "r") as fh:
             raw = fh.read()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=("Server auth is misconfigured: FIREBASE_SERVICE_ACCOUNT_JSON is not valid "
+                    "service-account JSON. Sign-in works but saving data does not until it is fixed."),
+        ) from exc
     return credentials.Certificate(data)
 
 
