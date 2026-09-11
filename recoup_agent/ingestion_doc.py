@@ -31,7 +31,7 @@ def _docx_to_text(file_path: str) -> bytes:
     return "\n".join(paragraphs).encode("utf-8")
 
 class Entitlement(BaseModel):
-    term_type: str = Field(description="The type of entitlement, e.g., 'committed_minimum', 'overage_rate', 'discount', 'escalator'")
+    term_type: str = Field(description="The type of entitlement, e.g., 'committed_minimum', 'overage_rate', 'discount', 'escalator', 'term_start', 'term_end', 'auto_renewal', 'renewal_notice_days', 'committed_seats', 'seat_price'")
     value: float = Field(description="The numeric value of the entitlement. For percentages, use decimals (e.g. 0.05 for 5%).")
     label: Optional[str] = Field(None, description="Short human label for this term as it might appear on an invoice line, e.g. 'Launch promo', 'Volume discount', 'Amendment 1'.")
     effective_date: Optional[str] = Field(None, description="For committed_minimum/overage_rate/escalator terms: the date this value takes effect (ISO YYYY-MM-DD). For an amendment that changes a term, emit a SEPARATE entitlement with the amendment's effective date. Do NOT use this field for discount start or end dates.")
@@ -80,7 +80,12 @@ def extract_entitlements(file_path: str) -> ContractEntitlements:
         "(6) If overage pricing is tiered (different per-unit rates for different volume bands above the included "
         "quantity), emit one overage_tier entitlement per band with value = that band's per-unit rate and "
         "tier_up_to = the band's upper bound in units above the included quantity (null for the last band), "
-        "instead of a single overage_rate."
+        "instead of a single overage_rate. "
+        "(7) Emit term_start and term_end for the initial term's start and end dates (value=0, date in "
+        "effective_date). (8) Emit auto_renewal when the contract renews automatically (value = renewal "
+        "term length in months, 0 if unstated) and renewal_notice_days for the notice period required to "
+        "cancel before renewal. (9) For per-seat pricing, emit committed_seats (the seat/user/license "
+        "count) and seat_price (the monthly price per seat)."
     )
 
     response = client.models.generate_content(

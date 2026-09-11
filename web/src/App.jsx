@@ -138,6 +138,7 @@ function App() {
   const [connectorSubmitting, setConnectorSubmitting] = useState(false)
   const [connectorStatus, setConnectorStatus] = useState('')
   const [connectorConnection, setConnectorConnection] = useState(null)
+  const [renewals, setRenewals] = useState([])
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -230,6 +231,13 @@ function App() {
     }, 0)
     return () => window.clearTimeout(handle)
   }, [apiReady, loadConnectorStatus])
+
+  useEffect(() => {
+    if (!apiReady) return
+    apiRequest('/renewals')
+      .then((rows) => setRenewals(Array.isArray(rows) ? rows : []))
+      .catch(() => setRenewals([]))
+  }, [apiReady, apiRequest])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -1082,13 +1090,49 @@ function App() {
 
                       <div className="review-actions">
                         <button className="btn-secondary" onClick={() => confirmContract(contract.customer_id)}>
-                          <CheckCircle2 size={16} /> Confirm terms
+                          <BadgeCheck size={16} /> Confirm terms
                         </button>
                       </div>
                     </article>
                   ))}
                 </div>
               )}
+
+              <div className="contract-review-list">
+                <h3 className="queue-title">Renewal calendar</h3>
+                {renewals.length === 0 ? (
+                  <div className="empty-state glass-panel">
+                    <BadgeCheck size={22} />
+                    <p>No contracts with term data yet.</p>
+                  </div>
+                ) : (
+                  renewals.map((row) => (
+                    <article key={row.customer_id} className="glass-panel contract-review-card">
+                      <div className="review-header">
+                        <div>
+                          <h3>{row.customer_name}</h3>
+                          <p>
+                            {row.term_end ? `Term ends ${row.term_end}` : 'Term end unknown'}
+                            {row.auto_renew_months ? ` · auto-renews ${row.auto_renew_months}mo` : ''}
+                            {row.notice_deadline ? ` · notice by ${row.notice_deadline} (${row.days_to_deadline}d)` : ''}
+                          </p>
+                          {row.provenance && <small>{row.provenance}</small>}
+                        </div>
+                        <span className={`badge ${
+                          row.state === 'notice_window_open' || row.state === 'unknown' ? 'badge-pending'
+                            : row.state === 'expired' ? 'badge-rejected'
+                            : 'badge-approved'}`}>
+                          {row.state === 'notice_window_open' ? 'Notice window open'
+                            : row.state === 'upcoming_90d' ? 'Within 90 days'
+                            : row.state === 'expired' ? 'Expired'
+                            : row.state === 'unknown' ? 'Unknown term'
+                            : 'Later'}
+                        </span>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
             </section>
           )}
 
