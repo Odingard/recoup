@@ -595,6 +595,54 @@ function App() {
     }
   }
 
+  const [trueupSender, setTrueupSender] = useState('')
+
+  const downloadTrueupPdf = async (customerId, customerName) => {
+    try {
+      const headers = {}
+      if (isSampleMode) {
+        headers['X-Recoup-Sample'] = '1'
+      } else {
+        if (!firebaseUser) throw new Error('Please sign in first')
+        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
+      }
+      const params = trueupSender ? `?sender=${encodeURIComponent(trueupSender)}` : ''
+      const res = await fetch(`${API_BASE}/trueup/${customerId}.pdf${params}`, { headers })
+      if (!res.ok) throw new Error(await res.text())
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `trueup_${customerId}.pdf`
+      link.click()
+      URL.revokeObjectURL(url)
+      setStatusMessage(`True-up pack for ${customerName || customerId} downloaded.`)
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not generate the true-up pack.')
+    }
+  }
+
+  const deleteAccountData = async () => {
+    const confirm = window.prompt('Type DELETE to confirm')
+    if (confirm !== 'DELETE') {
+      if (confirm !== null) setStatusMessage('Deletion cancelled — type DELETE to confirm.')
+      return
+    }
+    try {
+      const result = await apiRequest('/account/data', { method: 'DELETE', body: { confirm } })
+      setFindings([])
+      setAllFindings([])
+      setSelectedFinding(null)
+      setUploadedContracts([])
+      setMetrics(null)
+      setStatusMessage(result?.status === 'deleted' ? 'All account data deleted.' : (result?.message || 'Deletion did not complete.'))
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Account data deletion failed.')
+    }
+  }
+
   const approvedFindings = useMemo(
     () => allFindings.filter((finding) => finding.status === 'approved'),
     [allFindings],
@@ -607,6 +655,17 @@ function App() {
     () => allFindings.filter((finding) => finding.status === 'recovered'),
     [allFindings],
   )
+
+  const trueupCustomers = useMemo(() => {
+    const statuses = isSampleMode ? ['approved', 'invoiced', 'disputed', 'open'] : ['approved', 'invoiced', 'disputed']
+    const map = {}
+    allFindings.forEach((f) => {
+      if (!statuses.includes(f.status || 'open')) return
+      const entry = map[f.customer_id] ||= { customer_id: f.customer_id, customer_name: f.customer_name || f.customer_id, total: 0 }
+      entry.total += f.monthly_recoverable || 0
+    })
+    return Object.values(map).sort((a, b) => b.total - a.total)
+  }, [allFindings, isSampleMode])
 
   const needsHumanReview = useMemo(() => {
     const unconfirmedContracts = uploadedContracts.filter((item) => !item.confirmed)
@@ -1157,6 +1216,57 @@ function App() {
                   </>
                 )}
               </div>
+
+              <div className="contract-review-list">
+                <h3 className="queue-title">True-up packs</h3>
+                <div className="recovery-form">
+                  <label>
+                    Sender (your company name)
+                    <input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} placeholder="[Your company]" />
+                  </label>
+                </div>
+                {trueupCustomers.length === 0 ? (
+                  <div className="empty-state glass-panel">
+                    <FileText size={22} />
+                    <p>No collectible findings yet — approve findings first.</p>
+                  </div>
+                ) : (
+                  trueupCustomers.map((cust) => (
+                    <article key={cust.customer_id} className="glass-panel contract-review-card">
+                      <div className="review-header">
+                        <div>
+                          <h3>{cust.customer_name}</h3>
+                          <p>{formatCurrency(cust.total)} outstanding</p>
+                        </div>
+                        <div className="review-actions">
+                          <button className="btn-secondary" onClick={() => downloadTrueupPdf(cust.customer_id, cust.customer_name)}>
+                            <Download size={16} /> Download letter + schedule (PDF)
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+
+              {!isSampleMode && (
+                <div className="contract-review-list">
+                  <h3 className="queue-title">Danger zone</h3>
+                  <article className="glass-panel contract-review-card">
+                    <div className="review-header">
+                      <div>
+                        <h3>Delete account data</h3>
+                        <p>Remove all findings, invoices, usage, contracts, audit log, and the Stripe connector key.</p>
+                      </div>
+                      <div className="review-actions">
+                        <button className="btn-danger" onClick={deleteAccountData}>
+                          Delete all Recoup data for this account
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              )}
             </section>
           )}
 

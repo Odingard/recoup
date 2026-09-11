@@ -28,7 +28,7 @@ review findings, and approve any action before billing happens.
 
 ## Customer controls
 - Revoke the app access from the Stripe dashboard at any time.
-- Request deletion of tenant data at any time.
+- Delete all tenant data at any time via `DELETE /api/account/data` (requires typing `DELETE` to confirm) or the "Delete account data" button in the app's billing step — removes findings, audit log, usage, invoices, contracts, and the connector key.
 - Nothing is automatically sent to your customers; every corrective action is approval-gated.
 
 ## Operational model
