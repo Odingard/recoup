@@ -41,13 +41,20 @@ from .success_fee import compute_metrics
 _firebase_lock = threading.Lock()
 _firebase_ready = False
 
+SAMPLE_HEADER = "X-Recoup-Sample"
+
 
 def _sample_mode_enabled() -> bool:
     return os.getenv("RECOUP_SAMPLE_MODE", "").lower() in {"1", "true", "yes", "on"}
 
 
-def _sample_identity() -> dict:
-    return {"uid": "sample", "email": "sample@recoup.local", "account_id": None}
+def _sample_identity(source: str) -> dict:
+    return {"uid": "sample", "email": "sample@recoup.local", "account_id": None,
+            "sample_source": source}
+
+
+def _is_header_sample(user: dict) -> bool:
+    return user.get("sample_source") == "header"
 
 
 def _firebase_credential():
@@ -87,9 +94,12 @@ def _ensure_firebase_app():
         _firebase_ready = True
 
 
-def verify_token(authorization: str | None = Header(default=None)):
+def verify_token(authorization: str | None = Header(default=None),
+                 x_recoup_sample: str | None = Header(default=None)):
     if _sample_mode_enabled():
-        return _sample_identity()
+        return _sample_identity("env")
+    if (x_recoup_sample or "").lower() in {"1", "true", "yes", "on"}:
+        return _sample_identity("header")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
 
@@ -374,6 +384,8 @@ def charge_success_fee(user: dict = Depends(verify_token)):
     """Bill Recoup's 20% success fee on THIS MONTH's recovered dollars through
     Recoup's own (separate) Stripe account."""
     account_id = _account_id(user)
+    if _is_header_sample(user):
+        return _needs_review_payload("Sample mode does not bill a success fee.")
     metrics = compute_metrics(_findings_for(account_id))
     result = recoup_billing.create_success_fee_invoice(
         customer_email=user.get("email"),
@@ -451,15 +463,11 @@ def share_report(request: Request, user: dict = Depends(verify_token)):
 
 @app.get("/report/sample")
 def sample_report_html():
-    if not _sample_mode_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
     return HTMLResponse(render_html(_report_for_account(None)))
 
 
 @app.get("/report/sample.pdf")
 def sample_report_pdf():
-    if not _sample_mode_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
     return Response(content=render_pdf(_report_for_account(None)), media_type="application/pdf")
 
 
@@ -559,6 +567,9 @@ def stripe_oauth_callback(code: str | None = None, state: str | None = None, err
 @app.post("/api/ingest/contract/document")
 async def ingest_contract_document(file: UploadFile = File(...), user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    if _is_header_sample(user):
+        return _needs_review_payload(
+            "Sample mode does not extract uploaded contracts; sign in to use real data.")
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
     if suffix not in VALID_UPLOAD_SUFFIXES:

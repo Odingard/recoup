@@ -155,7 +155,9 @@ function App() {
 
   const apiRequest = useCallback(async (path, options = {}) => {
     const headers = { ...(options.headers || {}) }
-    if (!isSampleMode) {
+    if (isSampleMode) {
+      headers['X-Recoup-Sample'] = '1'
+    } else {
       if (!firebaseUser) {
         throw new Error('Please sign in first')
       }
@@ -369,7 +371,9 @@ function App() {
   const exportFindings = async () => {
     try {
       const headers = {}
-      if (!isSampleMode) {
+      if (isSampleMode) {
+        headers['X-Recoup-Sample'] = '1'
+      } else {
         if (!firebaseUser) throw new Error('Please sign in first')
         headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
       }
@@ -402,7 +406,9 @@ function App() {
   const downloadReportPdf = async () => {
     try {
       const headers = {}
-      if (!isSampleMode) {
+      if (isSampleMode) {
+        headers['X-Recoup-Sample'] = '1'
+      } else {
         if (!firebaseUser) throw new Error('Please sign in first')
         headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
       }
@@ -551,7 +557,7 @@ function App() {
       {isSampleMode && (
         <div className="glass-panel mode-banner sample-banner">
           <Sparkles size={16} />
-          Sample data is active. Requests are sent without an Authorization header.
+          Sample data is active. Requests use synthetic data and are not tied to your account.
           <button className="btn-secondary" onClick={() => setSessionMode(null)}>
             Exit sample mode
           </button>
