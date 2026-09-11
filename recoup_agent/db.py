@@ -126,3 +126,28 @@ def get_all_invoices(account_id: str) -> list[dict]:
 def get_all_contracts(account_id: str) -> list[dict]:
     db = get_client()
     return [doc.to_dict() for doc in _collection(db, account_id, "contracts").stream()]
+
+
+def delete_account_data(account_id: str) -> dict[str, int]:
+    """Delete every subcollection document under the account root, then the
+    root document itself. Returns {collection_name: deleted_count}."""
+    db = get_client()
+    root = _account_root(db, account_id)
+    counts: dict[str, int] = {}
+    for coll in root.collections():
+        deleted = 0
+        batch = db.batch()
+        pending = 0
+        for doc in coll.stream():
+            batch.delete(doc.reference)
+            pending += 1
+            deleted += 1
+            if pending >= 400:
+                batch.commit()
+                batch = db.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+        counts[coll.id] = deleted
+    root.delete()
+    return counts

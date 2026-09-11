@@ -236,6 +236,24 @@ def store_connector_key(account_id: str, key: str | dict[str, Any]) -> dict[str,
         }
 
 
+def delete_connector_key(account_id: str) -> bool:
+    """Delete the tenant's connector secret from Secret Manager. True if a
+    secret was deleted, False if none existed or Secret Manager is
+    unavailable. No Firestore-side connector metadata is stored by this
+    module, so nothing else needs removing."""
+    project_id = _project_id()
+    client = _client_instance()
+    if not project_id or client is None or not _is_valid_account_id(account_id):
+        return False
+    try:
+        client.delete_secret(request={"name": _secret_path(project_id, _secret_name(account_id))})
+        return True
+    except NotFound:
+        return False
+    except Exception:
+        return False
+
+
 def get_connector_status(account_id: str | None) -> dict[str, Any]:
     if account_id is None:
         return {

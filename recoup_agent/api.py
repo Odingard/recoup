@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -21,7 +22,11 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 
 from . import db
-from .billing.connector_keys import get_connector_status, store_connector_key
+from .billing.connector_keys import (
+    delete_connector_key,
+    get_connector_status,
+    store_connector_key,
+)
 from .billing import recoup_billing
 from .billing.stripe_oauth import (
     build_oauth_install_url,
@@ -38,6 +43,9 @@ from .recovery import assert_transition
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
+from .trueup import build_trueup, render_trueup_pdf
+
+logger = logging.getLogger(__name__)
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -716,6 +724,58 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+
+def _trueup_pack(user: dict, customer_id: str, sender: str | None, include_open: bool):
+    account_id = _account_id(user)
+    if account_id is None:
+        contracts, _usage, _invoices = _load_book(None)
+        findings = _offline_findings()
+        include_open = True  # sample findings are all 'open'
+    else:
+        contracts = db.get_all_contracts(account_id)
+        findings = db.get_all_findings(account_id)
+    pack = build_trueup(customer_id, findings, contracts,
+                        sender=sender, include_open=include_open)
+    if pack is None:
+        raise HTTPException(status_code=404,
+                            detail=f"No collectible findings for customer '{customer_id}'.")
+    return pack
+
+
+@app.get("/api/trueup/{customer_id}.pdf")
+def get_trueup_pdf(customer_id: str, sender: str | None = None, include_open: bool = False,
+                   user: dict = Depends(verify_token)):
+    pack = _trueup_pack(user, customer_id, sender, include_open)
+    return Response(
+        content=render_trueup_pdf(pack), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="trueup_{customer_id}.pdf"'})
+
+
+@app.get("/api/trueup/{customer_id}")
+def get_trueup(customer_id: str, sender: str | None = None, include_open: bool = False,
+               user: dict = Depends(verify_token)):
+    """JSON true-up pack for one customer (letter + schedule rows)."""
+    return _trueup_pack(user, customer_id, sender, include_open)
+
+
+class DeleteConfirm(BaseModel):
+    confirm: str = ""
+
+
+@app.delete("/api/account/data")
+def delete_account_data(payload: DeleteConfirm, user: dict = Depends(verify_token)):
+    """Self-serve deletion of everything stored for this account."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no account data to delete.")
+    if payload.confirm != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to confirm")
+    deleted = db.delete_account_data(account_id)
+    connector_deleted = delete_connector_key(account_id)
+    logger.info("Deleted all data for account %s", account_id)
+    return {"status": "deleted", "account_id": account_id, "deleted": deleted,
+            "connector_key_deleted": connector_deleted}
 
 
 @app.get("/app", include_in_schema=False)
