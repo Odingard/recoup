@@ -103,7 +103,6 @@ jobs:
             --project $PROJECT_ID \
             --platform managed \
             --allow-unauthenticated \
-            --clear-env-vars \
             --set-env-vars "\
           GOOGLE_GENAI_USE_VERTEXAI=TRUE,\
           GOOGLE_CLOUD_PROJECT=$PROJECT_ID,\
