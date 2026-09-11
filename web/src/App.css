@@ -79,6 +79,16 @@
   text-decoration: underline;
 }
 
+.template-links a {
+  color: var(--muted, #9aa3af);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--muted, #9aa3af);
+}
+
+.template-links a:hover {
+  color: var(--text, #e5e7eb);
+}
+
 .recovery-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

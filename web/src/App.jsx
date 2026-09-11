@@ -790,7 +790,7 @@ function App() {
                       ))}
                     </ul>
                   )}
-                  <p className="muted">
+                  <p className="muted template-links">
                     Export templates:{' '}
                     <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}
                     <a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}

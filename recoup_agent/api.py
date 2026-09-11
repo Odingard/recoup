@@ -31,6 +31,7 @@ from .billing.stripe_oauth import (
     oauth_web_base_url,
     parse_oauth_state,
 )
+from .ingest_bulk import ingest_files
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
@@ -38,6 +39,7 @@ from .recovery import assert_transition
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
+from .templates import TEMPLATES
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -744,8 +746,6 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
 async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(verify_token)):
     """Ingest many files at once: contracts (incl. scans/images), billing/usage
     CSVs, or ZIP archives containing them."""
-    from .ingest_bulk import ingest_files
-
     account_id = _account_id(user)
     if account_id is None:
         return _needs_review_payload("Sample mode does not ingest uploads; sign in to use real data.")
@@ -780,8 +780,6 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
 @app.get("/api/templates/{system}/{kind}.csv", include_in_schema=False)
 def export_template(system: str, kind: str):
     """Downloadable CSV template in a billing system's native column layout."""
-    from .templates import TEMPLATES
-
     spec = TEMPLATES.get(system.lower(), {}).get(kind.lower())
     if spec is None:
         raise HTTPException(status_code=404, detail="Unknown template; use quickbooks|xero|stripe + invoices|usage.")
