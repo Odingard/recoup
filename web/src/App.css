@@ -67,6 +67,18 @@
   margin-top: 24px;
 }
 
+.back-to-site {
+  display: inline-block;
+  margin-top: 18px;
+  color: var(--muted, #9aa3af);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.back-to-site:hover {
+  text-decoration: underline;
+}
+
 .auth-button,
 .action-button,
 .stepper-item,

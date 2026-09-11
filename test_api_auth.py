@@ -93,3 +93,32 @@ def test_sample_header_serves_synthetic_without_env(monkeypatch):
     report = client.get("/report/sample")
     assert report.status_code == 200
     assert "text/html" in report.headers["content-type"]
+
+
+def test_stripe_oauth_success_url_lands_on_app():
+    url = api._stripe_oauth_success_url(
+        {"account_id": "a1"}, {"stripe_account_id": "acct_1"}
+    )
+    from recoup_agent.billing.stripe_oauth import oauth_web_base_url
+
+    assert url.startswith(oauth_web_base_url().rstrip("/") + "/app/?")
+    assert "stripe_connect=success" in url
+
+
+def test_stripe_oauth_error_url_lands_on_app():
+    url = api._stripe_oauth_error_url("denied", account_id="a1")
+    from recoup_agent.billing.stripe_oauth import oauth_web_base_url
+
+    assert url.startswith(oauth_web_base_url().rstrip("/") + "/app/?")
+    assert "stripe_connect=error" in url
+
+
+def test_app_path_redirects_to_spa():
+    import pytest
+
+    if not api._web_dist.is_dir():
+        pytest.skip("web/dist not built")
+    client = TestClient(api.app)
+    resp = client.get("/app", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/app/"

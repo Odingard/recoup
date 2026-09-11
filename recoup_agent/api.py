@@ -239,7 +239,7 @@ def _stripe_oauth_success_url(payload: dict[str, Any], store_result: dict[str, A
         "account_id": payload.get("account_id", ""),
         "stripe_account_id": store_result.get("stripe_account_id", "") or "",
     }
-    return f"{oauth_web_base_url().rstrip('/')}/?{urlencode(params)}"
+    return f"{oauth_web_base_url().rstrip('/')}/app/?{urlencode(params)}"
 
 
 def _stripe_oauth_error_url(message: str, *, account_id: str | None = None) -> str:
@@ -249,7 +249,7 @@ def _stripe_oauth_error_url(message: str, *, account_id: str | None = None) -> s
     }
     if account_id:
         params["account_id"] = account_id
-    return f"{oauth_web_base_url().rstrip('/')}/?{urlencode(params)}"
+    return f"{oauth_web_base_url().rstrip('/')}/app/?{urlencode(params)}"
 
 
 def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
@@ -613,6 +613,12 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+
+@app.get("/app", include_in_schema=False)
+def app_without_trailing_slash() -> RedirectResponse:
+    """Ensure /app serves the SPA even when the static mount doesn't redirect."""
+    return RedirectResponse("/app/", status_code=307)
 
 
 # Serve the built web app (if present) at /; mounted LAST so API routes win.
