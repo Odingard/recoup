@@ -89,7 +89,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
 
     def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str,
             math: str = "", clause_text: str = "", assumption: str | None = None,
-            confidence: float = 1.0, term: str = "") -> None:
+            confidence: float = 1.0, term: str = "", extra: dict | None = None) -> None:
         nonlocal seq
         if not (clause_text or "").strip():
             _needs_review(
@@ -110,6 +110,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         }
         if assumption:
             finding["assumption"] = assumption
+        if extra:
+            finding.update(extra)
         findings.append(finding)
         seq += 1
 
@@ -216,18 +218,29 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 "annual_escalator_pct",
                 "escalator rule requires both base charge and committed minimum to be present",
             )
-        elif period_d and period_d >= esc_date and abs(base - minimum) < 0.01:
-            expected_base = minimum * (1 + esc)
-            if expected_base - base > 0.01:
-                amount = expected_base - base
+        elif period_d and period_d >= esc_date:
+            steps = (1 + (period_d.year - esc_date.year)
+                     - (1 if (period_d.month, period_d.day) < (esc_date.month, esc_date.day) else 0))
+            expected_base = minimum * (1 + esc) ** steps
+            baseline = max(base, minimum)
+            amount = expected_base - baseline
+            if amount > 0.01:
+                if steps == 1:
+                    math = (f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
+                            f"− billed ${baseline:,.0f}/mo = ${amount:,.0f}/mo")
+                else:
+                    math = (f"${minimum:,.0f}/mo × (1 + {esc:.0%})^{steps} = ${expected_base:,.2f}/mo "
+                            f"− billed ${baseline:,.2f}/mo = ${amount:,.2f}/mo")
+                ann = "anniversary" if steps == 1 else "anniversaries"
                 add("missed_escalator", "Annual price escalator not applied",
                     amount, "escalator",
-                    f"{esc*100:.0f}% escalator effective {contract['escalator_effective_date']} "
-                    f"not applied; base should be ${expected_base:,.0f} vs ${base:,.0f} billed.",
-                    math=(f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
-                         f"− billed ${base:,.0f}/mo = ${amount:,.0f}/mo"),
+                    f"{esc*100:.0f}% escalator, {steps} {ann} since "
+                    f"{contract['escalator_effective_date']}; base should be "
+                    f"${expected_base:,.2f} vs ${baseline:,.2f} billed.",
+                    math=math,
                     clause_text=_clause_text(contract, "escalator", "annual_escalator_pct"),
                     confidence=min(esc_conf, esc_date_conf), term="annual_escalator_pct",
-                    assumption="Applies a single escalator step; earlier anniversaries are not compounded.")
+                    assumption="Escalator compounds annually on each anniversary of the effective date.",
+                    extra={"escalator_steps": steps})
 
     return findings

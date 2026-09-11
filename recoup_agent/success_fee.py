@@ -21,11 +21,16 @@ def compute_metrics(findings: list[dict], *, now: datetime | None = None) -> dic
     current_month = now.strftime("%Y-%m")
 
     recovered = [f for f in findings if f.get("status") == "recovered"]
-    active = [f for f in findings if f.get("status") != "rejected"]
+    active = [f for f in findings if f.get("status") not in {"rejected", "written_off"}]
+    awaiting_payment = [f for f in findings if f.get("status") in {"invoiced", "disputed"}]
+    written_off = [f for f in findings if f.get("status") == "written_off"]
 
-    recovered_to_date = sum(float(f.get("monthly_recoverable", 0) or 0) for f in recovered)
+    def _recovered_dollars(f: dict) -> float:
+        return float(f.get("recovered_amount") or f.get("monthly_recoverable", 0) or 0)
+
+    recovered_to_date = sum(_recovered_dollars(f) for f in recovered)
     recovered_this_month = sum(
-        float(f.get("monthly_recoverable", 0) or 0)
+        _recovered_dollars(f)
         for f in recovered
         if _month(f.get("recovered_at")) == current_month
     )
@@ -40,4 +45,8 @@ def compute_metrics(findings: list[dict], *, now: datetime | None = None) -> dic
         "success_fee_to_date": round(recovered_to_date * SUCCESS_FEE_PCT, 2),
         "success_fee_this_month": round(recovered_this_month * SUCCESS_FEE_PCT, 2),
         "potential_monthly_recoverable": round(potential, 2),
+        "invoiced_awaiting_payment": round(
+            sum(float(f.get("monthly_recoverable", 0) or 0) for f in awaiting_payment), 2),
+        "written_off": round(
+            sum(float(f.get("monthly_recoverable", 0) or 0) for f in written_off), 2),
     }
