@@ -208,7 +208,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     f"× {_fmt_rate(rate)} = ${expected_overage:,.2f}/mo")
         if expected_overage - billed_overage > 0.01:
             amount = expected_overage - billed_overage
-            math += f" − ${billed_overage:,.2f} already billed = ${amount:,.2f}/mo"
+            if billed_overage > 0.005:
+                math += f" − ${billed_overage:,.2f} already billed = ${amount:,.2f}/mo"
             if tiers:
                 tier_provenance = next((t.get("provenance") for t in tiers if t.get("provenance")), "")
                 add("unbilled_overage", "Usage overage not billed",
