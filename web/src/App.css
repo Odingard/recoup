@@ -51,6 +51,12 @@
 }
 
 .auth-note,
+.muted-copy {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
 .info-box,
 .review-callout,
 .mode-banner {

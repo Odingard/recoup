@@ -128,6 +128,32 @@ def get_all_contracts(account_id: str) -> list[dict]:
     return [doc.to_dict() for doc in _collection(db, account_id, "contracts").stream()]
 
 
+def get_account_billing(account_id: str) -> dict | None:
+    db = get_client()
+    doc = _account_root(db, account_id).get()
+    if not doc.exists:
+        return None
+    return (doc.to_dict() or {}).get("billing")
+
+
+def set_account_billing(account_id: str, billing: dict) -> None:
+    db = get_client()
+    _account_root(db, account_id).set({"billing": billing}, merge=True)
+
+
+def update_finding_fields(account_id: str, finding_id: str, fields: dict, event_name: str):
+    """Merge fields into a finding without a status change; audit-logged."""
+    db = get_client()
+    _collection(db, account_id, "findings").document(finding_id).update(fields)
+    entry = {
+        "finding_id": finding_id,
+        "event": event_name,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "details": fields,
+    }
+    _collection(db, account_id, "audit_log").document().set(entry)
+
+
 def delete_account_data(account_id: str) -> dict[str, int]:
     """Delete every subcollection document under the account root, then the
     root document itself. Returns {collection_name: deleted_count}."""
