@@ -1,0 +1,45 @@
+{
+  "customer_name": "VOLT ROBOTICS",
+  "entitlements": [
+    {
+      "term_type": "committed_minimum",
+      "value": 9000.0,
+      "label": null,
+      "effective_date": "2024-11-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Minimum monthly commitment: $9,000."
+    },
+    {
+      "term_type": "included_units",
+      "value": 30.0,
+      "label": null,
+      "effective_date": "2024-11-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Base platform fee: $9,000/month, includes 30 robots."
+    },
+    {
+      "term_type": "overage_rate",
+      "value": 250.0,
+      "label": null,
+      "effective_date": "2024-11-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Additional robots $250/mo."
+    },
+    {
+      "term_type": "committed_minimum",
+      "value": 6000.0,
+      "label": "Amendment AMD-VOLT-001",
+      "effective_date": "2025-09-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "the minimum monthly commitment in the original MSA is hereby reduced from $9,000 to $6,000, effective September 1, 2025."
+    }
+  ]
+}

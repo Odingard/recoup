@@ -1,0 +1,126 @@
+{
+  "invoices": [
+    {
+      "invoice_id": "INV-NP-2606",
+      "customer_id": "northpeak",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "API Calls - base tier", "amount": 4000.00}
+      ],
+      "total_billed": 4000.00,
+      "note": "LEAK: 340,000 overage calls x $0.0025 = $850 never billed"
+    },
+    {
+      "invoice_id": "INV-NP-2607",
+      "customer_id": "northpeak",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "API Calls - base tier", "amount": 4000.00}
+      ],
+      "total_billed": 4000.00,
+      "note": "LEAK: 512,000 overage calls x $0.0025 = $1,280 never billed"
+    },
+    {
+      "invoice_id": "INV-ST-2606",
+      "customer_id": "sterling",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "Practice Suite - Enterprise (40 seats)", "amount": 6000.00}
+      ],
+      "total_billed": 6000.00,
+      "note": "LEAK: 4% escalator effective 2026-03 not applied; should be 6240.00, under-billed 240.00/mo"
+    },
+    {
+      "invoice_id": "INV-ST-2607",
+      "customer_id": "sterling",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "Practice Suite - Enterprise (40 seats)", "amount": 6000.00}
+      ],
+      "total_billed": 6000.00,
+      "note": "LEAK: same missed escalator, 240.00 under-billed"
+    },
+    {
+      "invoice_id": "INV-CA-2606",
+      "customer_id": "cascade",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "Data Platform - Growth (25 seats)", "amount": 5000.00},
+        {"description": "Launch promo -20%", "amount": -1000.00}
+      ],
+      "total_billed": 4000.00,
+      "note": "LEAK: promo expired 2025-11-30 but 20% discount still applied; 1000.00/mo given away"
+    },
+    {
+      "invoice_id": "INV-CA-2607",
+      "customer_id": "cascade",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "Data Platform - Growth (25 seats)", "amount": 5000.00},
+        {"description": "Launch promo -20%", "amount": -1000.00}
+      ],
+      "total_billed": 4000.00,
+      "note": "LEAK: same expired promo, 1000.00 given away"
+    },
+    {
+      "invoice_id": "INV-ME-2606",
+      "customer_id": "meridian",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "Supply Chain Cloud (6 facilities @ pro-rated)", "amount": 4800.00}
+      ],
+      "total_billed": 4800.00,
+      "note": "LEAK: billed by active facilities (6) instead of enforcing 8000 floor; 3200.00 under-billed"
+    },
+    {
+      "invoice_id": "INV-ME-2607",
+      "customer_id": "meridian",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "Supply Chain Cloud (6 facilities @ pro-rated)", "amount": 4800.00}
+      ],
+      "total_billed": 4800.00,
+      "note": "LEAK: same floor breach, 3200.00 under-billed"
+    },
+    {
+      "invoice_id": "INV-VO-2606",
+      "customer_id": "volt",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "Fleet Ops Platform - amended minimum", "amount": 6000.00}
+      ],
+      "total_billed": 6000.00,
+      "note": "CORRECT: amendment lowered min to 6000. Billing 6000 is right. Should NOT be flagged."
+    },
+    {
+      "invoice_id": "INV-VO-2607",
+      "customer_id": "volt",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "Fleet Ops Platform - amended minimum", "amount": 6000.00}
+      ],
+      "total_billed": 6000.00,
+      "note": "CORRECT: billing matches amended minimum."
+    },
+    {
+      "invoice_id": "INV-HA-2606",
+      "customer_id": "harbor",
+      "period": "2026-06",
+      "line_items": [
+        {"description": "Logistics API - Standard base", "amount": 3000.00}
+      ],
+      "total_billed": 3000.00,
+      "note": "CORRECT: 480k calls under 500k tier, no overage. Clean."
+    },
+    {
+      "invoice_id": "INV-HA-2607",
+      "customer_id": "harbor",
+      "period": "2026-07",
+      "line_items": [
+        {"description": "Logistics API - Standard base", "amount": 3000.00}
+      ],
+      "total_billed": 3000.00,
+      "note": "CORRECT: 495k calls under tier. Clean."
+    }
+  ]
+}

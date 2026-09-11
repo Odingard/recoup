@@ -1,0 +1,45 @@
+{
+  "customer_name": "STERLING DENTAL GROUP",
+  "entitlements": [
+    {
+      "term_type": "committed_minimum",
+      "value": 6000.0,
+      "label": null,
+      "effective_date": "2024-03-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Customer subscribes to the Practice Suite (Enterprise edition) for forty (40) provider seats at a monthly subscription of $6,000.00, billed monthly."
+    },
+    {
+      "term_type": "included_units",
+      "value": 40.0,
+      "label": "provider seats",
+      "effective_date": "2024-03-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Customer subscribes to the Practice Suite (Enterprise edition) for forty (40) provider seats at a monthly subscription of $6,000.00, billed monthly."
+    },
+    {
+      "term_type": "overage_rate",
+      "value": 150.0,
+      "label": "per additional seat",
+      "effective_date": "2024-03-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Additional seats beyond forty are $150 each per month."
+    },
+    {
+      "term_type": "escalator",
+      "value": 0.04,
+      "label": null,
+      "effective_date": "2025-03-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Beginning on the first anniversary of the Commencement Date and on each anniversary thereafter, the then-current monthly subscription fee shall increase by four percent (4%)."
+    }
+  ]
+}

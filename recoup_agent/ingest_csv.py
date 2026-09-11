@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .book_loader import match_discount
+from .line_roles import classify_line
 from .identity import CustomerResolver
 
 
@@ -159,14 +160,25 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             "customer_id": cid, "period": period,
             "base_charge": 0.0, "overage_charge": 0.0,
             "discounts_applied": [], "amount_billed": 0.0,
+            "tax_excluded": 0.0, "credits_applied": [],
+            "prorated": False, "proration_amount": 0.0,
         })
         if "invoice_id" in cols and row.get(cols["invoice_id"]) and "invoice_id" not in inv:
             inv["invoice_id"] = row[cols["invoice_id"]]
         inv["amount_billed"] += amount
-        if amount < 0:
+        role = classify_line(description, amount,
+                             contract_discounts=discounts_by_cid.get(cid, []))
+        if role == "proration":
+            inv["prorated"] = True
+            inv["proration_amount"] += amount
+        elif role == "tax":
+            inv["tax_excluded"] += amount
+        elif role == "credit":
+            inv["credits_applied"].append({"description": description, "amount": abs(amount)})
+        elif role == "discount":
             name = match_discount(discounts_by_cid.get(cid, []), description)
             inv["discounts_applied"].append({"name": name, "amount": abs(amount)})
-        elif "overage" in description.lower():
+        elif role == "overage":
             inv["overage_charge"] += amount
         else:
             inv["base_charge"] += amount

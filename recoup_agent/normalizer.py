@@ -31,6 +31,8 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
 
     discount_confidences: list[float] = []
     discount_provenance: list[str] = []
+    tier_confidences: list[float] = []
+    tier_provenance: list[str] = []
 
     for ent in contract.entitlements:
         meta = _term_meta(ent)
@@ -49,6 +51,14 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         elif ent.term_type == "overage_rate":
             normalized["overage_rate"] = ent.value
             normalized["term_meta"]["overage_rate"] = meta
+        elif ent.term_type == "overage_tier":
+            normalized.setdefault("_overage_tiers", []).append({
+                "up_to": ent.tier_up_to,
+                "rate": ent.value,
+                "provenance": ent.provenance,
+            })
+            tier_confidences.append(float(ent.confidence_score))
+            tier_provenance.append(ent.provenance)
         elif ent.term_type == "discount":
             discount = {
                 "name": ent.label or "extracted discount",
@@ -78,6 +88,15 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         latest = max(normalized["minimum_schedule"],
                      key=lambda e: (e.get("effective_date") is not None, e.get("effective_date") or ""))
         normalized["committed_minimum_monthly"] = latest["amount"]
+
+    tiers = normalized.pop("_overage_tiers", [])
+    if tiers:
+        normalized["overage_tiers"] = sorted(
+            tiers, key=lambda t: (t["up_to"] is None, t["up_to"] or 0))
+        normalized["term_meta"]["overage_tiers"] = {
+            "confidence": min(tier_confidences) if tier_confidences else 1.0,
+            "provenance": tier_provenance[0] if tier_provenance else "",
+        }
 
     if normalized["discounts"]:
         normalized["term_meta"].setdefault("discounts", {})

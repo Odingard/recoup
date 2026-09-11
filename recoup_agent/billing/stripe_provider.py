@@ -230,14 +230,20 @@ class StripeBillingProvider(BillingProvider):
                     price = _value(line, "price")
                     recurring = _value(price, "recurring")
                     usage_type = _value(recurring, "usage_type") or _value(_value(line, "plan"), "usage_type")
-                    line_role = "unknown"
-                    if usage_type == "licensed" or _value(line, "type") == "subscription":
-                        line_role = "base"
-                    elif usage_type == "metered":
-                        line_role = "overage"
-                    elif _value(line, "amount", 0) < 0 or _value(line, "discount_amounts") or "discount" in (_value(line, "description", "") or "").lower():
+                    from ..line_roles import classify_line
+                    description = _value(line, "description", "") or ""
+                    line_role = classify_line(
+                        description,
+                        float(_value(line, "amount", 0) or 0),
+                        usage_type=usage_type,
+                        proration=bool(_value(line, "proration", False)),
+                    )
+                    if line_role == "base" and (
+                        _value(line, "discount_amounts") or "discount" in description.lower()
+                    ):
                         line_role = "discount"
                     line_items.append({
+                        "proration": bool(_value(line, "proration", False)),
                         "amount": _value(line, "amount", 0),
                         "description": _value(line, "description", ""),
                         "currency": _value(line, "currency"),
@@ -309,6 +315,10 @@ def map_stripe_billing_to_reconcile_inputs(
         "base_charge": 0.0,
         "overage_charge": 0.0,
         "discounts_applied": [],
+        "tax_excluded": 0.0,
+        "credits_applied": [],
+        "prorated": False,
+        "proration_amount": 0.0,
     }
 
     period_invoices = [invoice for invoice in invoices if invoice.period == period]
@@ -323,9 +333,17 @@ def map_stripe_billing_to_reconcile_inputs(
     for invoice in period_invoices:
         for line in invoice.line_items:
             role = line.get("line_role", "unknown")
-            amount = abs(float(line.get("amount", 0))) / 100.0
+            signed = float(line.get("amount", 0)) / 100.0
+            amount = abs(signed)
             description = line.get("description") or line.get("price_nickname") or line.get("price_id") or "Stripe line item"
-            if role == "base":
+            if role == "proration":
+                invoice_dict["prorated"] = True
+                invoice_dict["proration_amount"] += signed
+            elif role == "tax":
+                invoice_dict["tax_excluded"] += amount
+            elif role == "credit":
+                invoice_dict["credits_applied"].append({"description": description, "amount": amount})
+            elif role == "base":
                 invoice_dict["base_charge"] += amount
             elif role == "overage":
                 invoice_dict["overage_charge"] += amount
