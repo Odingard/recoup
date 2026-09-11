@@ -142,13 +142,36 @@ def verify_token(authorization: str | None = Header(default=None),
 app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform")
 assert_key_separation()
 
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("RECOUP_ALLOWED_ORIGINS", "").split(",") if o.strip()] or [
+    "https://recoup.odingard.com",
+    "https://recoup-921318314706.us-central1.run.app",
+    "http://localhost:5173",
+    "http://localhost:8080",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": os.getenv("RECOUP_GIT_SHA", "dev")}
 
 
 _RECOVERY_PATHS = ("/invoiced", "/recovered", "/disputed", "/written-off")
@@ -230,6 +253,8 @@ class ContractPayload(BaseModel):
 VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 MAX_SCANNED_PDF_PAGES = 25
+MAX_BULK_FILES = 50
+MAX_BULK_FILE_BYTES = 25 * 1024 * 1024  # 25 MB per uploaded file
 DEFAULT_PERIOD = "2026-06"
 
 
@@ -983,12 +1008,24 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
     if account_id is None:
         return _needs_review_payload("Sample mode does not ingest uploads; sign in to use real data.")
 
+    if len(files) > MAX_BULK_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many files in one upload ({len(files)}). "
+                   f"Send at most {MAX_BULK_FILES} files, or zip them.")
     items: list[tuple[str, bytes]] = []
     for f in files:
         try:
-            items.append((f.filename or "upload", await f.read()))
+            content = await f.read()
         except Exception:
             return _needs_review_payload("Could not read an uploaded file.")
+        if len(content) > MAX_BULK_FILE_BYTES:
+            mb = len(content) / (1024 * 1024)
+            raise HTTPException(
+                status_code=413,
+                detail=f"'{f.filename or 'upload'}' is {mb:.0f} MB; the per-file "
+                       "limit is 25 MB. Compress or split it.")
+        items.append((f.filename or "upload", content))
 
     result = ingest_files(items, db.get_all_contracts(account_id), extract_entitlements)
     for contract in result.contracts:

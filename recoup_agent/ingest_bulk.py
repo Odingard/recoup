@@ -119,6 +119,7 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                     "customer_id": None, "customer_name": name,
                     "term": "contract_extraction",
                     "reason": "No contract terms extracted; enter terms manually.",
+                    "suggested_action": "Open the contract, enter the terms manually in Step 1, or upload a clearer/searchable copy.",
                 })
                 continue
             normalized = normalize_contract_entitlements(extracted)
