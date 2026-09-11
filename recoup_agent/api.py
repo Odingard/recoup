@@ -354,7 +354,7 @@ def _proof_unlocked(user: dict) -> bool:
 
 
 def _redact_if_locked(user: dict, findings: list[dict]) -> list[dict]:
-    if _proof_unlocked(user):
+    if not findings or _proof_unlocked(user):
         return findings
     redacted = []
     for f in findings:
