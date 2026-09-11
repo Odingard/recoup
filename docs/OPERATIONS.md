@@ -65,6 +65,22 @@ gcloud run deploy recoup --source . \
 Store Stripe/Firebase secrets in **Secret Manager** and mount them with
 `--set-secrets`; never bake them into the image.
 
+The service serves two surfaces from the same origin: a static marketing page at
+`/` and the React app at `/app` (`/app` 307-redirects to `/app/`). The Stripe
+OAuth callback stays at `/api/connector/stripe/oauth/callback`; after the
+handshake the browser lands on `/app/?stripe_connect=success|error`.
+
+### Custom domain
+
+```bash
+gcloud beta run domain-mappings create --service recoup \
+  --domain recoup.odingard.com --region us-central1
+```
+
+The domain must first be verified in Search Console by the project owner. Then
+point DNS at Google: a CNAME `recoup → ghs.googlehosted.com` (in Cloudflare, keep
+the record DNS-only / grey cloud).
+
 ## 4. Customer onboarding flow
 
 1. **Sign in** with Firebase (Google). The account is isolated in Firestore under

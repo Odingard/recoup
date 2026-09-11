@@ -245,7 +245,7 @@ function App() {
     return () => window.clearTimeout(handle)
   }, [])
 
-  const sampleModeLogin = async () => {
+  const sampleModeLogin = useCallback(async () => {
     setLoadingAuth(true)
     try {
       await signOut(auth)
@@ -254,7 +254,16 @@ function App() {
     }
     setSessionMode('sample')
     setLoadingAuth(false)
-  }
+  }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('sample') !== '1' || sessionMode !== null) return
+    const handle = window.setTimeout(() => {
+      void sampleModeLogin()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [sessionMode, sampleModeLogin])
 
   const handleGoogleLogin = async () => {
     const provider = new GoogleAuthProvider()
@@ -516,6 +525,8 @@ function App() {
               Try with sample data
             </button>
           </div>
+
+          <a className="back-to-site" href="/">&larr; Recoup</a>
         </div>
       </div>
     )

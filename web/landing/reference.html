@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recoup — the revenue you're already owed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#12161C;
+    --paper:#F7F5F0;
+    --green:#1F8A5B;
+    --green-deep:#156A45;
+    --slate:#5B6672;
+    --rule:#D8D3C8;
+    --rule-ink:#2A313B;
+    --paper-dim:#ECE8DF;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--ink);
+    color:var(--paper);
+    font-family:'Inter',system-ui,sans-serif;
+    font-size:17px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px}
+
+  /* ---- top bar ---- */
+  header{border-bottom:1px solid var(--rule-ink)}
+  .bar{display:flex;align-items:center;justify-content:space-between;height:72px}
+  .mark{display:flex;align-items:center;gap:11px;font-family:'Fraunces',serif;font-weight:600;font-size:22px;letter-spacing:-.01em}
+  .mark .glyph{
+    width:30px;height:30px;border-radius:7px;
+    background:var(--green);color:var(--paper);
+    display:grid;place-items:center;font-size:16px;font-family:'Inter';font-weight:600;
+  }
+  .bar nav{display:flex;align-items:center;gap:28px}
+  .bar nav a{color:var(--slate);text-decoration:none;font-size:15px;font-weight:500}
+  .bar nav a:hover{color:var(--paper)}
+  .signin{color:var(--paper)!important}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;
+    background:var(--green);color:#fff;
+    padding:11px 20px;border-radius:8px;
+    font-weight:600;font-size:15px;text-decoration:none;
+    border:1px solid var(--green);cursor:pointer;
+    transition:background .15s ease;
+  }
+  .btn:hover{background:var(--green-deep)}
+  .btn.ghost{background:transparent;color:var(--paper);border:1px solid var(--rule-ink)}
+  .btn.ghost:hover{background:#1b2129}
+
+  /* ---- hero ---- */
+  .hero{padding:88px 0 72px}
+  .kicker{color:var(--green);font-weight:600;font-size:14px;letter-spacing:.02em;margin-bottom:20px}
+  h1{
+    font-family:'Fraunces',serif;font-weight:500;
+    font-size:clamp(40px,6vw,68px);line-height:1.03;letter-spacing:-.02em;
+    max-width:15ch;margin-bottom:24px;
+  }
+  .lede{font-size:20px;color:#C9CCD1;max-width:52ch;margin-bottom:36px}
+  .hero-cta{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .paynote{color:var(--slate);font-size:14px;margin-top:18px}
+  .paynote strong{color:var(--paper);font-weight:600}
+
+  /* ---- reconciliation demo ---- */
+  .ledger{
+    margin-top:64px;
+    background:var(--paper);color:var(--ink);
+    border-radius:14px;overflow:hidden;
+    box-shadow:0 30px 60px -20px rgba(0,0,0,.5);
+  }
+  .ledger-head{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:18px 26px;border-bottom:1px solid var(--rule);
+    background:var(--paper-dim);
+  }
+  .ledger-head .who{font-weight:600;font-size:15px}
+  .ledger-head .tag{font-size:13px;color:var(--slate);font-variant-numeric:tabular-nums}
+  .rows{padding:8px 0}
+  .row{
+    display:grid;grid-template-columns:1fr auto;gap:16px;
+    padding:15px 26px;align-items:baseline;
+  }
+  .row .label{font-size:15px;color:#3B424B}
+  .row .label b{color:var(--ink);font-weight:600}
+  .row .val{font-variant-numeric:tabular-nums;font-weight:500;font-size:15px;text-align:right;white-space:nowrap}
+  .row.contract .val{color:#3B424B}
+  .row.billed .val{color:#3B424B}
+  .row.divider{border-top:1px dashed var(--rule);padding-top:18px;margin-top:2px}
+  .row.gap{background:rgba(31,138,91,.08);padding-top:18px;padding-bottom:18px}
+  .row.gap .label b{color:var(--green-deep)}
+  .row.gap .val{
+    font-family:'Fraunces',serif;font-weight:600;font-size:26px;color:var(--green-deep);
+    letter-spacing:-.01em;
+  }
+  .clause{
+    padding:16px 26px;border-top:1px solid var(--rule);
+    background:var(--paper-dim);font-size:13.5px;color:var(--slate);
+    display:flex;gap:10px;align-items:flex-start;
+  }
+  .clause .q{color:var(--ink);font-style:italic}
+  .clause svg{flex:none;margin-top:2px}
+
+  /* ---- band ---- */
+  .band{border-top:1px solid var(--rule-ink);border-bottom:1px solid var(--rule-ink);padding:44px 0}
+  .band .wrap{display:flex;gap:56px;flex-wrap:wrap}
+  .stat .n{font-family:'Fraunces',serif;font-size:34px;font-weight:600;letter-spacing:-.01em}
+  .stat .l{color:var(--slate);font-size:14.5px;max-width:26ch;margin-top:4px}
+
+  /* ---- how ---- */
+  section.how{padding:84px 0}
+  .h2{font-family:'Fraunces',serif;font-weight:500;font-size:clamp(28px,4vw,40px);letter-spacing:-.015em;margin-bottom:8px}
+  .sub{color:var(--slate);font-size:17px;margin-bottom:52px;max-width:50ch}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule-ink);border:1px solid var(--rule-ink);border-radius:12px;overflow:hidden}
+  .step{background:var(--ink);padding:30px 28px}
+  .step .s{font-variant-numeric:tabular-nums;color:var(--green);font-weight:600;font-size:14px;margin-bottom:14px}
+  .step h3{font-family:'Fraunces',serif;font-weight:500;font-size:21px;margin-bottom:10px;letter-spacing:-.01em}
+  .step p{color:#AEB4BC;font-size:15px}
+
+  /* ---- differentiation ---- */
+  .why{padding:20px 0 40px}
+  .why-inner{border:1px solid var(--rule-ink);border-radius:14px;padding:40px 44px;display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start}
+  .why-inner .lead h3{font-family:'Fraunces',serif;font-weight:500;font-size:26px;letter-spacing:-.01em;margin-bottom:14px;line-height:1.15}
+  .why-inner .lead p{color:#AEB4BC;font-size:16px}
+  .compare{display:grid;gap:18px}
+  .compare .item{display:flex;gap:14px;align-items:flex-start}
+  .compare .item .k{font-size:15px;color:#AEB4BC}
+  .compare .item .k b{color:var(--paper);font-weight:600;display:block;margin-bottom:2px}
+  .compare .item svg{flex:none;margin-top:3px}
+  @media (max-width:760px){.why-inner{grid-template-columns:1fr;gap:28px;padding:30px 26px}}
+
+  /* ---- leak types ---- */
+  .leaks{padding:20px 0 88px}
+  .leak-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:36px}
+  .leak{border:1px solid var(--rule-ink);border-radius:10px;padding:22px 24px;display:flex;gap:16px;align-items:flex-start}
+  .leak .dot{width:8px;height:8px;border-radius:50%;background:var(--green);margin-top:8px;flex:none}
+  .leak h4{font-size:16px;font-weight:600;margin-bottom:4px}
+  .leak p{color:var(--slate);font-size:14.5px}
+
+  /* ---- pricing ---- */
+  .pricing{border-top:1px solid var(--rule-ink);padding:84px 0}
+  .price-card{
+    background:var(--paper);color:var(--ink);border-radius:16px;
+    padding:52px 48px;max-width:640px;
+    box-shadow:0 24px 50px -24px rgba(0,0,0,.5);
+  }
+  .price-card .big{font-family:'Fraunces',serif;font-size:clamp(40px,6vw,60px);font-weight:600;letter-spacing:-.02em;line-height:1;color:var(--green-deep)}
+  .price-card .big span{font-size:22px;color:var(--slate);font-family:'Inter';font-weight:500;letter-spacing:0}
+  .price-card .terms{margin:26px 0 34px;display:grid;gap:14px}
+  .price-card .terms li{display:flex;gap:12px;align-items:flex-start;list-style:none;font-size:16px;color:#2A313B}
+  .price-card .terms svg{flex:none;margin-top:3px}
+  .price-card .fine{color:var(--slate);font-size:14px;margin-top:8px}
+
+  /* ---- close ---- */
+  .close{padding:96px 0;text-align:left}
+  .close h2{font-family:'Fraunces',serif;font-weight:500;font-size:clamp(30px,5vw,48px);letter-spacing:-.02em;max-width:18ch;margin-bottom:28px;line-height:1.05}
+  footer{border-top:1px solid var(--rule-ink);padding:36px 0;color:var(--slate);font-size:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px}
+  footer a{color:var(--slate);text-decoration:none}
+  footer a:hover{color:var(--paper)}
+
+  @media (max-width:760px){
+    .steps{grid-template-columns:1fr}
+    .leak-grid{grid-template-columns:1fr}
+    .bar nav a:not(.signin){display:none}
+    .hero{padding:56px 0 48px}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .ledger,.price-card{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
+    @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <div class="mark"><span class="glyph">R</span>Recoup</div>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#pricing">Pricing</a>
+      <a href="/app" class="signin">Sign in</a>
+      <a href="/app" class="btn">Run a free audit</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="kicker">Revenue assurance for B2B contracts</div>
+    <h1>The revenue you're already owed.</h1>
+    <p class="lede">Recoup reads your signed contracts, checks them against what you actually billed, and finds the money that slipped through — unenforced minimums, unbilled usage, expired discounts, forgotten price increases.</p>
+    <div class="hero-cta">
+      <a href="/app" class="btn">Run a free audit</a>
+      <a href="/app" class="btn ghost">See it on sample data</a>
+    </div>
+    <p class="paynote">No integration to start. <strong>You pay 20% of what we actually recover</strong> — nothing if we find nothing.</p>
+
+    <!-- live reconciliation -->
+    <div class="ledger" role="img" aria-label="Reconciliation example: a contract minimum of 8,000 dollars per month billed at only 4,800, surfacing 3,200 per month recoverable.">
+      <div class="ledger-head">
+        <span class="who">Meridian Foods — Supply Chain Cloud</span>
+        <span class="tag">Period 2026-06 · 2026-07</span>
+      </div>
+      <div class="rows">
+        <div class="row contract">
+          <div class="label"><b>Contract minimum</b> — clause 3.3, monthly floor</div>
+          <div class="val">$8,000 / mo</div>
+        </div>
+        <div class="row billed">
+          <div class="label">Actually billed — 6 active facilities, prorated</div>
+          <div class="val">$4,800 / mo</div>
+        </div>
+        <div class="row gap divider">
+          <div class="label"><b>Recoverable</b> — floor not enforced, 2 months</div>
+          <div class="val">+ $6,400</div>
+        </div>
+      </div>
+      <div class="clause">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+        <div>Grounded in contract: <span class="q">"Customer commits to a minimum monthly charge of $8,000 regardless of the number of active facilities."</span></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="band">
+  <div class="wrap">
+    <div class="stat"><div class="n">3–5%</div><div class="l">of ARR that B2B SaaS companies lose to billing leakage every year</div></div>
+    <div class="stat"><div class="n">$0</div><div class="l">upfront — the audit is free, you pay only on what's recovered</div></div>
+    <div class="stat"><div class="n">Read-only</div><div class="l">Recoup never writes to your systems — it shows you the money, you send the invoice</div></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <section class="how" id="how">
+    <div class="h2">Three steps to found money.</div>
+    <p class="sub">No implementation project. No engineering time. Give it your contracts and a billing export, and the audit runs.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="s">Step 1</div>
+        <h3>Bring your contracts</h3>
+        <p>Upload signed agreements and a billing export — or connect Stripe read-only. Nothing to integrate, nothing to install.</p>
+      </div>
+      <div class="step">
+        <div class="s">Step 2</div>
+        <h3>Recoup reconciles</h3>
+        <p>It reads every contract clause, compares it to what was billed, and computes each gap in exact dollars — grounded in the language that proves it's owed.</p>
+      </div>
+      <div class="step">
+        <div class="s">Step 3</div>
+        <h3>You approve, then recover</h3>
+        <p>Review each finding with its cited clause and math. Approve the ones you want; Recoup drafts the corrective invoice for you to send.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="why">
+    <div class="why-inner">
+      <div class="lead">
+        <h3>Why not the billing platform you already have?</h3>
+        <p>Billing suites and reconciliation tools find leakage by becoming your infrastructure — a months-long rollout, seat licenses, and a finance team to run them. Recoup takes the opposite path.</p>
+      </div>
+      <div class="compare">
+        <div class="item">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+          <div class="k"><b>No integration to start</b>Paste contracts and a billing export, or connect Stripe read-only. No implementation project.</div>
+        </div>
+        <div class="item">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+          <div class="k"><b>Nothing to pay until it works</b>No seats, no platform fee. You pay 20% of what's actually recovered — or nothing.</div>
+        </div>
+        <div class="item">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+          <div class="k"><b>Built for your size</b>For the companies too small for a six-month rollout and too busy to leave money on the table.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="leaks">
+    <div class="h2">What slips through</div>
+    <div class="leak-grid">
+      <div class="leak"><span class="dot"></span><div><h4>Unenforced minimums</h4><p>A contract floor that quietly gets billed below when usage dips.</p></div></div>
+      <div class="leak"><span class="dot"></span><div><h4>Unbilled usage overage</h4><p>Consumption above the committed tier that never gets rated or charged.</p></div></div>
+      <div class="leak"><span class="dot"></span><div><h4>Expired discounts</h4><p>A launch promo that was supposed to end months ago, still applied.</p></div></div>
+      <div class="leak"><span class="dot"></span><div><h4>Forgotten escalators</h4><p>An annual price increase written into the deal, never applied at renewal.</p></div></div>
+    </div>
+  </section>
+</div>
+
+<div class="pricing" id="pricing">
+  <div class="wrap">
+    <div class="h2" style="margin-bottom:36px">Pricing that only wins when you do.</div>
+    <div class="price-card">
+      <div class="big">20%<span> of what we recover</span></div>
+      <ul class="terms">
+        <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>The audit is free. See exactly what's recoverable before you pay anything.</li>
+        <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>You only pay on dollars actually recovered — proposed, approved, collected.</li>
+        <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1F8A5B" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>Find nothing, owe nothing. No seats, no platform fee, no contract to sign.</li>
+      </ul>
+      <a href="/app" class="btn">Run a free audit</a>
+      <p class="fine">Built for finance teams and the fractional CFOs who serve them.</p>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <section class="close">
+    <h2>Your contracts already earned this money. Go get it.</h2>
+    <a href="/app" class="btn">Run a free audit</a>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap bar" style="height:auto;align-items:center">
+    <div class="mark" style="font-size:18px"><span class="glyph" style="width:24px;height:24px;font-size:13px">R</span>Recoup</div>
+    <div>An Odingard product · <a href="/app">Sign in</a></div>
+  </div>
+</footer>
+
+</body>
+</html>
