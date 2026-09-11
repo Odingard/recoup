@@ -1,0 +1,35 @@
+{
+  "customer_name": "NorthPeak Logistics LLC",
+  "entitlements": [
+    {
+      "term_type": "committed_minimum",
+      "value": 4000.0,
+      "label": null,
+      "effective_date": "2025-01-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Customer shall pay a base platform fee of Four Thousand Dollars ($4,000.00) per calendar month, invoiced in arrears"
+    },
+    {
+      "term_type": "included_units",
+      "value": 1000000.0,
+      "label": "API Calls per month",
+      "effective_date": "2025-01-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "which entitles Customer to up to one million (1,000,000) API Calls per month."
+    },
+    {
+      "term_type": "overage_rate",
+      "value": 0.0025,
+      "label": "API Call Overage",
+      "effective_date": "2025-01-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "API Calls in excess of the monthly entitlement set forth in 4.1 shall be billed at a rate of $0.0025 per additional API Call"
+    }
+  ]
+}

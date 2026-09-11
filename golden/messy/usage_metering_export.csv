@@ -1,0 +1,13 @@
+account,month,metric,qty
+northpeak-logistics,2026-06,api_calls,1340000
+northpeak-logistics,2026-07,api_calls,1512000
+sterling-dental-grp,2026-06,seats,40
+sterling-dental-grp,2026-07,seats,40
+cascade-analytics,2026-06,seats,25
+cascade-analytics,2026-07,seats,25
+meridian-foods,2026-06,active_facilities,6
+meridian-foods,2026-07,active_facilities,6
+volt-robotics,2026-06,robots,22
+volt-robotics,2026-07,robots,22
+harbor-freight,2026-06,api_calls,480000
+harbor-freight,2026-07,api_calls,495000
