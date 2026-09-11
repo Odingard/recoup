@@ -43,6 +43,7 @@ from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .recovery import assert_transition
+from .rights_graph import RightsGraphService
 from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
@@ -777,6 +778,23 @@ def share_report(request: Request, user: dict = Depends(verify_token)):
         return {"url": f"{base.rstrip('/')}/report/sample"}
     token = _share_token(account_id)
     return {"url": f"{base.rstrip('/')}/report/{account_id}/{token}"}
+
+
+@app.get("/api/rights/customers/{customer_id}")
+def get_customer_rights_graph(customer_id: str, user: dict = Depends(verify_token)):
+    """Per-customer Rights Graph: rights, evidence, observations, expected
+    states and discrepancies derived from that account's own book. Gated like
+    the audit report since it exposes clause text."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    contracts, usage_list, invoices_list = _load_book(account_id)
+    findings_by_id = {f["finding_id"]: f for f in _findings_for(account_id)}
+    graph = RightsGraphService(account_id).build_for_customer(
+        customer_id, contracts, usage_list, invoices_list,
+        findings_by_id=findings_by_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found.")
+    return graph.to_dict()
 
 
 @app.get("/report/sample")
