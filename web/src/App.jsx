@@ -147,6 +147,7 @@ function App() {
   const [renewals, setRenewals] = useState([])
   const [billing, setBilling] = useState(null)
   const [syncingRecoveries, setSyncingRecoveries] = useState(false)
+  const [reviewQueue, setReviewQueue] = useState([])
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -268,6 +269,27 @@ function App() {
     }, 0)
     return () => window.clearTimeout(handle)
   }, [apiReady, loadBillingStatus])
+
+  const loadContracts = useCallback(async () => {
+    if (!apiReady) return
+    try {
+      const result = await apiRequest('/contracts')
+      const list = result?.contracts || []
+      setUploadedContracts(list.map((c) => ({
+        ...c, confirmed: Boolean(c.confirmed), discounts: c.discounts || [],
+      })))
+    } catch (error) {
+      console.error(error)
+    }
+  }, [apiReady, apiRequest])
+
+  useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => {
+      void loadContracts()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, loadContracts])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -416,12 +438,22 @@ function App() {
       fileList.forEach((f) => form.append('files', f))
       const result = await apiRequest('/ingest/bulk', { method: 'POST', body: form })
       setBulkResult(result)
+      setReviewQueue(result?.needs_review || [])
+      const filesByName = Object.fromEntries((result?.files || []).map((f) => [f.name, f]))
+      ;(result?.contract_records || []).forEach((contract) => {
+        const fileEntry = filesByName[contract.customer_id] || filesByName[contract.file_name]
+        const fileName = contract.file_name || fileEntry?.name
+        setUploadedContracts((current) => [
+          { ...contract, confirmed: false, discounts: contract.discounts || [], ...(fileName ? { file_name: fileName } : {}) },
+          ...current.filter((item) => item.customer_id !== contract.customer_id),
+        ])
+      })
       const nr = result?.needs_review?.length
       setStatusMessage(
         result?.status === 'needs_review'
           ? (result.message || 'Bulk upload needs review.')
           : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` +
-            (nr ? ` ${nr} item(s) need review.` : ''))
+            (nr ? ` ${nr} item(s) need review — see Step 5.` : ''))
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
@@ -441,7 +473,8 @@ function App() {
     setRunning(true)
     try {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
-      setStatusMessage(`Reconciliation complete: ${result.findings_found} findings.`)
+      setReviewQueue(result?.needs_review || [])
+      setStatusMessage(`Reconciliation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review — see Step 5.` : ''))
       await refreshFindings()
       setActiveStep(5)
     } catch (error) {
@@ -1190,7 +1223,7 @@ function App() {
                             </small>
                           </div>
                         ))}
-                        {contract.discounts.map((discount) => (
+                        {(contract.discounts || []).map((discount) => (
                           <div key={discount.name} className="term-row">
                             <span>Discount</span>
                             <strong>{discount.name}</strong>
@@ -1491,6 +1524,24 @@ function App() {
                     ))
                   )}
                 </div>
+
+                {reviewQueue.length > 0 && (
+                  <div className="contract-review-list">
+                    <h3 className="queue-title">Needs review ({reviewQueue.length})</h3>
+                    {reviewQueue.map((item, idx) => (
+                      <article key={`${item.customer_id || 'unknown'}-${item.term || idx}`} className="glass-panel contract-review-card">
+                        <div className="review-header">
+                          <div>
+                            <h3>{item.customer_name || 'Unknown customer'}</h3>
+                            <p>{item.term}</p>
+                          </div>
+                        </div>
+                        <p>{item.reason}</p>
+                        {item.suggested_action && <small className="muted-copy">Suggested: {item.suggested_action}</small>}
+                      </article>
+                    ))}
+                  </div>
+                )}
 
                 {selectedFinding ? (
                   <div className="glass-panel detail-view">

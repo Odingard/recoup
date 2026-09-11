@@ -1007,7 +1007,16 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
         "usage": len(result.usage),
         "needs_review": result.needs_review,
         "periods": periods,
+        "contract_records": result.contracts,
     }
+
+
+@app.get("/api/contracts")
+def get_contracts(user: dict = Depends(verify_token)):
+    """All stored contracts so Step 4 survives reloads and bulk uploads."""
+    account_id = _account_id(user)
+    contracts = _load_book(None)[0] if account_id is None else db.get_all_contracts(account_id)
+    return {"contracts": contracts}
 
 
 @app.get("/api/renewals")
