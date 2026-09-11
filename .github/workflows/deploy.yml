@@ -58,22 +58,29 @@ jobs:
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Write secrets to Secret Manager (idempotent)
+        # Secrets are passed through env (never interpolated into the script body):
+        # inline ${{ secrets.* }} substitution mangles JSON values containing quotes/newlines.
+        env:
+          BILLING_KEY: ${{ secrets.RECOUP_BILLING_STRIPE_API_KEY }}
+          APP_CLIENT_ID: ${{ secrets.RECOUP_STRIPE_APP_CLIENT_ID }}
+          APP_SECRET: ${{ secrets.RECOUP_STRIPE_APP_SECRET }}
+          STATE_SECRET: ${{ secrets.RECOUP_STRIPE_APP_STATE_SECRET }}
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
         run: |
           write_secret() {
             local name=$1 val=$2
             if [ -n "$val" ]; then
               if gcloud secrets describe "$name" --project=$PROJECT_ID &>/dev/null; then
-                echo -n "$val" | gcloud secrets versions add "$name" --data-file=- --project=$PROJECT_ID
+                printf '%s' "$val" | gcloud secrets versions add "$name" --data-file=- --project=$PROJECT_ID
               else
-                echo -n "$val" | gcloud secrets create "$name" --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+                printf '%s' "$val" | gcloud secrets create "$name" --data-file=- --replication-policy=automatic --project=$PROJECT_ID
               fi
             fi
           }
-          write_secret recoup-billing-stripe-key   "${{ secrets.RECOUP_BILLING_STRIPE_API_KEY }}"
-          write_secret recoup-stripe-app-client-id "${{ secrets.RECOUP_STRIPE_APP_CLIENT_ID }}"
-          write_secret recoup-stripe-app-secret    "${{ secrets.RECOUP_STRIPE_APP_SECRET }}"
-          write_secret recoup-stripe-state-secret  "${{ secrets.RECOUP_STRIPE_APP_STATE_SECRET }}"
-          FIREBASE_SA_JSON="${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}"
+          write_secret recoup-billing-stripe-key   "$BILLING_KEY"
+          write_secret recoup-stripe-app-client-id "$APP_CLIENT_ID"
+          write_secret recoup-stripe-app-secret    "$APP_SECRET"
+          write_secret recoup-stripe-state-secret  "$STATE_SECRET"
           if [ -n "$FIREBASE_SA_JSON" ]; then
             if printf '%s' "$FIREBASE_SA_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("type")=="service_account" and d.get("private_key")'; then
               write_secret firebase-sa-json "$FIREBASE_SA_JSON"
