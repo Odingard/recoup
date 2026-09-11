@@ -111,6 +111,24 @@ Recoup's 20% success fee is computed on **recorded paid amounts** (`recovered_am
 falling back to `monthly_recoverable` only for legacy findings recorded before
 payment evidence existed.
 
+### True-up packs
+
+`GET /api/trueup/{customer_id}` (JSON) and `GET /api/trueup/{customer_id}.pdf`
+build the collection document the operator sends to their customer: a cover
+letter plus a "Schedule of amounts due" (period, item, amount, quoted clause,
+calculation). Only `approved`, `invoiced`, and `disputed` findings are included
+(`?include_open=1` adds open; sample mode always includes open so the demo
+works). `?sender=` sets the sign-off name. No Recoup branding appears in the
+pack. Step 6 of the app lists one download per customer.
+
+### Tenant data deletion
+
+`DELETE /api/account/data` with body `{"confirm": "DELETE"}` deletes every
+Firestore subcollection under the account (findings, audit_log, usage,
+invoices, contracts, anything else present), the account root document, and
+the tenant's connector secret in Secret Manager. Returns per-collection
+counts. Wrong confirmation returns 400.
+
 ## 6. Robustness
 
 No bad input returns a 500. Corrupt files, scanned/image PDFs, unsupported formats,
