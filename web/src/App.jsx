@@ -366,15 +366,134 @@ function App() {
     }
   }
 
-  const markRecovered = async (findingId) => {
+  const [recoveryForm, setRecoveryForm] = useState(null)
+  const [recoveryFields, setRecoveryFields] = useState({ ref: '', amount: '', date: '', url: '', note: '' })
+
+  const openRecoveryForm = (finding, kind) => {
+    const prefill = kind === 'payment'
+      ? (finding.corrective_invoice?.amount ?? finding.monthly_recoverable)
+      : finding.monthly_recoverable
+    setRecoveryForm({ id: finding.finding_id, kind })
+    setRecoveryFields({
+      ref: '',
+      amount: String(prefill ?? ''),
+      date: '',
+      url: '',
+      note: '',
+    })
+  }
+
+  const submitRecoveryForm = async () => {
+    if (!recoveryForm) return
+    const { id, kind } = recoveryForm
+    const amount = Number(recoveryFields.amount)
     try {
-      await apiRequest(`/findings/${findingId}/recovered`, { method: 'POST' })
-      setStatusMessage('Finding marked recovered.')
+      if (kind === 'invoice') {
+        await apiRequest(`/findings/${id}/invoiced`, {
+          method: 'POST',
+          body: {
+            invoice_ref: recoveryFields.ref,
+            invoice_amount: amount,
+            invoice_date: recoveryFields.date || null,
+            invoice_url: recoveryFields.url || null,
+            note: recoveryFields.note,
+          },
+        })
+        setStatusMessage('Corrective invoice recorded.')
+      } else {
+        await apiRequest(`/findings/${id}/recovered`, {
+          method: 'POST',
+          body: {
+            paid_amount: amount,
+            paid_date: recoveryFields.date || null,
+            payment_ref: recoveryFields.ref || null,
+            note: recoveryFields.note,
+          },
+        })
+        setStatusMessage('Payment recorded — finding recovered.')
+      }
+      setRecoveryForm(null)
+      await refreshFindings()
+      await loadMetrics()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not record recovery evidence.')
+    }
+  }
+
+  const markDisputed = async (findingId) => {
+    const reason = window.prompt('Reason for dispute (optional):') || ''
+    try {
+      await apiRequest(`/findings/${findingId}/disputed`, { method: 'POST', body: { reason } })
+      setStatusMessage('Finding marked disputed.')
       await refreshFindings()
     } catch (error) {
       console.error(error)
-      setStatusMessage('Could not mark the finding recovered.')
+      setStatusMessage('Could not mark the finding disputed.')
     }
+  }
+
+  const markWrittenOff = async (findingId) => {
+    const reason = window.prompt('Write-off reason (optional):') || ''
+    try {
+      await apiRequest(`/findings/${findingId}/written-off`, { method: 'POST', body: { reason } })
+      setStatusMessage('Finding written off.')
+      await refreshFindings()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not write off the finding.')
+    }
+  }
+
+  const renderRecoveryForm = (finding) => {
+    if (!recoveryForm || recoveryForm.id !== finding.finding_id) return null
+    const isInvoice = recoveryForm.kind === 'invoice'
+    return (
+      <div className="recovery-form">
+        <label>
+          {isInvoice ? 'Invoice ref' : 'Payment ref'}
+          <input
+            value={recoveryFields.ref}
+            onChange={(event) => setRecoveryFields((f) => ({ ...f, ref: event.target.value }))}
+            placeholder={isInvoice ? 'INV-1042' : 'txn / check ref'}
+          />
+        </label>
+        <label>
+          {isInvoice ? 'Invoice amount ($)' : 'Paid amount ($)'}
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={recoveryFields.amount}
+            onChange={(event) => setRecoveryFields((f) => ({ ...f, amount: event.target.value }))}
+          />
+        </label>
+        <label>
+          {isInvoice ? 'Invoice date' : 'Paid date'}
+          <input
+            type="date"
+            value={recoveryFields.date}
+            onChange={(event) => setRecoveryFields((f) => ({ ...f, date: event.target.value }))}
+          />
+        </label>
+        {isInvoice && (
+          <label>
+            Invoice URL (optional)
+            <input
+              value={recoveryFields.url}
+              onChange={(event) => setRecoveryFields((f) => ({ ...f, url: event.target.value }))}
+              placeholder="https://…"
+            />
+          </label>
+        )}
+        <div className="review-actions">
+          <button className="btn-primary" onClick={submitRecoveryForm}>
+            {isInvoice ? 'Save invoice' : 'Save payment'}
+          </button>
+          <button className="btn-secondary" onClick={() => setRecoveryForm(null)}>Cancel</button>
+        </div>
+      </div>
+    )
   }
 
   const exportFindings = async () => {
@@ -450,6 +569,10 @@ function App() {
 
   const approvedFindings = useMemo(
     () => allFindings.filter((finding) => finding.status === 'approved'),
+    [allFindings],
+  )
+  const invoicedFindings = useMemo(
+    () => allFindings.filter((finding) => finding.status === 'invoiced' || finding.status === 'disputed'),
     [allFindings],
   )
   const recoveredFindings = useMemo(
@@ -729,7 +852,7 @@ function App() {
                   <DollarSign size={18} />
                   <div>
                     <strong>Outcome-based pricing</strong>
-                    <p>Recoup charges 20% of dollars actually recovered — tracked on the Recovered &amp; billing step.</p>
+                    <p>Recoup charges 20% of dollars actually paid to you — tracked on the Recovered &amp; billing step.</p>
                   </div>
                 </div>
                 {isSampleMode ? (
@@ -884,7 +1007,7 @@ function App() {
                 <div className="glass-panel metric-card">
                   <span className="metric-label">Your success fee this month</span>
                   <strong className="metric-value">{formatCurrency(metrics?.success_fee_this_month)}</strong>
-                  <small>20% of {formatCurrency(metrics?.recovered_this_month)} recovered this month</small>
+                  <small>20% of {formatCurrency(metrics?.recovered_this_month)} actually paid to you this month</small>
                 </div>
                 <div className="glass-panel metric-card">
                   <span className="metric-label">Potential (not yet recovered)</span>
@@ -925,12 +1048,47 @@ function App() {
                         <span className="amount">{formatCurrency(finding.monthly_recoverable)}</span>
                       </div>
                       <div className="review-actions">
-                        <button className="btn-primary" onClick={() => markRecovered(finding.finding_id)}>
-                          <DollarSign size={16} /> Mark recovered
+                        <button className="btn-secondary" onClick={() => openRecoveryForm(finding, 'invoice')}>
+                          <FileText size={16} /> Record invoice
+                        </button>
+                        <button className="btn-primary" onClick={() => openRecoveryForm(finding, 'payment')}>
+                          <DollarSign size={16} /> Record payment
                         </button>
                       </div>
+                      {renderRecoveryForm(finding)}
                     </article>
                   ))
+                )}
+
+                {invoicedFindings.length > 0 && (
+                  <>
+                    <h3 className="queue-title">Invoiced — awaiting payment</h3>
+                    {invoicedFindings.map((finding) => (
+                      <article key={finding.finding_id} className="glass-panel contract-review-card">
+                        <div className="review-header">
+                          <div>
+                            <h3>{finding.customer_name}</h3>
+                            <p>{finding.title}</p>
+                          </div>
+                          <span className="badge badge-pending">
+                            {finding.status === 'disputed' ? 'Disputed' : 'Invoiced'} • {finding.corrective_invoice?.ref || '—'} • {formatCurrency(finding.corrective_invoice?.amount ?? finding.monthly_recoverable)}
+                          </span>
+                        </div>
+                        <div className="review-actions">
+                          <button className="btn-primary" onClick={() => openRecoveryForm(finding, 'payment')}>
+                            <DollarSign size={16} /> Record payment
+                          </button>
+                          <button className="btn-secondary" onClick={() => markDisputed(finding.finding_id)}>
+                            Mark disputed
+                          </button>
+                          <button className="btn-danger" onClick={() => markWrittenOff(finding.finding_id)}>
+                            Write off
+                          </button>
+                        </div>
+                        {renderRecoveryForm(finding)}
+                      </article>
+                    ))}
+                  </>
                 )}
 
                 {recoveredFindings.length > 0 && (
@@ -943,7 +1101,10 @@ function App() {
                             <h3>{finding.customer_name}</h3>
                             <p>{finding.title}</p>
                           </div>
-                          <span className="badge badge-approved">Recovered • {formatCurrency(finding.monthly_recoverable)}</span>
+                          <span className="badge badge-approved">
+                            Recovered • {formatCurrency(finding.recovered_amount ?? finding.monthly_recoverable)}
+                            {finding.payment?.ref ? ` • ${finding.payment.ref}` : ''}
+                          </span>
                         </div>
                       </article>
                     ))}
@@ -1056,10 +1217,11 @@ function App() {
                       <button className="btn-success action-button" onClick={() => handleAction(selectedFinding.finding_id, 'approve')}>
                         <CheckCircle2 size={16} /> Approve &amp; draft invoice
                       </button>
-                      <button className="btn-primary action-button" onClick={() => markRecovered(selectedFinding.finding_id)}>
-                        <DollarSign size={16} /> Mark recovered
+                      <button className="btn-primary action-button" onClick={() => openRecoveryForm(selectedFinding, 'payment')}>
+                        <DollarSign size={16} /> Record payment
                       </button>
                     </div>
+                    {renderRecoveryForm(selectedFinding)}
                   </div>
                 ) : (
                   <div className="glass-panel empty-detail">

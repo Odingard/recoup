@@ -82,3 +82,29 @@ def test_charge_success_fee_sample_mode_needs_config(monkeypatch):
     assert "metrics" in body and "billing" in body
     # No recovered dollars in sample mode -> skipped (or needs_config if key absent)
     assert body["billing"]["status"] in {"skipped", "needs_config"}
+
+
+def test_recovered_amount_overrides_monthly_recoverable():
+    now = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    findings = [
+        {**_finding("a", 5000, "recovered", "2026-07-02T00:00:00+00:00"),
+         "recovered_amount": 4000},
+        _finding("b", 3000, "recovered", "2026-07-03T00:00:00+00:00"),
+    ]
+    m = success_fee.compute_metrics(findings, now=now)
+    assert m["recovered_to_date"] == 7000  # 4000 paid + 3000 legacy
+    assert m["success_fee_this_month"] == 1400.0
+
+
+def test_metrics_track_awaiting_payment_and_written_off():
+    now = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    findings = [
+        _finding("a", 1000, "invoiced"),
+        _finding("b", 2000, "disputed"),
+        _finding("c", 500, "written_off"),
+        _finding("d", 3000, "recovered", "2026-07-05T00:00:00+00:00"),
+    ]
+    m = success_fee.compute_metrics(findings, now=now)
+    assert m["invoiced_awaiting_payment"] == 3000
+    assert m["written_off"] == 500
+    assert m["potential_monthly_recoverable"] == 1000 + 2000 + 3000  # excludes rejected and written_off
