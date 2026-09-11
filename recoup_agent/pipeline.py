@@ -34,8 +34,11 @@ def _selected_billing_provider(account_id: str | None, billing_provider=None):
     if billing_provider is not None:
         return billing_provider
     if os.getenv("RECOUP_BILLING_SOURCE", "").lower() == "stripe":
+        key = resolve_connector_key(account_id)
+        if not key:
+            return None
         from .billing.stripe_provider import StripeBillingProvider
-        return StripeBillingProvider(api_key=resolve_connector_key(account_id))
+        return StripeBillingProvider(api_key=key)
     return None
 
 
@@ -49,19 +52,18 @@ def compute_findings_and_review(
     if book is not None:
         contracts, usage_list, invoices_list = book
     else:
-        contracts = _load_contracts(account_id)
-        usage_list = invoices_list = []
-    usage = invoices = None
-    if provider is None:
-        if book is None:
-            _, usage_list, invoices_list = _load_book(account_id)
-        usage = {(u["customer_id"], u["period"]): u for u in usage_list}
-        invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
+        contracts, usage_list, invoices_list = _load_book(account_id)
+    # Uploaded records win over the live connector for a given customer/period.
+    usage = {(u["customer_id"], u["period"]): u for u in usage_list}
+    invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
 
     findings: list[dict] = []
     needs_review: list[dict] = []
     for c in contracts:
         key = (c["customer_id"], period)
+        if key in usage and key in invoices:
+            findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
+            continue
         if provider is not None:
             from .billing.stripe_provider import map_stripe_billing_to_reconcile_inputs
             normalized_usage = provider.get_usage(c["customer_id"], period)

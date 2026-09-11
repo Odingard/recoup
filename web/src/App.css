@@ -316,6 +316,10 @@
   font-weight: 600;
 }
 
+.queue-name {
+  color: var(--text-main);
+}
+
 .step-content {
   min-width: 0;
 }
