@@ -59,6 +59,12 @@ function formatCurrency(value) {
   return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
 
+function failureMessage(prefix, error) {
+  const detail = error instanceof Error ? error.message.trim() : ''
+  if (!detail || detail.startsWith('<')) return `${prefix}.`
+  return `${prefix}: ${detail.slice(0, 240)}`
+}
+
 function buildReviewedContract(draft) {
   const customerId = (draft.customer_id || draft.customer_name || 'contract').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
   const customerName = draft.customer_name.trim()
@@ -392,7 +398,7 @@ function App() {
       setActiveStep(4)
     } catch (error) {
       console.error(error)
-      setStatusMessage('Contract upload failed.')
+      setStatusMessage(failureMessage('Contract upload failed', error))
     } finally {
       setContractSubmitting(false)
     }
@@ -418,7 +424,7 @@ function App() {
             (nr ? ` ${nr} item(s) need review.` : ''))
     } catch (error) {
       console.error(error)
-      setStatusMessage('Bulk upload failed.')
+      setStatusMessage(failureMessage('Bulk upload failed', error))
     } finally {
       setBulkUploading(false)
     }
@@ -440,7 +446,7 @@ function App() {
       setActiveStep(5)
     } catch (error) {
       console.error(error)
-      setStatusMessage('Reconciliation failed.')
+      setStatusMessage(failureMessage('Reconciliation failed', error))
     } finally {
       setRunning(false)
     }
@@ -614,7 +620,7 @@ function App() {
       URL.revokeObjectURL(url)
     } catch (error) {
       console.error(error)
-      setStatusMessage('Export failed.')
+      setStatusMessage(failureMessage('Export failed', error))
     }
   }
 
@@ -680,7 +686,7 @@ function App() {
       }
     } catch (error) {
       console.error(error)
-      setStatusMessage('Stripe sync failed.')
+      setStatusMessage(failureMessage('Stripe sync failed', error))
     } finally {
       setSyncingRecoveries(false)
     }
@@ -742,7 +748,7 @@ function App() {
       setStatusMessage(result?.status === 'deleted' ? 'All account data deleted.' : (result?.message || 'Deletion did not complete.'))
     } catch (error) {
       console.error(error)
-      setStatusMessage('Account data deletion failed.')
+      setStatusMessage(failureMessage('Account data deletion failed', error))
     }
   }
 
