@@ -61,52 +61,60 @@ jobs:
         run: |
           write_secret() {
             local name=$1 val=$2
-            if gcloud secrets describe "$name" --project=$PROJECT_ID &>/dev/null; then
-              echo "$val" | gcloud secrets versions add "$name" --data-file=- --project=$PROJECT_ID
-            else
-              echo "$val" | gcloud secrets create "$name" --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+            if [ -n "$val" ]; then
+              if gcloud secrets describe "$name" --project=$PROJECT_ID &>/dev/null; then
+                echo -n "$val" | gcloud secrets versions add "$name" --data-file=- --project=$PROJECT_ID
+              else
+                echo -n "$val" | gcloud secrets create "$name" --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+              fi
             fi
           }
           write_secret recoup-billing-stripe-key  "${{ secrets.RECOUP_BILLING_STRIPE_API_KEY }}"
+          write_secret recoup-stripe-app-client-id "${{ secrets.RECOUP_STRIPE_APP_CLIENT_ID }}"
           write_secret recoup-stripe-app-secret   "${{ secrets.RECOUP_STRIPE_APP_SECRET }}"
           write_secret recoup-stripe-state-secret "${{ secrets.RECOUP_STRIPE_APP_STATE_SECRET }}"
           write_secret firebase-sa-json           "${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}"
 
       - name: Grant Cloud Run SA access to secrets
         run: |
-          # Cloud Run uses the default compute SA
-          SA=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')@cloudservices.gserviceaccount.com
-          for secret in recoup-billing-stripe-key recoup-stripe-app-secret recoup-stripe-state-secret firebase-sa-json; do
-            gcloud secrets add-iam-policy-binding $secret \
-              --member="serviceAccount:$SA" \
-              --role="roles/secretmanager.secretAccessor" \
-              --project=$PROJECT_ID 2>/dev/null || true
+          PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+          COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+          for secret in recoup-billing-stripe-key recoup-stripe-app-client-id recoup-stripe-app-secret recoup-stripe-state-secret firebase-sa-json; do
+            if gcloud secrets describe "$secret" --project=$PROJECT_ID &>/dev/null; then
+              gcloud secrets add-iam-policy-binding "$secret" \
+                --member="serviceAccount:$COMPUTE_SA" \
+                --role="roles/secretmanager.secretAccessor" \
+                --project=$PROJECT_ID \
+                --condition=None 2>/dev/null || true
+            fi
           done
 
       - name: Deploy to Cloud Run
         run: |
+          # Build secrets list based on what exists
+          SECRETS_LIST="RECOUP_STRIPE_APP_CLIENT_ID=recoup-stripe-app-client-id:latest,RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest"
+          if gcloud secrets describe recoup-billing-stripe-key --project=$PROJECT_ID &>/dev/null; then
+            SECRETS_LIST="RECOUP_BILLING_STRIPE_API_KEY=recoup-billing-stripe-key:latest,$SECRETS_LIST"
+          fi
+
           gcloud run deploy $SERVICE \
             --image $IMAGE \
             --region $REGION \
             --project $PROJECT_ID \
             --platform managed \
             --allow-unauthenticated \
+            --clear-env-vars \
             --set-env-vars "\
           GOOGLE_GENAI_USE_VERTEXAI=TRUE,\
           GOOGLE_CLOUD_PROJECT=$PROJECT_ID,\
           GOOGLE_CLOUD_LOCATION=$REGION,\
           RECOUP_SAMPLE_MODE=0,\
           RECOUP_BILLING_SOURCE=stripe,\
-          RECOUP_STRIPE_APP_CLIENT_ID=${{ secrets.RECOUP_STRIPE_APP_CLIENT_ID }},\
           RECOUP_STRIPE_APP_REDIRECT_URI=https://recoup.odingard.com/api/connector/stripe/oauth/callback,\
           RECOUP_STRIPE_APP_AUTHORIZE_URL=https://marketplace.stripe.com/oauth/v2/authorize,\
           RECOUP_STRIPE_APP_TOKEN_URL=https://api.stripe.com/v1/oauth/token,\
           RECOUP_WEB_BASE_URL=https://recoup.odingard.com" \
-            --set-secrets "\
-          RECOUP_BILLING_STRIPE_API_KEY=recoup-billing-stripe-key:latest,\
-          RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,\
-          RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,\
-          FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest" \
+            --set-secrets "$SECRETS_LIST" \
             --min-instances 0 \
             --max-instances 4 \
             --memory 1Gi \
