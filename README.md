@@ -31,7 +31,9 @@ The Phase 1 build turns the demo into something a rep can put in front of a cust
 - **Read-only Stripe connector** — reconcile against live customers, subscriptions, invoices, metered usage, and discounts. Unmappable data becomes `needs_review`, never a silent assumption.
 - **Firebase auth + multi-tenancy** — every account is isolated in Firestore under `accounts/{account_id}/...`. No hardcoded project id or mock token.
 - **Outcome-based pricing** — Recoup bills **20% of dollars actually recovered** (proposed → approved → recovered), invoiced through Recoup's own **separate** Stripe account.
-- **Robust by default** — corrupt/scanned/unsupported files, empty Stripe accounts, and missing fields are flagged with actionable messages; no ingestion path returns a 500.
+- **Bulk onboarding** — drop many contracts (PDF/DOCX/TXT/MD, scans and images via Gemini OCR — scanned PDFs up to 25 pages), billing + usage CSVs, or a ZIP of everything into `POST /api/ingest/bulk`. Per-file results, never silent drops.
+- **Billing-system CSV templates** — `GET /api/templates/{quickbooks|xero|stripe}/{invoices|usage}.csv` returns a header + example rows in that system's native column names; all aliases resolve through the same ingest pipeline (see [docs/INGEST_TEMPLATES.md](docs/INGEST_TEMPLATES.md)).
+- **Robust by default** — corrupt/unsupported files, empty Stripe accounts, and missing fields are flagged with actionable messages; no ingestion path returns a 500.
 - **Sample mode** — `RECOUP_SAMPLE_MODE=1` runs the whole thing offline on the synthetic book, no credentials required.
 
 See **[docs/OPERATIONS.md](docs/OPERATIONS.md)** for the operator guide (env vars, Cloud Run deploy, onboarding flow) and **[docs/DATA_HANDLING.md](docs/DATA_HANDLING.md)** for the plain-language data-handling statement. All configuration is via environment variables (`recoup_agent/.env.example`).

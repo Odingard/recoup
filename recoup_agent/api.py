@@ -31,6 +31,7 @@ from .billing.stripe_oauth import (
     oauth_web_base_url,
     parse_oauth_state,
 )
+from .ingest_bulk import ingest_files
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
@@ -38,6 +39,7 @@ from .recovery import assert_transition
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
+from .templates import TEMPLATES
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -207,7 +209,9 @@ class ContractPayload(BaseModel):
     clauses: dict = {}
 
 
-VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt"}
+VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
+MAX_SCANNED_PDF_PAGES = 25
 DEFAULT_PERIOD = "2026-06"
 
 
@@ -240,11 +244,13 @@ def _save_contract_if_needed(account_id: str | None, normalized: dict) -> None:
         db.save_contract(account_id, normalized)
 
 
-def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict] | None = None, message: str = "Contract extracted successfully") -> dict:
+def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict] | None = None,
+                      message: str = "Contract extracted successfully", ocr: bool = False) -> dict:
     payload = {
         "status": "success",
         "message": message,
         "saved": saved,
+        "ocr": ocr,
         "contract": normalized,
     }
     if needs_review:
@@ -280,15 +286,19 @@ def _stripe_oauth_error_url(message: str, *, account_id: str | None = None) -> s
     return f"{oauth_web_base_url().rstrip('/')}/app/?{urlencode(params)}"
 
 
-def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
+def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None, int]:
+    """-> (has_text, error, page_count). error is set only for corrupt/unreadable
+    files; a scanned PDF (no text layer) returns (False, None, pages) since
+    Gemini reads the raw bytes natively."""
     try:
         reader = PdfReader(file_path)
     except Exception:
-        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable.", 0
 
     if not getattr(reader, "pages", None):
-        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable.", 0
 
+    pages = len(reader.pages)
     text = []
     try:
         for page in reader.pages:
@@ -297,11 +307,11 @@ def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None]:
             except Exception:
                 continue
     except Exception:
-        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable."
+        return False, "Could not read uploaded PDF; the file may be corrupt or unreadable.", pages
 
     if not "".join(text).strip():
-        return False, "This looks like a scanned/image PDF. A text-based PDF is required (OCR is on the roadmap)."
-    return True, None
+        return False, None, pages  # scanned/image PDF -> handled via OCR path
+    return True, None, pages
 
 
 def _extract_and_normalize_contract(file_path: str) -> tuple[dict | None, list[dict], str | None]:
@@ -667,25 +677,17 @@ def stripe_oauth_callback(code: str | None = None, state: str | None = None, err
     )
 
 
-@app.post("/api/ingest/contract/document")
-async def ingest_contract_document(file: UploadFile = File(...), user: dict = Depends(verify_token)):
-    account_id = _account_id(user)
-    if _is_header_sample(user):
-        return _needs_review_payload(
-            "Sample mode does not extract uploaded contracts; sign in to use real data.")
-    filename = file.filename or ""
+def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes) -> dict:
+    """Extract + normalize one uploaded contract document; returns a preview or
+    needs_review payload. Scanned PDFs and images go through Gemini OCR."""
     suffix = Path(filename).suffix.lower()
     if suffix not in VALID_UPLOAD_SUFFIXES:
-        return _needs_review_payload("Unsupported file type; upload a PDF, DOCX, or TXT.")
-
-    try:
-        content = await file.read()
-    except Exception:
-        return _needs_review_payload("Could not read uploaded file; please upload a valid PDF, DOCX, or TXT.")
-
+        return _needs_review_payload(
+            "Unsupported file type; upload a PDF, DOCX, TXT, MD, or image.")
     if not content:
         return _needs_review_payload("The uploaded file is empty; please upload a valid document.")
 
+    ocr = suffix in IMAGE_SUFFIXES
     temp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -693,9 +695,15 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
             temp_path = tmp.name
 
         if suffix == ".pdf":
-            has_text, error_message = _pdf_has_text_layer(temp_path)
+            has_text, error_message, pages = _pdf_has_text_layer(temp_path)
+            if error_message:
+                return _needs_review_payload(error_message)
             if not has_text:
-                return _needs_review_payload(error_message or "Could not extract text from uploaded PDF.")
+                if pages > MAX_SCANNED_PDF_PAGES:
+                    return _needs_review_payload(
+                        f"Scanned PDF exceeds {MAX_SCANNED_PDF_PAGES} pages ({pages}); "
+                        "split it into smaller documents or enter terms manually.")
+                ocr = True
 
         try:
             normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
@@ -709,13 +717,81 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
         if saved:
             _save_contract_if_needed(account_id, normalized)
 
-        return _contract_preview(normalized, saved=saved, needs_review=needs_review)
+        message = ("Contract extracted from scanned PDF (OCR); verify amounts against the original"
+                   if ocr else "Contract extracted successfully")
+        return _contract_preview(normalized, saved=saved, needs_review=needs_review,
+                                 message=message, ocr=ocr)
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+
+@app.post("/api/ingest/contract/document")
+async def ingest_contract_document(file: UploadFile = File(...), user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if _is_header_sample(user):
+        return _needs_review_payload(
+            "Sample mode does not extract uploaded contracts; sign in to use real data.")
+    try:
+        content = await file.read()
+    except Exception:
+        return _needs_review_payload("Could not read uploaded file; please upload a valid document.")
+    return _ingest_contract_bytes(account_id, file.filename or "", content)
+
+
+@app.post("/api/ingest/bulk")
+async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(verify_token)):
+    """Ingest many files at once: contracts (incl. scans/images), billing/usage
+    CSVs, or ZIP archives containing them."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode does not ingest uploads; sign in to use real data.")
+
+    items: list[tuple[str, bytes]] = []
+    for f in files:
+        try:
+            items.append((f.filename or "upload", await f.read()))
+        except Exception:
+            return _needs_review_payload("Could not read an uploaded file.")
+
+    result = ingest_files(items, db.get_all_contracts(account_id), extract_entitlements)
+    for contract in result.contracts:
+        db.save_contract(account_id, contract)
+    for invoice in result.invoices:
+        db.save_invoice(account_id, invoice)
+    for usage_rec in result.usage:
+        db.save_usage(account_id, usage_rec)
+
+    periods = sorted({r.get("period") for r in result.invoices + result.usage if r.get("period")})
+    return {
+        "status": "success",
+        "files": result.files,
+        "contracts": len(result.contracts),
+        "invoices": len(result.invoices),
+        "usage": len(result.usage),
+        "needs_review": result.needs_review,
+        "periods": periods,
+    }
+
+
+@app.get("/api/templates/{system}/{kind}.csv", include_in_schema=False)
+def export_template(system: str, kind: str):
+    """Downloadable CSV template in a billing system's native column layout."""
+    spec = TEMPLATES.get(system.lower(), {}).get(kind.lower())
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Unknown template; use quickbooks|xero|stripe + invoices|usage.")
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(spec["header"])
+    writer.writerows(spec["rows"])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="recoup_{system}_{kind}_template.csv"'},
+    )
 
 
 @app.get("/app", include_in_schema=False)
