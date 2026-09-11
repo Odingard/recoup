@@ -139,6 +139,8 @@ function App() {
   const [connectorStatus, setConnectorStatus] = useState('')
   const [connectorConnection, setConnectorConnection] = useState(null)
   const [renewals, setRenewals] = useState([])
+  const [billing, setBilling] = useState(null)
+  const [syncingRecoveries, setSyncingRecoveries] = useState(false)
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -174,7 +176,11 @@ function App() {
     }
     const res = await fetch(`${API_BASE}${path}`, { ...options, headers, body })
     if (!res.ok) {
-      throw new Error(await res.text())
+      let detail = await res.text()
+      try {
+        detail = JSON.parse(detail)?.detail || detail
+      } catch { /* keep raw text */ }
+      throw new Error(detail)
     }
     const text = await res.text()
     return text ? JSON.parse(text) : null
@@ -238,6 +244,62 @@ function App() {
       .then((rows) => setRenewals(Array.isArray(rows) ? rows : []))
       .catch(() => setRenewals([]))
   }, [apiReady, apiRequest])
+
+  const loadBillingStatus = useCallback(async () => {
+    if (!apiReady) return
+    try {
+      const result = await apiRequest('/billing/status')
+      setBilling(result)
+    } catch (error) {
+      console.error(error)
+    }
+  }, [apiReady, apiRequest])
+
+  useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => {
+      void loadBillingStatus()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, loadBillingStatus])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const billingSetup = params.get('billing_setup')
+    if (!billingSetup) return
+    if (billingSetup === 'cancelled') {
+      const handle = window.setTimeout(() => {
+        setStatusMessage('Card setup cancelled.')
+      }, 0)
+      return () => window.clearTimeout(handle)
+    }
+    let cancelled = false
+    const complete = async () => {
+      try {
+        const headers = {}
+        if (isSampleMode) return
+        if (!firebaseUser) return
+        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
+        headers['Content-Type'] = 'application/json'
+        const res = await fetch(`${API_BASE}/billing/setup-complete`, {
+          method: 'POST', headers, body: JSON.stringify({ session_id: billingSetup }),
+        })
+        const payload = await res.json()
+        if (cancelled) return
+        if (payload?.status === 'success') {
+          setStatusMessage('Payment method saved — proof unlocked.')
+          void loadBillingStatus()
+        } else {
+          setStatusMessage(payload?.message || 'Payment method was not saved.')
+        }
+      } catch (error) {
+        console.error(error)
+        if (!cancelled) setStatusMessage('Payment method was not saved.')
+      }
+    }
+    void complete()
+    return () => { cancelled = true }
+  }, [firebaseUser, isSampleMode, loadBillingStatus])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -591,6 +653,39 @@ function App() {
     }
   }
 
+  const startBillingSetup = async () => {
+    try {
+      const result = await apiRequest('/billing/setup-session', { method: 'POST' })
+      if (result?.status === 'success' && result.url) {
+        window.location.assign(result.url)
+        return
+      }
+      setStatusMessage(result?.message || 'Could not start card setup.')
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not start card setup.')
+    }
+  }
+
+  const syncStripeRecoveries = async () => {
+    setSyncingRecoveries(true)
+    try {
+      const result = await apiRequest('/billing/sync-recoveries', { method: 'POST' })
+      if (result?.status === 'needs_connector') {
+        setStatusMessage('Connect Stripe (Step 2) to verify paid invoices.')
+      } else {
+        const n = result?.recovered?.length || 0
+        setStatusMessage(`Checked ${result?.checked ?? 0} invoices — ${n} newly recovered.`)
+        await refreshFindings()
+      }
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Stripe sync failed.')
+    } finally {
+      setSyncingRecoveries(false)
+    }
+  }
+
   const chargeSuccessFee = async () => {
     try {
       const result = await apiRequest('/billing/charge-success-fee', { method: 'POST' })
@@ -681,6 +776,9 @@ function App() {
   }, [findings, uploadedContracts])
 
   const reviewLabel = isSampleMode ? 'Sample data' : firebaseUser?.email || 'Authenticated'
+
+  const proofLocked = !isSampleMode && Boolean(billing?.configured) && !billing?.card_on_file
+  const lockTitle = 'Add a payment method to unlock'
 
   const startStripeInstall = useCallback(async () => {
     if (isSampleMode) {
@@ -789,6 +887,17 @@ function App() {
           Sample data is active. Requests use synthetic data and are not tied to your account.
           <button className="btn-secondary" onClick={() => setSessionMode(null)}>
             Exit sample mode
+          </button>
+        </div>
+      )}
+
+      {proofLocked && (
+        <div className="glass-panel mode-banner">
+          <LockKeyhole size={16} />
+          Add a payment method to unlock clause proof, audit reports and true-up packs.
+          You're only charged 20% of dollars actually recovered — nothing upfront.
+          <button className="btn-primary" onClick={startBillingSetup}>
+            Add payment method
           </button>
         </div>
       )}
@@ -1165,18 +1274,28 @@ function App() {
               </div>
 
               <div className="review-actions">
-                <button className="btn-secondary" onClick={exportFindings}>
+                <button className="btn-secondary" onClick={exportFindings} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
                   <Download size={16} /> Export findings (CSV)
                 </button>
-                <button className="btn-secondary" onClick={openAuditReport}>
+                <button className="btn-secondary" onClick={openAuditReport} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
                   <FileText size={16} /> Audit report
                 </button>
-                <button className="btn-secondary" onClick={downloadReportPdf}>
+                <button className="btn-secondary" onClick={downloadReportPdf} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
                   <Download size={16} /> Download PDF
                 </button>
+                {!isSampleMode && (
+                  <button className="btn-secondary" onClick={syncStripeRecoveries} disabled={syncingRecoveries}>
+                    <RefreshCw size={16} /> {syncingRecoveries ? 'Checking Stripe…' : 'Check Stripe for paid invoices'}
+                  </button>
+                )}
                 <button className="btn-primary" onClick={chargeSuccessFee}>
                   <DollarSign size={16} /> Bill success fee this month
                 </button>
+                {!isSampleMode && billing?.card_on_file && (
+                  <small className="muted-copy">
+                    Card on file: {billing.card_brand || 'card'} •••• {billing.card_last4}
+                  </small>
+                )}
               </div>
 
               <div className="contract-review-list">
@@ -1254,6 +1373,12 @@ function App() {
                             Recovered • {formatCurrency(finding.recovered_amount ?? finding.monthly_recoverable)}
                             {finding.payment?.ref ? ` • ${finding.payment.ref}` : ''}
                           </span>
+                          {finding.fee_charge?.status && (
+                            <p className="muted-copy">
+                              Recoup fee {formatCurrency(finding.fee_charge.amount)} — {finding.fee_charge.status}
+                              {finding.fee_charge.invoice_id ? ` (invoice ${finding.fee_charge.invoice_id})` : ''}
+                            </p>
+                          )}
                         </div>
                       </article>
                     ))}
@@ -1283,7 +1408,7 @@ function App() {
                           <p>{formatCurrency(cust.total)} outstanding</p>
                         </div>
                         <div className="review-actions">
-                          <button className="btn-secondary" onClick={() => downloadTrueupPdf(cust.customer_id, cust.customer_name)}>
+                          <button className="btn-secondary" onClick={() => downloadTrueupPdf(cust.customer_id, cust.customer_name)} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
                             <Download size={16} /> Download letter + schedule (PDF)
                           </button>
                         </div>
@@ -1402,6 +1527,7 @@ function App() {
                         <div className="info-group">
                           <div className="info-label">Exact clause quote (provenance)</div>
                           <div className="provenance-box">
+                            {selectedFinding.locked && <LockKeyhole size={14} />}
                             {(selectedFinding.provenance || selectedFinding.clause_text)
                               ? `“${selectedFinding.provenance || selectedFinding.clause_text}”`
                               : 'No contract clause cited — this finding should be treated as needs review.'}

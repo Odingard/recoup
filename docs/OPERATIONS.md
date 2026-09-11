@@ -129,7 +129,32 @@ invoices, contracts, anything else present), the account root document, and
 the tenant's connector secret in Secret Manager. Returns per-collection
 counts. Wrong confirmation returns 400.
 
-## 6. Robustness
+## 6. Billing gate & fee collection
+
+Recoup charges the operator 20% of dollars actually recovered, collected against a
+card on file through Recoup's own Stripe account (`RECOUP_BILLING_STRIPE_API_KEY`).
+
+- `GET /api/billing/status` — `{configured, card_on_file, card_brand, card_last4, success_fee_pct}`.
+- `POST /api/billing/setup-session` — creates a hosted Stripe Checkout session in
+  `setup` mode; success returns to `RECOUP_WEB_BASE_URL` (or the request origin) at
+  `/app/?billing_setup={CHECKOUT_SESSION_ID}`.
+- `POST /api/billing/setup-complete` `{session_id}` — verifies the session, attaches
+  the payment method as the customer's default, and stores `billing` on the
+  Firestore account root doc.
+- `POST /api/billing/sync-recoveries` — checks `invoiced` findings whose corrective
+  invoice ref starts with `in_` against the tenant Stripe connector; paid invoices
+  transition to `recovered` (amounts from Stripe, `verified_via: stripe_connect`)
+  and trigger the fee charge.
+- `POST /api/billing/charge-success-fee` — charges each recovered finding's card on
+  file; without a card it falls back to a mailed Stripe invoice for the total.
+
+While billing is configured and no card is on file, clause proof (`provenance`,
+`clause_text`, `math`, `detail`) is redacted on findings and `/api/report`,
+`/api/report.pdf`, `/api/report/share`, `/api/trueup/*` and `/api/findings/export`
+return HTTP 402. Status transitions stay open. Without `RECOUP_BILLING_STRIPE_API_KEY`
+(dev/test) nothing locks; sample mode is never locked.
+
+## 7. Robustness
 
 No bad input returns a 500. Corrupt files, scanned/image PDFs, unsupported formats,
 empty Stripe accounts, and missing fields all return a clear, actionable message and

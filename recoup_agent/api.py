@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import urlencode
@@ -25,6 +26,7 @@ from . import db
 from .billing.connector_keys import (
     delete_connector_key,
     get_connector_status,
+    resolve_connector_key,
     store_connector_key,
 )
 from .billing import recoup_billing
@@ -335,12 +337,46 @@ def _extract_and_normalize_contract(file_path: str) -> tuple[dict | None, list[d
     return normalized, [], None
 
 
+_LOCKED_MESSAGE = "Add a payment method to unlock the contract clause and calculation."
+_LOCK_DETAIL = ("Add a payment method to unlock reports and true-up packs. "
+                "You are only charged 20% of dollars actually recovered.")
+
+
+def _proof_unlocked(user: dict) -> bool:
+    """Clause text, math, and reports are gated behind a card on file."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return True  # sample/offline mode keeps full proof
+    if not recoup_billing.is_configured():
+        return True  # dev/test envs without a billing key stay unlocked
+    billing = db.get_account_billing(account_id) or {}
+    return bool(billing.get("payment_method_id"))
+
+
+def _redact_if_locked(user: dict, findings: list[dict]) -> list[dict]:
+    if not findings or _proof_unlocked(user):
+        return findings
+    redacted = []
+    for f in findings:
+        f = dict(f)
+        for key in ("provenance", "clause_text", "math", "detail"):
+            f[key] = _LOCKED_MESSAGE
+        f["locked"] = True
+        redacted.append(f)
+    return redacted
+
+
+def _require_unlocked(user: dict) -> None:
+    if not _proof_unlocked(user):
+        raise HTTPException(status_code=402, detail=_LOCK_DETAIL)
+
+
 @app.get("/api/findings/pending")
 def get_pending_findings(user: dict = Depends(verify_token)) -> List[Dict]:
     account_id = _account_id(user)
     if account_id is None:
         return _offline_findings()
-    return db.get_pending_findings(account_id)
+    return _redact_if_locked(user, db.get_pending_findings(account_id))
 
 
 @app.get("/api/findings")
@@ -348,7 +384,7 @@ def get_all_findings(user: dict = Depends(verify_token)) -> List[Dict]:
     account_id = _account_id(user)
     if account_id is None:
         return _offline_findings()
-    return db.get_all_findings(account_id)
+    return _redact_if_locked(user, db.get_all_findings(account_id))
 
 
 @app.post("/api/reconcile")
@@ -453,11 +489,20 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
             "recorded_by": user.get("email", "unknown"),
         },
     }
+    fee_charge = None
     if account_id is not None:
         _transition_fields(account_id, finding_id, "recovered")
         db.update_finding_status(account_id, finding_id, "recovered",
                                  f"ui_recovered_by_{user.get('email', 'unknown')}", fields=fields)
-    return {"status": "recovered", "finding_id": finding_id, **fields}
+        # Collect Recoup's 20% against the just-recorded paid amount; billing
+        # problems never block the recovery transition.
+        finding = db.get_finding(account_id, finding_id) or {"finding_id": finding_id}
+        fee_charge = recoup_billing.charge_success_fee_for_finding(
+            account_id, finding, evidence.paid_amount)
+        if fee_charge:
+            db.update_finding_fields(account_id, finding_id,
+                                     {"fee_charge": fee_charge}, "success_fee_charge")
+    return {"status": "recovered", "finding_id": finding_id, "fee_charge": fee_charge, **fields}
 
 
 @app.post("/api/findings/{finding_id}/disputed")
@@ -497,25 +542,141 @@ def get_metrics(user: dict = Depends(verify_token)):
     return compute_metrics(_findings_for(account_id))
 
 
+@app.get("/api/billing/status")
+def get_billing_status(user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"configured": recoup_billing.is_configured(),
+                "card_on_file": True, "sample": True, "success_fee_pct": 0.20}
+    return recoup_billing.billing_status(account_id)
+
+
+@app.post("/api/billing/setup-session")
+def start_billing_setup(request: Request, user: dict = Depends(verify_token)):
+    """Hosted Stripe Checkout (setup mode) to place a card on file."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no billing account.")
+    base = os.getenv("RECOUP_WEB_BASE_URL") or str(request.base_url).rstrip("/")
+    return recoup_billing.create_setup_checkout_url(account_id, user.get("email"), base)
+
+
+class SetupComplete(BaseModel):
+    session_id: str = ""
+
+
+@app.post("/api/billing/setup-complete")
+def finish_billing_setup(payload: SetupComplete, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no billing account.")
+    return recoup_billing.complete_setup_session(account_id, payload.session_id)
+
+
+@app.post("/api/billing/sync-recoveries")
+def sync_recoveries(user: dict = Depends(verify_token)):
+    """Verify paid corrective invoices against the customer's Stripe via the
+    read-only connector, transition them to recovered, and collect the fee."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no Stripe connector.")
+    tenant_key = resolve_connector_key(account_id)
+    if not tenant_key:
+        return {"status": "needs_connector", "checked": 0}
+
+    import stripe
+    checked = 0
+    recovered: list[str] = []
+    fee_charges: list[dict] = []
+    errors: list[dict] = []
+    for f in db.get_all_findings(account_id):
+        ref = (f.get("corrective_invoice") or {}).get("ref") or ""
+        if f.get("status") != "invoiced" or not ref.startswith("in_"):
+            continue
+        checked += 1
+        try:
+            inv = stripe.Invoice.retrieve(ref, api_key=tenant_key)
+            if inv.get("status") != "paid":
+                continue
+            amount_paid = inv.get("amount_paid") or 0
+            paid_at = (inv.get("status_transitions") or {}).get("paid_at")
+            payment_ref = inv.get("payment_intent") or inv.get("charge")
+            fields = {
+                "recovered_amount": amount_paid / 100.0,
+                "payment": {
+                    "ref": payment_ref,
+                    "date": (datetime.fromtimestamp(paid_at, tz=timezone.utc).isoformat()
+                             if paid_at else None),
+                    "verified_via": "stripe_connect",
+                    "recorded_by": "stripe_connect",
+                },
+            }
+            try:
+                _transition_fields(account_id, f["finding_id"], "recovered")
+            except HTTPException:
+                continue
+            db.update_finding_status(account_id, f["finding_id"], "recovered",
+                                     "stripe_connect_sync", fields=fields)
+            fee = recoup_billing.charge_success_fee_for_finding(
+                account_id, f, fields["recovered_amount"])
+            if fee:
+                db.update_finding_fields(account_id, f["finding_id"],
+                                         {"fee_charge": fee}, "success_fee_charge")
+                fee_charges.append(fee)
+            recovered.append(f["finding_id"])
+        except Exception as exc:
+            errors.append({"finding_id": f.get("finding_id"), "error": str(exc)})
+    return {"status": "success", "checked": checked, "recovered": recovered,
+            "fee_charges": fee_charges, "errors": errors}
+
+
 @app.post("/api/billing/charge-success-fee")
 def charge_success_fee(user: dict = Depends(verify_token)):
-    """Bill Recoup's 20% success fee on THIS MONTH's recovered dollars through
-    Recoup's own (separate) Stripe account."""
+    """Collect Recoup's 20% success fee on recovered dollars. Charges the card
+    on file per finding; falls back to a mailed invoice when no card exists."""
     account_id = _account_id(user)
     if _is_header_sample(user):
         return _needs_review_payload("Sample mode does not bill a success fee.")
     metrics = compute_metrics(_findings_for(account_id))
+    findings = _findings_for(account_id)
+    unbilled = [f for f in findings
+                if f.get("status") == "recovered"
+                and (f.get("fee_charge") or {}).get("status") not in {"paid", "pending"}]
+
+    billing = (db.get_account_billing(account_id) or {}) if account_id else {}
+    if billing.get("payment_method_id"):
+        charged = []
+        for f in unbilled:
+            amount = f.get("recovered_amount") or f.get("monthly_recoverable") or 0
+            result = recoup_billing.charge_success_fee_for_finding(account_id, f, amount)
+            if result:
+                db.update_finding_fields(account_id, f["finding_id"],
+                                         {"fee_charge": result}, "success_fee_charge")
+            charged.append({"finding_id": f.get("finding_id"), **result})
+        return {"metrics": metrics,
+                "billing": {"status": "success" if charged else "skipped",
+                            "charged": charged}}
+
     result = recoup_billing.create_success_fee_invoice(
         customer_email=user.get("email"),
         amount_dollars=metrics["success_fee_this_month"],
         current_month=metrics["current_month"],
     )
-    return {"metrics": metrics, "billing": result}
+    if result.get("status") == "success" and account_id is not None:
+        for f in unbilled:
+            db.update_finding_fields(
+                account_id, f["finding_id"],
+                {"fee_charge": {"status": "invoiced", "invoice_id": result["invoice_id"],
+                                "hosted_invoice_url": result.get("hosted_invoice_url"),
+                                "amount": result.get("amount")}},
+                "success_fee_charge")
+    return {"metrics": metrics, "billing": {**result, "fallback": True}}
 
 
 @app.get("/api/findings/export")
 def export_findings(user: dict = Depends(verify_token)):
     """Export findings as CSV for the operator's records."""
+    _require_unlocked(user)
     account_id = _account_id(user)
     findings = _findings_for(account_id)
     columns = [
@@ -563,11 +724,13 @@ def _share_token(account_id: str) -> str:
 
 @app.get("/api/report")
 def get_report(user: dict = Depends(verify_token)):
+    _require_unlocked(user)
     return _report_for_account(_account_id(user))
 
 
 @app.get("/api/report.pdf")
 def get_report_pdf(user: dict = Depends(verify_token)):
+    _require_unlocked(user)
     pdf = render_pdf(_report_for_account(_account_id(user)))
     return Response(content=pdf, media_type="application/pdf",
                     headers={"Content-Disposition": "attachment; filename=recoup_report.pdf"})
@@ -575,6 +738,7 @@ def get_report_pdf(user: dict = Depends(verify_token)):
 
 @app.post("/api/report/share")
 def share_report(request: Request, user: dict = Depends(verify_token)):
+    _require_unlocked(user)
     account_id = _account_id(user)
     base = os.getenv("RECOUP_WEB_BASE_URL") or str(request.base_url).rstrip("/")
     if account_id is None:
@@ -739,6 +903,7 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
 
 def _trueup_pack(user: dict, customer_id: str, sender: str | None, include_open: bool):
+    _require_unlocked(user)
     account_id = _account_id(user)
     if account_id is None:
         contracts, _usage, _invoices = _load_book(None)
