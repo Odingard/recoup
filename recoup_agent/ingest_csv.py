@@ -21,13 +21,20 @@ class IngestError(ValueError):
 
 
 COLUMN_ALIASES = {
-    "customer":    ["customer_id", "customer", "customer_name", "account", "account_name", "account_id", "client", "client_name"],
+    "customer":    ["customer_id", "customer", "customer_name", "account", "account_name", "account_id",
+                    "client", "client_name", "contactname", "contact_name", "customer_name_", "display_name", "name"],
     "period":      ["period", "month", "billing_period", "billing_month"],
-    "period_start": ["period_start", "start", "start_date", "invoice_date", "date", "created", "service_start"],
-    "amount":      ["amount", "amount_usd", "amount_billed", "total", "total_billed", "amount_due", "line_amount"],
-    "description": ["description", "line_item", "item", "product", "memo", "plan"],
-    "units":       ["units", "qty", "quantity", "units_consumed", "total_units", "usage", "value"],
-    "invoice_id":  ["invoice", "invoice_id", "invoice_number", "id", "number"],
+    "period_start": ["period_start", "start", "start_date", "invoice_date", "date", "created", "service_start",
+                     "invoicedate", "txn_date", "transaction_date", "period_start_utc", "created_utc"],
+    # 'subtotal'/'net_amount' rank above 'total' so tax-inclusive totals lose.
+    "amount":      ["amount", "amount_usd", "amount_billed", "subtotal", "net_amount",
+                    "lineamount", "line_amount_", "amount_line", "total", "total_billed", "amount_due", "line_amount"],
+    "description": ["description", "line_item", "item", "product", "memo", "plan",
+                    "memo_description", "product_service", "line_description", "item_description", "description_"],
+    "units":       ["units", "qty", "quantity", "units_consumed", "total_units", "usage", "value",
+                    "quantity_", "usage_quantity", "aggregated_usage"],
+    "invoice_id":  ["invoice", "invoice_id", "invoice_number", "id", "number",
+                    "invoicenumber", "num", "invoice_number_", "doc_number"],
     "metric":      ["metric", "meter", "usage_type", "unit"],
     "status":      ["status", "state"],
 }

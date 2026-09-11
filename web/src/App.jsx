@@ -131,6 +131,8 @@ function App() {
   const [uploadedContracts, setUploadedContracts] = useState([])
   const [contractDraft, setContractDraft] = useState(emptyContractDraft)
   const [selectedFileName, setSelectedFileName] = useState('')
+  const [bulkResult, setBulkResult] = useState(null)
+  const [bulkUploading, setBulkUploading] = useState(false)
   const [contractSubmitting, setContractSubmitting] = useState(false)
   const [metrics, setMetrics] = useState(null)
   const [connectorSubmitting, setConnectorSubmitting] = useState(false)
@@ -323,6 +325,32 @@ function App() {
       setStatusMessage('Contract upload failed.')
     } finally {
       setContractSubmitting(false)
+    }
+  }
+
+  const handleBulkUpload = async (event) => {
+    const fileList = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!fileList.length) return
+    setSelectedFileName(fileList[0].name)
+    setBulkUploading(true)
+    setBulkResult(null)
+    try {
+      const form = new FormData()
+      fileList.forEach((f) => form.append('files', f))
+      const result = await apiRequest('/ingest/bulk', { method: 'POST', body: form })
+      setBulkResult(result)
+      const nr = result?.needs_review?.length
+      setStatusMessage(
+        result?.status === 'needs_review'
+          ? (result.message || 'Bulk upload needs review.')
+          : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` +
+            (nr ? ` ${nr} item(s) need review.` : ''))
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Bulk upload failed.')
+    } finally {
+      setBulkUploading(false)
     }
   }
 
@@ -734,22 +762,40 @@ function App() {
                   <p className="eyebrow">Step 1</p>
                   <h2>Upload contracts</h2>
                 </div>
-                <span className="hint-pill">PDF drop slots in later</span>
+                <span className="hint-pill">Files or a ZIP — we sort them out</span>
               </div>
 
               <div className="upload-grid">
                 <div className="dropzone glass-panel">
                   <Upload size={22} />
                   <div>
-                    <strong>Drag a contract file here</strong>
-                    <p>Manual structured entry is enabled now. Raw PDF upload comes later.</p>
+                    <strong>{bulkUploading ? 'Uploading…' : 'Drop files here or click to browse'}</strong>
+                    <p>Drop contracts (PDF/DOCX/scans), billing + usage CSVs, or a ZIP of everything.</p>
                   </div>
                   <input
                     type="file"
-                    accept=".pdf,.txt,.doc,.docx"
-                    onChange={(event) => setSelectedFileName(event.target.files?.[0]?.name || '')}
+                    multiple
+                    disabled={bulkUploading}
+                    accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg"
+                    onChange={handleBulkUpload}
                   />
                   {selectedFileName && <span className="file-chip">{selectedFileName}</span>}
+                  {bulkResult?.files?.length > 0 && (
+                    <ul className="upload-history">
+                      {bulkResult.files.map((f, i) => (
+                        <li key={`${f.name}-${i}`} className="upload-history-item">
+                          <span className="upload-file-name">{f.name}</span>
+                          <span className="file-chip">{f.kind} · {f.status}{f.message ? ` — ${f.message}` : ''}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="muted">
+                    Export templates:{' '}
+                    <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}
+                    <a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}
+                    <a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a>
+                  </p>
                 </div>
 
                 <div className="contract-form-grid">
