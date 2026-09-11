@@ -1,9 +1,34 @@
 import mimetypes
 import os
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+
+_MIME_OVERRIDES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+}
+
+
+def _docx_to_text(file_path: str) -> bytes:
+    """Extract paragraph text from a .docx using only stdlib (zipfile + XML)."""
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(file_path) as zf:
+        xml_bytes = zf.read("word/document.xml")
+    root = ET.fromstring(xml_bytes)
+    paragraphs = []
+    for para in root.iter(f"{ns}p"):
+        text = "".join(node.text or "" for node in para.iter(f"{ns}t"))
+        if text.strip():
+            paragraphs.append(text)
+    return "\n".join(paragraphs).encode("utf-8")
 
 class Entitlement(BaseModel):
     term_type: str = Field(description="The type of entitlement, e.g., 'committed_minimum', 'overage_rate', 'discount', 'escalator'")
@@ -22,19 +47,20 @@ class ContractEntitlements(BaseModel):
 
 def extract_entitlements(file_path: str) -> ContractEntitlements:
     """Extracts structured billing entitlements from a document of any format."""
+    suffix = os.path.splitext(file_path)[1].lower()
     mime_type, _ = mimetypes.guess_type(file_path)
-    if not mime_type:
-        mime_type = "application/octet-stream"
-        if file_path.endswith('.md') or file_path.endswith('.txt'):
-            mime_type = "text/plain"
-        elif file_path.endswith('.pdf'):
-            mime_type = "application/pdf"
+    mime_type = _MIME_OVERRIDES.get(suffix, mime_type) or "application/octet-stream"
+
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+    if suffix == ".docx":
+        # Gemini cannot read OOXML; convert to plain text first (stdlib only).
+        file_bytes = _docx_to_text(file_path)
+        mime_type = "text/plain"
 
     # Assume we use vertex based on the environment variables defined in README
     client = genai.Client()
-    
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
 
     document = types.Part.from_bytes(
         data=file_bytes,
