@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Recoup</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+  :root { --ink:#12161C; --paper:#F7F5F0; --slate:#5B6672; --green:#1F8A5B; }
+  body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.6 Inter, system-ui, -apple-system, Segoe UI, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1, h2 { font-family: Fraunces, Georgia, serif; font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 34px; margin: 0 0 6px; }
+  h2 { font-size: 20px; margin: 36px 0 10px; }
+  .meta { color: var(--slate); font-size: 14px; margin-bottom: 32px; }
+  a { color: var(--ink); }
+  nav a { color: var(--slate); text-decoration: none; font-size: 14px; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav><a href="/">← Recoup</a> &nbsp;·&nbsp; <a href="/terms.html">Terms of Service</a></nav>
+  <h1>Privacy Policy</h1>
+  <div class="meta">Recoup is a product of Odingard (Six Sense Enterprise Services) · Effective September 11, 2026</div>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>Account information:</strong> your name and email from Google sign-in (via Firebase Authentication).</li>
+    <li><strong>Business data you upload:</strong> contracts, invoice and usage exports, and corrections you make to extracted terms.</li>
+    <li><strong>Connected billing data:</strong> if you connect Stripe, we read customers, invoices, invoice line items, subscriptions, and usage records with a read-only scope. We never write to your billing system.</li>
+    <li><strong>Billing information for Recoup fees:</strong> your card is collected and stored by Stripe. We store only a payment-method reference, card brand, and last four digits.</li>
+    <li><strong>Operational logs:</strong> request logs and an audit trail of actions taken in your account (approvals, recoveries, deletions).</li>
+  </ul>
+
+  <h2>How we use it</h2>
+  <ul>
+    <li>To extract contract terms, reconcile them against your billing data, and generate Findings, reports, and true-up documents for you.</li>
+    <li>To calculate and charge success fees as described in the <a href="/terms.html">Terms of Service</a>.</li>
+    <li>To secure and operate the Service.</li>
+  </ul>
+  <p>We do not sell your data, share it with advertisers, or use it to train machine-learning models.</p>
+
+  <h2>Processors we rely on</h2>
+  <ul>
+    <li><strong>Google Cloud</strong> (Cloud Run, Firestore, Secret Manager, Vertex AI / Gemini) — hosting, storage, and contract-text extraction. Contract text is sent to Vertex AI for extraction under Google Cloud’s enterprise data terms, which exclude use for model training.</li>
+    <li><strong>Firebase Authentication</strong> — sign-in.</li>
+    <li><strong>Stripe</strong> — read-only connection to your billing data (if you connect it) and collection of Recoup fees.</li>
+  </ul>
+
+  <h2>Retention and deletion</h2>
+  <p>Your data is kept while your account is active. You can permanently delete all account data — contracts, invoices, usage, findings, audit log, billing references, and any stored Stripe connection credential — at any time from the app (Settings → Delete account data). Deletion is immediate. Operational logs are retained for up to 30 days.</p>
+
+  <h2>Security</h2>
+  <p>Data is encrypted in transit (TLS) and at rest. Billing credentials are stored in Google Secret Manager, isolated per account. Recoup’s own fee-collection key is separated from any key used to read your data. Access to production systems is restricted to Odingard personnel who need it to operate the Service.</p>
+
+  <h2>Your rights</h2>
+  <p>You can access, export (CSV/PDF from the app), correct, or delete your data at any time. For anything you cannot do in the app, email privacy@odingard.com. If you are in a jurisdiction with specific data-protection rights (for example the EU/UK or California), we will honor requests consistent with that law.</p>
+
+  <h2>Changes</h2>
+  <p>We will post any changes here and update the effective date. Material changes will be announced by email or in the app.</p>
+
+  <h2>Contact</h2>
+  <p>Odingard · privacy@odingard.com · <a href="https://recoup.odingard.com">recoup.odingard.com</a></p>
+</div>
+</body>
+</html>

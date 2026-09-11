@@ -272,3 +272,68 @@ def test_sync_recoveries_needs_connector(monkeypatch):
                        headers={"Authorization": "Bearer tok"})
     assert resp.json()["status"] == "needs_connector"
     assert resp.json()["checked"] == 0
+
+
+def test_report_survives_legacy_finding_without_type(monkeypatch):
+    """Firestore docs written before `type` was persisted must not 500 the report."""
+    client = _authed_client(monkeypatch,
+                            {"stripe_customer_id": "cus_1", "payment_method_id": "pm_1"})
+    legacy_finding = {
+        "finding_id": "f-legacy", "customer_id": "acme", "customer_name": "Acme",
+        "period": "2026-06", "title": "Missed minimum", "monthly_recoverable": 500.0,
+        "status": "open", "detail": "charged nothing",
+    }
+    monkeypatch.setattr(api.db, "get_all_findings", lambda _a: [legacy_finding])
+    resp = client.get("/api/report", headers={"Authorization": "Bearer tok"})
+    assert resp.status_code == 200
+    report = resp.json()
+    assert len(report["customers"]) == 1
+    row = report["customers"][0]["rows"][0]
+    assert row["amount"] == 500.0
+
+
+def test_save_findings_persists_report_fields(monkeypatch):
+    saved = []
+
+    class FakeDocRef:
+        def get(self):
+            return types.SimpleNamespace(exists=False)
+
+    class FakeBatch:
+        def set(self, ref, data, merge=False):
+            saved.append(data)
+
+        def commit(self):
+            pass
+
+    class FakeAccount:
+        def collection(self, _name):
+            return self
+
+        def document(self, _id):
+            return FakeDocRef()
+
+    class FakeClient:
+        def collection(self, _name):
+            return self
+
+        def document(self, _id):
+            return FakeAccount()
+
+        def batch(self):
+            return FakeBatch()
+
+    monkeypatch.setattr(api.db, "get_client", lambda: FakeClient())
+    api.db.save_findings("acct-1", [{
+        "finding_id": "f1", "customer_id": "acme", "customer_name": "Acme",
+        "type": "missed_minimum", "period": "2026-06", "title": "t",
+        "detail": "d", "monthly_recoverable": 500.0,
+        "math": "m", "clause_text": "c", "assumption": "a",
+        "provenance": "p",
+    }])
+    assert len(saved) == 1
+    data = saved[0]
+    assert data["type"] == "missed_minimum"
+    assert data["math"] == "m"
+    assert data["clause_text"] == "c"
+    assert data["assumption"] == "a"
