@@ -91,6 +91,13 @@ def normalize_contract(raw: dict) -> dict:
             "escalator": notes,
         },
     }
+    if tier.get("overage_tiers"):
+        contract["overage_tiers"] = sorted(
+            ({"up_to": t.get("up_to"), "rate": t["rate"], "provenance": notes}
+             for t in tier["overage_tiers"]),
+            key=lambda t: (t["up_to"] is None, t["up_to"] or 0))
+        contract.setdefault("term_meta", {})["overage_tiers"] = {
+            "confidence": 1.0, "provenance": notes}
     if raw.get("amendments"):
         contract["amendments"] = raw["amendments"]
         schedule = [{
@@ -133,30 +140,52 @@ def match_discount(contract_discounts: list[dict], description: str) -> str:
     return description
 
 
+def _match_discount_strict(contract_discounts: list[dict], description: str) -> str | None:
+    """Like match_discount but returns None when no contract discount's name
+    matches (never falls back to a single discount or the raw description —
+    a 'Service credit' line must not be mistaken for a contractual discount)."""
+    desc = (description or "").lower()
+    for d in contract_discounts:
+        name = (d.get("name") or "").lower()
+        if name and (name in desc or desc in name):
+            return d["name"]
+    return None
+
+
 def normalize_invoice(raw: dict, contract: dict | None) -> dict:
     """Clean test set invoice (line_items) -> internal schema."""
-    base_charge = 0.0
-    overage_charge = 0.0
-    discounts_applied: list[dict] = []
+    from .line_roles import classify_line
+
+    invoice = {
+        "customer_id": raw["customer_id"],
+        "period": raw["period"],
+        "base_charge": 0.0,
+        "overage_charge": 0.0,
+        "discounts_applied": [],
+        "tax_excluded": 0.0,
+        "credits_applied": [],
+        "prorated": False,
+        "proration_amount": 0.0,
+    }
     contract_discounts = (contract or {}).get("discounts") or []
     for item in raw.get("line_items") or []:
         amount = item.get("amount", 0.0)
         description = item.get("description", "")
-        desc = description.lower()
-        if amount < 0:
+        role = classify_line(description, amount, contract_discounts=contract_discounts)
+        if role == "proration":
+            invoice["prorated"] = True
+            invoice["proration_amount"] += amount
+        elif role == "tax":
+            invoice["tax_excluded"] += amount
+        elif role == "credit":
+            invoice["credits_applied"].append({"description": description, "amount": abs(amount)})
+        elif role == "discount":
             matched = match_discount(contract_discounts, description)
-            discounts_applied.append({"name": matched, "amount": abs(amount)})
-        elif "overage" in desc:
-            overage_charge += amount
+            invoice["discounts_applied"].append({"name": matched, "amount": abs(amount)})
+        elif role == "overage":
+            invoice["overage_charge"] += amount
         else:
-            base_charge += amount
-    invoice = {
-        "customer_id": raw["customer_id"],
-        "period": raw["period"],
-        "base_charge": base_charge,
-        "overage_charge": overage_charge,
-        "discounts_applied": discounts_applied,
-    }
+            invoice["base_charge"] += amount
     if "invoice_id" in raw:
         invoice["invoice_id"] = raw["invoice_id"]
     return invoice

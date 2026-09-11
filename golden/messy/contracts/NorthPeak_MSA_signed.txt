@@ -1,0 +1,22 @@
+MASTER SERVICES AGREEMENT
+Between: DataBridge, Inc. ("Provider") and NorthPeak Logistics LLC ("Customer")
+Effective Date: January 1, 2025
+
+... [sections 1-3 omitted] ...
+
+4. FEES AND USAGE
+
+4.1  Customer shall pay a base platform fee of Four Thousand Dollars ($4,000.00)
+     per calendar month, invoiced in arrears, which entitles Customer to up to
+     one million (1,000,000) API Calls per month.
+
+4.2  API Calls in excess of the monthly entitlement set forth in 4.1 shall be
+     billed at a rate of $0.0025 per additional API Call ("Overage"). Overage is
+     calculated per calendar month and is not carried over or netted against
+     months of lower usage.
+
+4.3  The Term of this Agreement is three (3) years commencing on the Effective
+     Date. No annual price adjustment applies during the initial Term.
+
+... [signatures] ...
+Signed: NorthPeak Logistics LLC, 12/18/2024

@@ -1,0 +1,15 @@
+{
+  "customer_name": "MERIDIAN FOODS",
+  "entitlements": [
+    {
+      "term_type": "committed_minimum",
+      "value": 8000.0,
+      "label": null,
+      "effective_date": "2024-09-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "3.3 MINIMUM COMMITMENT. Notwithstanding per-facility pricing, Customer commits to a minimum monthly charge of Eight Thousand Dollars ($8,000.00) for the duration of the Term, regardless of the number of active facilities. Where active-facility charges fall below this floor, the floor amount applies."
+    }
+  ]
+}

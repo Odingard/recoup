@@ -12,6 +12,7 @@ class Entitlement(BaseModel):
     effective_date: Optional[str] = Field(None, description="For committed_minimum/overage_rate/escalator terms: the date this value takes effect (ISO YYYY-MM-DD). For an amendment that changes a term, emit a SEPARATE entitlement with the amendment's effective date. Do NOT use this field for discount start or end dates.")
     start_date: Optional[str] = Field(None, description="For discounts/promotions: the date the discount STARTS (ISO YYYY-MM-DD). Leave null otherwise.")
     end_date: Optional[str] = Field(None, description="For discounts/promotions: the date the discount ENDS or expires (ISO YYYY-MM-DD). Leave null if it never expires.")
+    tier_up_to: Optional[float] = Field(None, description="For overage_tier terms only: the upper bound of this tier in overage units above the included quantity; null for the final, unbounded tier.")
     confidence_score: float = Field(description="Confidence score of this extraction between 0.0 and 1.0")
     provenance: str = Field(description="The exact clause quote and page number indicating where this was found.")
 
@@ -49,7 +50,11 @@ def extract_entitlements(file_path: str) -> ContractEntitlements:
         "and promotions, put the promo name in label, when it begins in start_date and when it ends in end_date; "
         "never in effective_date. (3) Emit included_units whenever the base fee 'includes' a quantity of units. "
         "(4) Only report overage_rate for a per-unit charge that applies ABOVE an included quantity; a per-unit "
-        "list price that is simply billed per unit is not an overage rate. (5) provenance must be the verbatim clause text."
+        "list price that is simply billed per unit is not an overage rate. (5) provenance must be the verbatim clause text. "
+        "(6) If overage pricing is tiered (different per-unit rates for different volume bands above the included "
+        "quantity), emit one overage_tier entitlement per band with value = that band's per-unit rate and "
+        "tier_up_to = the band's upper bound in units above the included quantity (null for the last band), "
+        "instead of a single overage_rate."
     )
 
     response = client.models.generate_content(

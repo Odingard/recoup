@@ -1,0 +1,135 @@
+{
+  "customers": [
+    {
+      "customer_id": "northpeak",
+      "name": "NorthPeak Logistics",
+      "contract_start": "2025-01-01",
+      "contract_end": "2027-12-31",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "API Calls",
+        "included_units": 1000000,
+        "unit": "api_calls",
+        "base_monthly_fee": 4000.00,
+        "overage_rate_per_unit": 0.0025
+      },
+      "minimum_monthly_commit": 4000.00,
+      "annual_escalator_pct": 0.0,
+      "discounts": [],
+      "notes": "Overage above 1,000,000 API calls billable at $0.0025/call per master agreement section 4.2."
+    },
+    {
+      "customer_id": "sterling",
+      "name": "Sterling Dental Group",
+      "contract_start": "2024-03-01",
+      "contract_end": "2027-02-28",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "Practice Suite - Enterprise",
+        "included_units": 40,
+        "unit": "seats",
+        "base_monthly_fee": 6000.00,
+        "overage_rate_per_unit": 150.00
+      },
+      "minimum_monthly_commit": 6000.00,
+      "annual_escalator_pct": 0.04,
+      "escalator_effective_month": "2026-03",
+      "discounts": [],
+      "notes": "Section 7.1: annual price increase of 4% effective each March 1 anniversary."
+    },
+    {
+      "customer_id": "cascade",
+      "name": "Cascade Analytics",
+      "contract_start": "2025-06-01",
+      "contract_end": "2027-05-31",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "Data Platform - Growth",
+        "included_units": 25,
+        "unit": "seats",
+        "base_monthly_fee": 5000.00,
+        "overage_rate_per_unit": 200.00
+      },
+      "minimum_monthly_commit": 5000.00,
+      "annual_escalator_pct": 0.0,
+      "discounts": [
+        {
+          "type": "promotional_percentage",
+          "amount_pct": 0.20,
+          "starts": "2025-06-01",
+          "expires": "2025-11-30",
+          "notes": "Launch promo: 20% off for first 6 months, expires 2025-11-30."
+        }
+      ]
+    },
+    {
+      "customer_id": "meridian",
+      "name": "Meridian Foods",
+      "contract_start": "2024-09-01",
+      "contract_end": "2026-08-31",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "Supply Chain Cloud",
+        "included_units": 10,
+        "unit": "facilities",
+        "base_monthly_fee": 8000.00,
+        "overage_rate_per_unit": 750.00
+      },
+      "minimum_monthly_commit": 8000.00,
+      "annual_escalator_pct": 0.0,
+      "discounts": [],
+      "notes": "Floor commit of $8,000/mo regardless of active facilities per section 3.3."
+    },
+    {
+      "customer_id": "volt",
+      "name": "Volt Robotics",
+      "contract_start": "2024-11-01",
+      "contract_end": "2027-10-31",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "Fleet Ops Platform",
+        "included_units": 30,
+        "unit": "robots",
+        "base_monthly_fee": 9000.00,
+        "overage_rate_per_unit": 250.00
+      },
+      "minimum_monthly_commit": 6000.00,
+      "annual_escalator_pct": 0.0,
+      "discounts": [],
+      "amendments": [
+        {
+          "amendment_id": "AMD-VOLT-001",
+          "signed": "2025-08-15",
+          "effective": "2025-09-01",
+          "change": "minimum_monthly_commit reduced from 9000.00 to 6000.00 due to fleet downsizing",
+          "supersedes": "base_monthly_fee floor"
+        }
+      ],
+      "notes": "TRAP: base fee line reads 9000 but signed amendment AMD-VOLT-001 lowered the enforceable minimum to 6000 effective 2025-09-01. Billing at 6000 is CORRECT. Do not flag."
+    },
+    {
+      "customer_id": "harbor",
+      "name": "Harbor Freight Co",
+      "contract_start": "2025-04-01",
+      "contract_end": "2027-03-31",
+      "billing_frequency": "monthly",
+      "currency": "USD",
+      "committed_tier": {
+        "product": "Logistics API - Standard",
+        "included_units": 500000,
+        "unit": "api_calls",
+        "base_monthly_fee": 3000.00,
+        "overage_rate_per_unit": 0.004
+      },
+      "minimum_monthly_commit": 3000.00,
+      "annual_escalator_pct": 0.0,
+      "discounts": [],
+      "notes": "TRAP: everything matches. Clean account. Do not flag."
+    }
+  ]
+}

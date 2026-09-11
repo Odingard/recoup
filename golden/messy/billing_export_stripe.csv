@@ -1,0 +1,15 @@
+invoice,customer_name,period_start,period_end,description,amount_usd,status
+in_1NP06,NorthPeak Logistics,06/01/2026,06/30/2026,API Calls base tier,4000.00,paid
+in_1NP07,NorthPeak Logistics,07/01/2026,07/31/2026,API Calls base tier,4000.00,paid
+in_1ST06,Sterling Dental,2026-06-01,2026-06-30,Practice Suite Enterprise 40 seats,6000.00,paid
+in_1ST07,Sterling Dental,2026-07-01,2026-07-31,Practice Suite Enterprise 40 seats,6000.00,paid
+in_1CA06,Cascade Analytics Inc,Jun 1 2026,Jun 30 2026,Data Platform Growth 25 seats,5000.00,paid
+in_1CA06d,Cascade Analytics Inc,Jun 1 2026,Jun 30 2026,Launch promo discount,-1000.00,paid
+in_1CA07,Cascade Analytics Inc,Jul 1 2026,Jul 31 2026,Data Platform Growth 25 seats,5000.00,paid
+in_1CA07d,Cascade Analytics Inc,Jul 1 2026,Jul 31 2026,Launch promo discount,-1000.00,paid
+in_1ME06,Meridian Foods LLC,06/01/2026,06/30/2026,Supply Chain Cloud 6 facilities,4800.00,paid
+in_1ME07,Meridian Foods LLC,07/01/2026,07/31/2026,Supply Chain Cloud 6 facilities,4800.00,paid
+in_1VO06,Volt Robotics,06/01/2026,06/30/2026,Fleet Ops Platform,6000.00,paid
+in_1VO07,Volt Robotics,07/01/2026,07/31/2026,Fleet Ops Platform,6000.00,paid
+in_1HA06,Harbor Freight Co,06/01/2026,06/30/2026,Logistics API Standard,3000.00,paid
+in_1HA07,Harbor Freight Co,07/01/2026,07/31/2026,Logistics API Standard,3000.00,paid

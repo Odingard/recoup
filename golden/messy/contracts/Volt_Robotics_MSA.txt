@@ -1,0 +1,16 @@
+VOLT ROBOTICS — FLEET OPS PLATFORM (MSA + AMENDMENT)
+
+ORIGINAL MSA (effective Nov 1, 2024):
+  Base platform fee: $9,000/month, includes 30 robots. Additional robots $250/mo.
+  Minimum monthly commitment: $9,000.
+
+AMENDMENT AMD-VOLT-001 (signed Aug 15, 2025; effective Sept 1, 2025):
+  "Due to fleet downsizing, the minimum monthly commitment in the original MSA is
+   hereby reduced from $9,000 to $6,000, effective September 1, 2025. All other
+   terms remain unchanged."
+
+*** This is the trap. A reader who only sees the original MSA thinks the customer
+should be billed $9,000 and is being under-billed by $3,000. The signed amendment
+makes $6,000 CORRECT. A good reconciler must honor the amendment and NOT flag Volt. ***
+
+Both documents countersigned and on file.

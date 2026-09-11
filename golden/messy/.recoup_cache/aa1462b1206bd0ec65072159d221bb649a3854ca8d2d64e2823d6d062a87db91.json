@@ -1,0 +1,35 @@
+{
+  "customer_name": "HARBOR FREIGHT CO",
+  "entitlements": [
+    {
+      "term_type": "committed_minimum",
+      "value": 3000.0,
+      "label": null,
+      "effective_date": "2025-04-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Base fee: $3,000/month including 500,000 API calls."
+    },
+    {
+      "term_type": "included_units",
+      "value": 500000.0,
+      "label": null,
+      "effective_date": "2025-04-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Base fee: $3,000/month including 500,000 API calls."
+    },
+    {
+      "term_type": "overage_rate",
+      "value": 0.004,
+      "label": null,
+      "effective_date": "2025-04-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "Overage above 500,000 calls: $0.004/call."
+    }
+  ]
+}
