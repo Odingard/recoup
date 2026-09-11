@@ -328,6 +328,7 @@ def map_stripe_billing_to_reconcile_inputs(
             "customer_name": customer_name,
             "term": "billing_period",
             "reason": f"no Stripe invoices found for period {period}",
+            "suggested_action": "Confirm this customer is invoiced in Stripe for the period, or upload the billing CSV instead.",
         })
 
     for invoice in period_invoices:
@@ -355,6 +356,7 @@ def map_stripe_billing_to_reconcile_inputs(
                         "customer_name": customer_name,
                         "term": "discounts_applied",
                         "reason": f"discount line item could not be mapped cleanly: {description}",
+                        "suggested_action": "Check the discount/coupon on the Stripe invoice and record it in the contract's discount terms.",
                     })
                     continue
                 invoice_dict["discounts_applied"].append({"name": discount_name, "amount": amount})
@@ -364,6 +366,7 @@ def map_stripe_billing_to_reconcile_inputs(
                     "customer_name": customer_name,
                     "term": "invoice_line_item",
                     "reason": f"ambiguous Stripe line item could not be classified: {description}",
+                    "suggested_action": "Classify this Stripe line item as base, overage, discount, or tax and re-run reconciliation.",
                 })
 
     return usage_dict, invoice_dict, needs_review

@@ -132,7 +132,8 @@ jobs:
           RECOUP_STRIPE_APP_REDIRECT_URI=https://recoup.odingard.com/api/connector/stripe/oauth/callback,\
           RECOUP_STRIPE_APP_AUTHORIZE_URL=https://marketplace.stripe.com/oauth/v2/authorize,\
           RECOUP_STRIPE_APP_TOKEN_URL=https://api.stripe.com/v1/oauth/token,\
-          RECOUP_WEB_BASE_URL=https://recoup.odingard.com" \
+          RECOUP_WEB_BASE_URL=https://recoup.odingard.com,\
+          RECOUP_GIT_SHA=${{ github.sha }}" \
             --set-secrets "$SECRETS_LIST" \
             --min-instances 0 \
             --max-instances 4 \

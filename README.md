@@ -33,7 +33,13 @@ The Phase 1 build turns the demo into something a rep can put in front of a cust
 - **Outcome-based pricing** — Recoup bills **20% of dollars actually recovered** (proposed → approved → recovered), invoiced through Recoup's own **separate** Stripe account.
 - **Bulk onboarding** — drop many contracts (PDF/DOCX/TXT/MD, scans and images via Gemini OCR — scanned PDFs up to 25 pages), billing + usage CSVs, or a ZIP of everything into `POST /api/ingest/bulk`. Per-file results, never silent drops.
 - **Billing-system CSV templates** — `GET /api/templates/{quickbooks|xero|stripe}/{invoices|usage}.csv` returns a header + example rows in that system's native column names; all aliases resolve through the same ingest pipeline (see [docs/INGEST_TEMPLATES.md](docs/INGEST_TEMPLATES.md)).
-- **Robust by default** — corrupt/unsupported files, empty Stripe accounts, and missing fields are flagged with actionable messages; no ingestion path returns a 500.
+- **Robust by default** — corrupt/unsupported files, empty Stripe accounts, and missing fields are flagged with actionable messages; no ingestion path returns a 500. Uploads are capped at 50 files / 25 MB each; every response carries standard security headers (HSTS, nosniff, frame-deny).
+- **Term, renewal & seat extraction** — contracts yield term dates, auto-renewal, notice windows, and committed seat counts, feeding a renewal calendar in the app and rules for post-term billing, missing base charges, and underbilled seats.
+- **Needs-review queue** — extraction and reconciliation items that need a human (unmappable customers, missing billing data, ambiguous invoice lines) are listed with a suggested action, never dropped.
+- **Proof gate & fee collection** — clause proof and reports unlock once a payment method is on file via Stripe Checkout; the 20% success fee is charged to the card when a recovery is recorded, and `POST /api/billing/sync-recoveries` verifies paid corrective invoices directly against the customer's Stripe.
+- **True-up packs** — per customer, a plain-text collection letter plus a paginated PDF schedule of amounts due (`GET /api/trueup/{customer}.pdf`).
+- **Self-serve data deletion** — `DELETE /api/account/data` removes all account data and the connector secret after a typed confirmation.
+- **Health check** — `GET /api/health` (no auth) for uptime monitoring.
 - **Sample mode** — `RECOUP_SAMPLE_MODE=1` runs the whole thing offline on the synthetic book, no credentials required.
 
 See **[docs/OPERATIONS.md](docs/OPERATIONS.md)** for the operator guide (env vars, Cloud Run deploy, onboarding flow) and **[docs/DATA_HANDLING.md](docs/DATA_HANDLING.md)** for the plain-language data-handling statement. All configuration is via environment variables (`recoup_agent/.env.example`).

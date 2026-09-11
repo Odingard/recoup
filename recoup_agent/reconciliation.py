@@ -74,7 +74,7 @@ def _confidence(contract: dict, field: str) -> float:
 
 
 def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, reason: str,
-                  extra: dict | None = None) -> None:
+                  extra: dict | None = None, suggested_action: str | None = None) -> None:
     if needs_review is None:
         return
     entry = {
@@ -82,6 +82,9 @@ def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, re
         "customer_name": contract["customer_name"],
         "term": term,
         "reason": reason,
+        "suggested_action": (suggested_action or
+                             f"Confirm the {term} term in the signed contract, correct it in "
+                             "Step 4, and re-run reconciliation."),
     }
     if extra:
         entry.update(extra)
