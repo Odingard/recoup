@@ -12,7 +12,7 @@ from hashlib import sha256
 from typing import Protocol
 
 from ..book_loader import match_discount
-from ..reconciliation import CONFIDENCE_THRESHOLD, reconcile
+from ..reconciliation import CONFIDENCE_THRESHOLD, minimum_for_period, reconcile
 from .ids import stable_id
 from .models import (
     AuthoritySource, Discrepancy, EvaluationMode, EvidenceReference,
@@ -69,8 +69,61 @@ _RIGHT_SPEC = {
                               ("committed_seats", "seat_price"), "seats"),
 }
 
-_RECOVERY_STATUSES = {"approved", "invoiced", "recovered", "disputed",
-                      "written_off", "rejected"}
+# Observation type a right needs before it can be evaluated for a period.
+# Absence is an observability gap (not_evaluable), never a contractual problem.
+REQUIRED_OBSERVATION = {
+    "committed_minimum": "base_amount_billed",
+    "usage_overage": "usage_measured",
+    "discount_expiration": "invoice_issued",
+    "annual_escalator": "base_amount_billed",
+    "committed_seat_charge": "seat_count_billed",
+}
+
+
+def _proj_committed_minimum(finding, contract, invoice, period, obs):
+    """expected = the engine's own resolved minimum for this period."""
+    return minimum_for_period(contract, period)[0], invoice.get("base_charge"), {}
+
+
+def _proj_unbilled_overage(finding, contract, invoice, period, obs):
+    """Engine identity: amount = expected_overage - billed_overage."""
+    actual = invoice.get("overage_charge") or 0.0
+    expected = round(actual + finding["monthly_recoverable"], 2)
+    return expected, actual, {
+        "relation": "expected_overage = billed_overage + recoverable (engine identity)"}
+
+
+def _proj_expired_discount(finding, contract, invoice, period, obs):
+    """Nothing is owed as a deduction after expiry: expected = 0."""
+    return 0.0, (obs.amount if obs is not None else None), {}
+
+
+def _proj_missed_escalator(finding, contract, invoice, period, obs):
+    """expected_base/baseline are engine internals; do not recompute."""
+    return None, None, {
+        "escalator_steps": finding.get("escalator_steps"),
+        "base_charge_billed": invoice.get("base_charge"),
+        "lossless": False,
+        "see": "finding.math",
+    }
+
+
+def _proj_underbilled_seats(finding, contract, invoice, period, obs):
+    """billed seats x seat price would be a formula; carry the quantity."""
+    return None, None, {
+        "actual_seat_count_billed": obs.quantity if obs is not None
+        else invoice.get("seat_units"),
+    }
+
+
+_PROJECTIONS = {
+    "unenforced_minimum": _proj_committed_minimum,
+    "missing_base_charge": _proj_committed_minimum,
+    "unbilled_overage": _proj_unbilled_overage,
+    "expired_discount": _proj_expired_discount,
+    "missed_escalator": _proj_missed_escalator,
+    "underbilled_seats": _proj_underbilled_seats,
+}
 
 
 def _term_conf(contract: dict, field: str) -> float:
@@ -205,23 +258,6 @@ class B2BContractAdapter:
             ingestion_timestamp=now,
             status="active",
         )
-        sources = [source]
-        for entry in contract.get("minimum_schedule") or []:
-            eff = entry.get("effective_date")
-            if eff and eff != source.effective_date and entry.get("provenance") != "original term":
-                sources.append(AuthoritySource(
-                    source_id=stable_id("src", account_id, cid,
-                                        contract.get("contract_id") or "contract", eff),
-                    account_id=account_id,
-                    source_type="contract_amendment",
-                    external_reference=contract.get("contract_id"),
-                    counterparty_id=cid,
-                    effective_date=eff,
-                    document_hash=contract.get("document_hash"),
-                    ingestion_timestamp=now,
-                    status="active",
-                    metadata={"amended_minimum": entry.get("amount")},
-                ))
 
         evidence: list[EvidenceReference] = []
         rights: list[FinancialRight] = []
@@ -249,7 +285,9 @@ class B2BContractAdapter:
                     "committed_minimum_monthly": contract.get("committed_minimum_monthly"),
                     "minimum_schedule": contract.get("minimum_schedule"),
                 },
-                id_part="committed_minimum_monthly", needs_review=needs_review))
+                id_part="committed_minimum_monthly", needs_review=needs_review,
+                metadata={"minimum_schedule": contract.get("minimum_schedule")}
+                if contract.get("minimum_schedule") else {}))
 
         # usage_overage
         has_overage = (contract.get("included_units") is not None
@@ -333,7 +371,7 @@ class B2BContractAdapter:
                 },
                 id_part="committed_seats", needs_review=needs_review))
 
-        return sources, evidence, rights, needs_review
+        return source, evidence, rights, needs_review
 
     # ---- observations -----------------------------------------------------
 
@@ -401,13 +439,30 @@ class B2BContractAdapter:
         """Steps 2-7 of evaluate(): build graph entities for ALREADY-COMPUTED
         findings. Never calls reconcile and never invents amounts."""
         graph = RightsGraph()
-        sources, evidence, rights, right_reviews = self.extract_rights(contract, account_id)
-        graph.sources = sources
+        source, evidence, rights, right_reviews = self.extract_rights(contract, account_id)
+        graph.sources = [source]
         graph.evidence = evidence
         graph.rights = rights
         graph.needs_review.extend(right_reviews)
         graph.observations = self.normalize_observations(
             contract, usage, invoice, period, account_id)
+
+        # Valid but not evaluable this period: required observation absent.
+        observed_types = {o.observation_type for o in graph.observations}
+        for right in rights:
+            if right.status != RightStatus.active.value:
+                continue
+            required = REQUIRED_OBSERVATION.get(right.right_type)
+            if required and required not in observed_types:
+                graph.not_evaluable.append({
+                    "right_id": right.right_id,
+                    "right_type": right.right_type,
+                    "customer_id": contract["customer_id"],
+                    "period": period,
+                    "missing_observation": required,
+                    "reason": f"right is valid but not evaluable for this period: "
+                              f"no {required} observation",
+                })
 
         # Pair each expired_discount finding with the applied discount that
         # produced it, mirroring reconcile()'s iteration order.
@@ -429,6 +484,9 @@ class B2BContractAdapter:
                 continue
             right_type = FINDING_TYPE_TO_RIGHT.get(finding["type"])
             if right_type is None:
+                continue
+            project = _PROJECTIONS.get(finding["type"])
+            if project is None:
                 continue
             obs_type = FINDING_TYPE_TO_OBSERVATION[finding["type"]]
             discount_name = None
@@ -454,20 +512,10 @@ class B2BContractAdapter:
                     })
                 continue
 
-            if right_type == "committed_seat_charge":
-                # billed seats x seat price would be a formula; carry the
-                # observed quantity and let the finding's amount stand alone.
-                actual = None
-                expected = finding["monthly_recoverable"]
-            else:
-                actual = obs.amount if obs is not None else None
-                expected = round((actual or 0) + finding["monthly_recoverable"], 2)
-
+            expected, actual, extra_inputs = project(finding, contract, invoice,
+                                                     period, obs)
             inputs = dict(right.calculation_inputs)
-            if right_type == "committed_seat_charge":
-                inputs["actual_seat_count_billed"] = obs.quantity if obs else None
-            else:
-                inputs[f"actual_{obs_type}"] = actual
+            inputs.update(extra_inputs)
             inputs["period"] = period
             if finding.get("escalator_steps") is not None:
                 inputs["escalator_steps"] = finding["escalator_steps"]
@@ -532,35 +580,44 @@ class B2BContractAdapter:
 
     # ---- recovery projection ----------------------------------------------
 
+    _ACTION_STATUS = {
+        "open": "proposed", "approved": "approved", "invoiced": "executed",
+        "recovered": "executed", "disputed": "executed",
+        "written_off": "closed", "rejected": "rejected",
+    }
+
     def build_recovery_context(self, finding: dict, discrepancy_id: str):
+        """One corrective-invoice RecoveryAction per discrepancy regardless of
+        finding status; a RecoveryOutcome only once the lifecycle resolves."""
         status = finding.get("status", "open")
-        if status not in _RECOVERY_STATUSES:
-            return [], []
         corrective = finding.get("corrective_invoice") or {}
         action = RecoveryAction(
             action_id=stable_id("act", discrepancy_id, "corrective_invoice"),
             discrepancy_id=discrepancy_id,
             action_type="corrective_invoice",
+            proposed_at=finding.get("created_at"),
             approved_at=finding.get("approved_at"),
             executed_at=corrective.get("date"),
-            status=status,
+            status=self._ACTION_STATUS.get(status, "proposed"),
             human_approval_required=True,
             external_reference=corrective.get("ref"),
             metadata={"finding_status": status},
         )
         outcomes = []
-        outcome_type = {
-            "recovered": "recovered",
-            "disputed": "disputed",
-            "written_off": "written_off",
-            "rejected": "false_positive",
-        }.get(status)
+        outcome_type = resolution = None
         if status == "recovered":
+            outcome_type = "recovered"
             recovered = finding.get("recovered_amount")
             expected = finding.get("monthly_recoverable")
             if (recovered is not None and expected is not None
                     and recovered < expected - 0.005):
                 outcome_type = "partially_recovered"
+        elif status == "disputed":
+            outcome_type, resolution = "disputed", "pending"
+        elif status == "written_off":
+            outcome_type, resolution = "written_off", "written_off"
+        elif status == "rejected":
+            outcome_type, resolution = "rejected", "rejected_by_reviewer"
         if outcome_type:
             outcomes.append(RecoveryOutcome(
                 outcome_id=stable_id("out", action.action_id, outcome_type),
@@ -568,7 +625,9 @@ class B2BContractAdapter:
                 discrepancy_id=discrepancy_id,
                 outcome_type=outcome_type,
                 amount_recovered=finding.get("recovered_amount"),
-                resolved_at=finding.get("recovered_at"),
+                resolved_at=None if status == "disputed"
+                else finding.get("recovered_at"),
+                resolution=resolution,
                 evidence=finding.get("payment") or {},
             ))
         return [action], outcomes

@@ -63,7 +63,9 @@ default to `None`; timestamps are ISO strings. `generated_at` and
 
 `RightsGraph` is the container: `sources, evidence, rights, observations,
 expected_states, discrepancies, recovery_actions, outcomes`, plus
-`needs_review`. `merge()` unions by entity id — merging is idempotent.
+`needs_review` and `not_evaluable`. `merge()` unions by entity id — merging
+is idempotent (`needs_review` dedupes on content; `not_evaluable` on
+(right_id, period)).
 
 ## 3. Graph relationships
 
@@ -107,8 +109,20 @@ Discrepancy ──> RecoveryAction ──> RecoveryOutcome
 | annual_escalator_pct + escalator_effective_date | annual_escalator | missed_escalator |
 | committed_seats + seat_price | committed_seat_charge | underbilled_seats |
 
-`minimum_schedule` entries whose effective_date differs from the contract's
-(≠ "original term") emit additional `contract_amendment` AuthoritySources.
+Supported `source_type` values: `contract` and `contract_amendment` — the
+latter is for when a distinct amendment document is ingested; nothing emits
+it today. A `minimum_schedule` stays on the `committed_minimum` right's
+`metadata.minimum_schedule` (each entry's effective_date/amount/provenance)
+and in `calculation_inputs`; it does not synthesize sources.
+
+**Evaluability vs needs_review.** `needs_review` is only for contractual or
+authority problems (gating failures, low confidence, missing terms). A right
+can be *valid* yet *not evaluable* for a period because the observation it
+requires is absent (`REQUIRED_OBSERVATION` in adapter.py: minimum and
+escalator rights need a `base_amount_billed`, overage needs `usage_measured`,
+discounts need `invoice_issued`, seats need `seat_count_billed`). Those go to
+`not_evaluable` (`{right_id, right_type, customer_id, period,
+missing_observation, reason}`); the right's `status` stays `active`.
 
 Invoice/usage fields normalize to Observations: `base_charge` →
 `base_amount_billed`, `overage_charge` → `overage_billed`, each
@@ -118,12 +132,27 @@ Invoice/usage fields normalize to Observations: `base_charge` →
 
 ## 7. Expected vs actual state
 
-For each finding, the adapter creates an `ExpectedState` (expected amount =
-observed actual + recoverable, or the recoverable itself where the actual is
-a quantity, e.g. seats) and a `Discrepancy` linking it to the actual
-Observation ids. `calculation_trace` carries the machine-readable audit:
-rule, inputs (contract terms + observed actuals + period), formula (the
-finding's `math` string), result, currency, engine, confidence.
+For each finding, the adapter creates an `ExpectedState` and a `Discrepancy`
+via a per-rule projection (`_PROJECTIONS` in adapter.py). `expected_amount`
+and `actual_amount` are `float | None` — never a universal
+`actual + recoverable` formula:
+
+| Finding type | expected_amount | actual_amount |
+|---|---|---|
+| unenforced_minimum / missing_base_charge | engine's `minimum_for_period` value | invoice `base_charge` |
+| unbilled_overage | `round(billed_overage + recoverable, 2)` — the engine's own identity `amount = expected_overage − billed_overage` | invoice `overage_charge` (0.0 if none) |
+| expired_discount | 0.0 — nothing is owed as a deduction after expiry | the applied discount's observed amount |
+| missed_escalator | `None` (engine internals `expected_base`/`baseline` are not recomputed; trace marks `lossless: False`, `see: finding.math`) | `None` |
+| underbilled_seats | `None` (seat count × price would be a formula) | `None` (billed-seat quantity in inputs) |
+
+`recoverable_amount` is always `finding["monthly_recoverable"]` and the
+trace `formula` is `finding["math"]`. Finding types outside the table are
+left unlinked — no discrepancy, no error. `calculation_trace` carries the
+machine-readable audit: rule, inputs (contract terms + observed actuals +
+period), formula, result, currency, engine, confidence.
+
+Post-term billing (reconcile Rule 5) is review-only by design: it yields a
+`needs_review` item and no right, no expected state, no discrepancy.
 
 ## 8. Discrepancy lifecycle
 
@@ -137,14 +166,19 @@ the legacy finding persisted in Firestore.
 `RecoveryAction`/`RecoveryOutcome` are projections of the legacy finding
 lifecycle — they are rebuilt on read, not stored independently:
 
-| Finding status | RecoveryAction status | RecoveryOutcome type |
-|---|---|---|
-| open | (none) | (none) |
-| approved / invoiced | approved / invoiced | (none yet) |
-| recovered | recovered | recovered (or partially_recovered if paid < expected) |
-| disputed | disputed | disputed |
-| written_off | written_off | written_off |
-| rejected | rejected | false_positive |
+Every discrepancy gets exactly one `RecoveryAction`
+(`action_type="corrective_invoice"`, `human_approval_required=True`),
+including while the finding is still `open`:
+
+| Finding status | RecoveryAction status | RecoveryOutcome type | resolution |
+|---|---|---|---|
+| open | proposed | (none) | — |
+| approved | approved | (none) | — |
+| invoiced | executed | (none) | — |
+| recovered | executed | recovered (or partially_recovered if paid < expected) | — |
+| disputed | executed | disputed | pending (resolved_at None) |
+| written_off | closed | written_off | written_off |
+| rejected | rejected | rejected | rejected_by_reviewer |
 
 `corrective_invoice.ref/date` map to the action's external_reference and
 executed_at; `payment` maps to the outcome's evidence.
@@ -192,3 +226,8 @@ preflight enforcement yet.
 - `preflight == audit` for now.
 - Findings that reconcile computed but whose right failed gating stay
   unlinked (a `needs_review` entry is emitted instead of a discrepancy).
+- Active rights that cannot be evaluated for a period (missing observation)
+  appear in `not_evaluable`, not `needs_review`.
+- `missed_escalator` and `underbilled_seats` projections are lossy by design
+  (expected/actual `None`); the authoritative numbers live in the finding's
+  `math`/`monthly_recoverable`.

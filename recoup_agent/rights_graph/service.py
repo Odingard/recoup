@@ -56,10 +56,24 @@ class RightsGraphService:
                 graph.merge(g)
             if not evaluated:
                 # Customer has no billing data: still surface its rights'
-                # gating status so the graph explains why nothing was expected.
-                _, _, _, right_reviews = self.adapter.extract_rights(
+                # gating status, and mark each active right not_evaluable for
+                # every period — an observability gap, not a contract problem.
+                _, _, rights, right_reviews = self.adapter.extract_rights(
                     contract, self.account_id)
                 graph.needs_review.extend(right_reviews)
+                for right in rights:
+                    if right.status != RightStatus.active.value:
+                        continue
+                    for period in period_list:
+                        graph.not_evaluable.append({
+                            "right_id": right.right_id,
+                            "right_type": right.right_type,
+                            "customer_id": contract["customer_id"],
+                            "period": period,
+                            "missing_observation": "invoice_issued",
+                            "reason": "right is valid but not evaluable for this "
+                                      "period: no invoice_issued observation",
+                        })
         self.assert_tenant(graph)
         return graph
 

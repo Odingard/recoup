@@ -200,10 +200,14 @@ class RightsGraph(_Entity):
     recovery_actions: list[RecoveryAction] = field(default_factory=list)
     outcomes: list[RecoveryOutcome] = field(default_factory=list)
     needs_review: list[dict] = field(default_factory=list)
+    # Active rights that cannot be evaluated for a period because the required
+    # observation is absent — an observability gap, not a contractual problem.
+    not_evaluable: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         out = {name: [e.to_dict() for e in getattr(self, name)] for name in _ENTITY_LISTS}
         out["needs_review"] = [dict(n) for n in self.needs_review]
+        out["not_evaluable"] = [dict(n) for n in self.not_evaluable]
         return out
 
     def merge(self, other: "RightsGraph") -> "RightsGraph":
@@ -220,4 +224,10 @@ class RightsGraph(_Entity):
         for item in other.needs_review:
             if repr(sorted(item.items())) not in seen_nr:
                 self.needs_review.append(item)
+        seen_ne = {(n.get("right_id"), n.get("period")) for n in self.not_evaluable}
+        for item in other.not_evaluable:
+            key = (item.get("right_id"), item.get("period"))
+            if key not in seen_ne:
+                self.not_evaluable.append(item)
+                seen_ne.add(key)
         return self

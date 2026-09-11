@@ -337,3 +337,144 @@ def test_annotate_never_raises(monkeypatch):
     out = annotate_findings_with_graph(findings, [{"customer_id": "x"}], [], [],
                                        "2026-06", "acct")
     assert out is findings or out == findings
+
+
+# Review-correction coverage ---------------------------------------------------
+
+def test_minimum_schedule_is_metadata_not_amendment_source():
+    adapter = B2BContractAdapter()
+    volt = next(c for c in load_book(GOLDEN / "clean")[0]
+                if c["customer_id"] == "volt" and c.get("minimum_schedule"))
+    source, evidence, rights, _ = adapter.extract_rights(volt, "acct-test")
+    assert source.source_type == "contract"
+    right = next(r for r in rights if r.right_type == "committed_minimum")
+    schedule = right.metadata.get("minimum_schedule")
+    assert schedule and {"effective_date", "amount", "provenance"} <= set(schedule[0])
+    graph, _, _, _ = _clean_graph()
+    assert not [s for s in graph.sources if s.source_type == "contract_amendment"]
+
+
+def test_active_rights_no_invoice_are_not_evaluable_not_needs_review():
+    contract = {
+        "customer_id": "nodata", "customer_name": "NoData Co",
+        "committed_minimum_monthly": 1000, "included_units": 10,
+        "overage_rate": 2.0,
+        "clauses": {"committed_minimum": "Min $1000/mo", "overage": "Overage $2"},
+        "term_meta": {"committed_minimum_monthly": {"confidence": 1.0,
+                                                    "provenance": "Min $1000/mo"},
+                      "included_units": {"confidence": 1.0, "provenance": "q"},
+                      "overage_rate": {"confidence": 1.0, "provenance": "q"}},
+    }
+    svc = RightsGraphService("acct-test")
+    graph = svc.build_for_book([contract], [], [], periods=["2026-06"])
+    assert graph.discrepancies == []
+    terms = {n["right_type"] for n in graph.not_evaluable}
+    assert "committed_minimum" in terms
+    assert all(n["missing_observation"] == "invoice_issued"
+               for n in graph.not_evaluable)
+    assert all(n["period"] == "2026-06" for n in graph.not_evaluable)
+    # gating passed (everything is conf 1.0 + quoted) so no new needs_review
+    assert not [n for n in graph.needs_review
+                if n.get("customer_id") == "nodata"]
+
+    # same via link_findings: usage present, invoice empty -> usage_measured obs
+    adapter = B2BContractAdapter()
+    g = adapter.link_findings(contract, {"customer_id": "nodata",
+                                         "period": "2026-06", "units": 5},
+                              {}, "2026-06", "acct-test", [])
+    ne = {n["right_type"]: n["missing_observation"] for n in g.not_evaluable}
+    assert ne.get("committed_minimum") == "base_amount_billed"
+    assert "usage_overage" not in ne  # usage_measured present
+    assert not [n for n in g.needs_review if "not evaluable" in n.get("reason", "")]
+
+
+def test_per_type_projection_values():
+    graph, _, _, _ = _clean_graph()
+    states = {e.expected_state_id: e for e in graph.expected_states}
+    by_type = {}
+    for d in graph.discrepancies:
+        by_type.setdefault(d.discrepancy_type, []).append(
+            (d, states[d.expected_state_id]))
+
+    for d, s in by_type["unenforced_minimum"]:
+        assert s.expected_amount == pytest.approx(3200.0 + d.actual_amount)
+        # expected is the engine's resolved minimum: meridian min = 3200+base
+        assert s.expected_amount == pytest.approx(
+            (d.expected_amount), abs=0.001)
+        assert d.actual_amount is not None
+
+    for d, s in by_type["expired_discount"]:
+        assert s.expected_amount == 0.0
+        assert d.actual_amount is not None and d.actual_amount > 0
+
+    for d, s in by_type["missed_escalator"]:
+        assert s.expected_amount is None and d.actual_amount is None
+        assert d.calculation_trace["inputs"].get("lossless") is False
+        assert "escalator_steps" in d.calculation_trace["inputs"]
+
+    for d, s in by_type["unbilled_overage"]:
+        assert d.calculation_trace["inputs"]["relation"].startswith(
+            "expected_overage = billed_overage")
+        assert s.expected_amount == pytest.approx(
+            round(d.actual_amount + d.recoverable_amount, 2))
+
+
+def test_post_term_billing_is_review_only():
+    contracts, usage, invoices = load_book(GOLDEN / "clean")
+    base = next(c for c in contracts if c["customer_id"] == "cascade")
+    contract = dict(base)
+    contract.pop("term_end", None)
+    contract["term_end"] = "2025-01-01"
+    contract.pop("auto_renew_months", None)
+    u = next(u for u in usage if (u["customer_id"], u["period"]) == ("cascade", "2026-06"))
+    inv = next(i for i in invoices if (i["customer_id"], i["period"]) == ("cascade", "2026-06"))
+    nr = []
+    adapter = B2BContractAdapter()
+    findings, graph = adapter.evaluate(contract, u, inv, "2026-06", "acct-test",
+                                       needs_review=nr)
+    assert any(n.get("term") == "term_end" for n in nr)
+    assert not [r for r in graph.rights if r.right_type == "post_term"]
+    # term_end is review-only: it must not create a discrepancy
+    assert not [d for d in graph.discrepancies if d.discrepancy_type == "post_term"]
+
+
+@pytest.mark.parametrize("status,action_status,outcome", [
+    ("open", "proposed", None),
+    ("approved", "approved", None),
+    ("invoiced", "executed", None),
+    ("recovered", "executed", "recovered"),
+    ("disputed", "executed", "disputed"),
+    ("written_off", "closed", "written_off"),
+    ("rejected", "rejected", "rejected"),
+])
+def test_recovery_projection_full_lifecycle(status, action_status, outcome):
+    adapter = B2BContractAdapter()
+    finding = {"status": status, "created_at": "2026-06-01T00:00:00",
+               "monthly_recoverable": 100.0,
+               "corrective_invoice": {"ref": "INV-1", "date": "2026-07-01"}}
+    if status == "recovered":
+        finding["recovered_amount"] = 100.0
+        finding["recovered_at"] = "2026-07-15"
+    actions, outcomes = adapter.build_recovery_context(finding, "dsc_x")
+    assert len(actions) == 1
+    assert actions[0].status == action_status
+    assert actions[0].human_approval_required is True
+    if outcome is None:
+        assert outcomes == []
+    else:
+        assert len(outcomes) == 1
+        assert outcomes[0].outcome_type == outcome
+        if status == "disputed":
+            assert outcomes[0].resolution == "pending"
+            assert outcomes[0].resolved_at is None
+        if status == "rejected":
+            assert outcomes[0].resolution == "rejected_by_reviewer"
+
+
+def test_partial_recovery_outcome():
+    adapter = B2BContractAdapter()
+    finding = {"status": "recovered", "monthly_recoverable": 100.0,
+               "recovered_amount": 60.0, "recovered_at": "2026-07-15"}
+    _, outcomes = adapter.build_recovery_context(finding, "dsc_x")
+    assert outcomes[0].outcome_type == "partially_recovered"
+    assert outcomes[0].amount_recovered == 60.0
