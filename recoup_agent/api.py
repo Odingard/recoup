@@ -11,16 +11,16 @@ import re
 import tempfile
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from pypdf import PdfReader
-from pathlib import Path
-from typing import Any, Callable, Dict, List
-from urllib.parse import urlencode
 
 from . import db
 from .billing.connector_keys import (
@@ -662,7 +662,7 @@ def charge_success_fee(user: dict = Depends(verify_token)):
         amount_dollars=metrics["success_fee_this_month"],
         current_month=metrics["current_month"],
     )
-    if result.get("status") == "success":
+    if result.get("status") == "success" and account_id is not None:
         for f in unbilled:
             db.update_finding_fields(
                 account_id, f["finding_id"],
