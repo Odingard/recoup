@@ -1219,10 +1219,12 @@ function App() {
 
               <div className="contract-review-list">
                 <h3 className="queue-title">True-up packs</h3>
-                <label>
-                  Sender (your company name)
-                  <input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} placeholder="[Your company]" />
-                </label>
+                <div className="recovery-form">
+                  <label>
+                    Sender (your company name)
+                    <input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} placeholder="[Your company]" />
+                  </label>
+                </div>
                 {trueupCustomers.length === 0 ? (
                   <div className="empty-state glass-panel">
                     <FileText size={22} />
