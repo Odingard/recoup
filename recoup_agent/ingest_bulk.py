@@ -15,6 +15,8 @@ from typing import Callable
 
 from .identity import CustomerResolver
 from .ingest_csv import IngestError, classify_csv, load_invoices_csv, load_usage_csv
+from .ingestion_doc import ContractEntitlements
+from .normalizer import normalize_contract_entitlements
 
 CONTRACT_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 MAX_ZIP_FILES = 500
@@ -78,9 +80,6 @@ def _expand(items: list[tuple[str, bytes]]) -> tuple[list[tuple[str, bytes]], li
 def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                  extract: Callable[[str], object]) -> BulkResult:
     """items = [(filename, bytes)]; extract = extract_entitlements(path)->ContractEntitlements."""
-    from .ingestion_doc import ContractEntitlements
-    from .normalizer import normalize_contract_entitlements
-
     result = BulkResult()
     flat, skipped = _expand(items)
     result.files.extend(skipped)
@@ -171,6 +170,11 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 })
         except IngestError as exc:
             result.files.append({"name": name, "kind": "csv", "status": "error", "message": str(exc)})
+            result.needs_review.append({
+                "customer_id": None, "customer_name": name,
+                "term": "csv_ingest", "reason": str(exc),
+                "suggested_action": "Fix the column headers or use one of the export templates",
+            })
         finally:
             Path(temp.name).unlink(missing_ok=True)
 
