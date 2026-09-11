@@ -150,7 +150,7 @@ export default function Landing() {
       <footer>
         <div className="wrap foot">
           <div className="mark" style={{ fontSize: '18px' }}><span className="glyph" style={{ width: '24px', height: '24px', fontSize: '13px' }}>R</span>Recoup</div>
-          <div>An Odingard product · <a href="/app/">Sign in</a></div>
+          <div>An Odingard product · <a href="/terms.html">Terms</a> · <a href="/privacy.html">Privacy</a> · <a href="/app/">Sign in</a></div>
         </div>
       </footer>
     </div>

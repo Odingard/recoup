@@ -40,7 +40,7 @@ def build_report(findings_by_period: dict[str, list[dict]],
     names: dict[str, str] = {}
     for period in sorted(findings_by_period):
         for f in findings_by_period[period]:
-            grouped.setdefault((f["customer_id"], f["type"]), []).append(f)
+            grouped.setdefault((f["customer_id"], f.get("type", "other")), []).append(f)
             names[f["customer_id"]] = f.get("customer_name", f["customer_id"])
 
     customers: dict[str, dict] = {}

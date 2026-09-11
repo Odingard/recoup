@@ -933,8 +933,14 @@ function App() {
       {proofLocked && (
         <div className="glass-panel mode-banner">
           <LockKeyhole size={16} />
-          Add a payment method to unlock clause proof, audit reports and true-up packs.
-          You're only charged 20% of dollars actually recovered — nothing upfront.
+          <div className="template-links">
+            Add a payment method to unlock clause proof, audit reports and true-up packs.
+            You're only charged 20% of dollars actually recovered — nothing upfront.
+            <p className="muted-copy">
+              By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>,
+              including the 20% success fee on recovered revenue.
+            </p>
+          </div>
           <button className="btn-primary" onClick={startBillingSetup}>
             Add payment method
           </button>
