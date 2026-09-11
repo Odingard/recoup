@@ -29,6 +29,31 @@ def test_initech_missed_escalator():
     assert initech == 1000.0, f"expected 1000, got {initech}"
 
 
+def test_findings_carry_period_confidence_and_provenance():
+    findings = compute_findings("2026-06")
+    acme = [f for f in findings if f["customer_id"] == "acme"]
+    assert acme, "expected findings for acme"
+    for f in acme:
+        assert f["period"] == "2026-06"
+        assert isinstance(f["confidence_score"], float)
+        assert 0.0 <= f["confidence_score"] <= 1.0
+        assert f["provenance"].strip()
+        assert f["provenance"] == f["clause_text"]
+
+
+def test_ungrounded_finding_becomes_needs_review():
+    from recoup_agent.reconciliation import reconcile
+
+    contract = {"customer_id": "x", "customer_name": "X", "committed_minimum_monthly": 8000}
+    invoice = {"base_charge": 4800}
+    needs_review = []
+    findings = reconcile(contract, {}, invoice, "2026-06", needs_review=needs_review)
+    assert findings == []
+    minimum_gaps = [r for r in needs_review if r["term"] == "committed_minimum_monthly"]
+    assert len(minimum_gaps) == 1
+    assert minimum_gaps[0]["amount"] == 3200.0
+
+
 if __name__ == "__main__":
     test_acme_total_is_14200()
     test_acme_has_three_findings()
