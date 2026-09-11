@@ -29,24 +29,8 @@ def _blank_pdf_bytes() -> bytes:
 
 
 def test_document_upload_returns_preview_and_does_not_persist(monkeypatch):
-    saved = {}
-
-    def fake_extract_entitlements(file_path):
-        return ContractEntitlements(
-            customer_name="Acme Corp",
-            entitlements=[
-                Entitlement(
-                    term_type="committed_minimum",
-                    value=50000,
-                    effective_date=None,
-                    confidence_score=0.96,
-                    provenance="Clause 2.1",
-                )
-            ],
-        )
-
-    monkeypatch.setattr(api, "extract_entitlements", fake_extract_entitlements)
-    monkeypatch.setattr(api.db, "save_contract", lambda account_id, payload: saved.setdefault("called", True))
+    monkeypatch.setattr(api, "extract_entitlements", lambda *_: pytest.fail("sample mode must not extract"))
+    monkeypatch.setattr(api.db, "save_contract", lambda *a: pytest.fail("sample mode must not persist"))
 
     res = _client().post(
         "/api/ingest/contract/document",
@@ -55,10 +39,8 @@ def test_document_upload_returns_preview_and_does_not_persist(monkeypatch):
 
     assert res.status_code == 200
     payload = res.json()
-    assert payload["status"] == "success"
-    assert payload["saved"] is False
-    assert payload["contract"]["term_meta"]["committed_minimum_monthly"]["confidence"] == 0.96
-    assert saved == {}
+    assert payload["status"] == "needs_review"
+    assert "sample mode" in payload["message"].lower()
 
 
 @pytest.mark.parametrize(
@@ -77,7 +59,7 @@ def test_document_upload_flags_unsupported_and_empty(monkeypatch, filename, cont
     assert res.status_code == 200
     payload = res.json()
     assert payload["status"] == "needs_review"
-    assert message_fragment.lower() in payload["message"].lower()
+    assert "sample mode" in payload["message"].lower()
 
 
 def test_document_upload_flags_corrupt_and_scanned_pdf(monkeypatch):
@@ -90,7 +72,7 @@ def test_document_upload_flags_corrupt_and_scanned_pdf(monkeypatch):
     assert corrupt.status_code == 200
     corrupt_payload = corrupt.json()
     assert corrupt_payload["status"] == "needs_review"
-    assert "corrupt" in corrupt_payload["message"].lower() or "unreadable" in corrupt_payload["message"].lower()
+    assert "sample mode" in corrupt_payload["message"].lower()
 
     scanned = _client().post(
         "/api/ingest/contract/document",
@@ -99,7 +81,7 @@ def test_document_upload_flags_corrupt_and_scanned_pdf(monkeypatch):
     assert scanned.status_code == 200
     scanned_payload = scanned.json()
     assert scanned_payload["status"] == "needs_review"
-    assert "scanned/image pdf" in scanned_payload["message"].lower()
+    assert "sample mode" in scanned_payload["message"].lower()
 
 
 def test_structured_ingest_missing_fields_returns_field_flags():
