@@ -997,7 +997,7 @@ function App() {
                           <h2>{selectedFinding.customer_name}</h2>
                           <div className="detail-meta">
                             <span>ID: {selectedFinding.finding_id}</span>
-                            <span>Period: {selectedFinding.period}</span>
+                            <span>Period: {selectedFinding.period || '—'}</span>
                           </div>
                         </div>
                         <div className="amount detail-amount">{formatCurrency(selectedFinding.monthly_recoverable)} / mo</div>
@@ -1021,14 +1021,18 @@ function App() {
                         <h3 className="detail-section-title">
                           <AlertCircle size={18} /> Contract grounding
                         </h3>
-                        <div className="info-group">
-                          <div className="info-label">Confidence score</div>
-                          <div>{(selectedFinding.confidence_score * 100).toFixed(0)}%</div>
-                        </div>
+                        {Number.isFinite(Number(selectedFinding.confidence_score)) && (
+                          <div className="info-group">
+                            <div className="info-label">Confidence score</div>
+                            <div>{Math.round(Number(selectedFinding.confidence_score) * 100)}%</div>
+                          </div>
+                        )}
                         <div className="info-group">
                           <div className="info-label">Exact clause quote (provenance)</div>
                           <div className="provenance-box">
-                            “{selectedFinding.provenance || 'No direct quote available in legacy data.'}”
+                            {(selectedFinding.provenance || selectedFinding.clause_text)
+                              ? `“${selectedFinding.provenance || selectedFinding.clause_text}”`
+                              : 'No contract clause cited — this finding should be treated as needs review.'}
                           </div>
                         </div>
                       </div>

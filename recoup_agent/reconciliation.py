@@ -66,15 +66,19 @@ def _confidence(contract: dict, field: str) -> float:
     return float(contract.get("term_meta", {}).get(field, {}).get("confidence", 1.0))
 
 
-def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, reason: str) -> None:
+def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, reason: str,
+                  extra: dict | None = None) -> None:
     if needs_review is None:
         return
-    needs_review.append({
+    entry = {
         "customer_id": contract["customer_id"],
         "customer_name": contract["customer_name"],
         "term": term,
         "reason": reason,
-    })
+    }
+    if extra:
+        entry.update(extra)
+    needs_review.append(entry)
 
 
 def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_review: list[dict] | None = None) -> list[dict]:
@@ -84,15 +88,24 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     seq = 1
 
     def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str,
-            math: str = "", clause_text: str = "", assumption: str | None = None) -> None:
+            math: str = "", clause_text: str = "", assumption: str | None = None,
+            confidence: float = 1.0, term: str = "") -> None:
         nonlocal seq
+        if not (clause_text or "").strip():
+            _needs_review(
+                needs_review, contract, term or clause_ref,
+                f"{title}: computed ${amount:,.2f}/mo but no contract clause quote could be cited to ground it",
+                extra={"amount": round(amount, 2)},
+            )
+            return
         finding = {
             "finding_id": f"F-{cid.upper()}-{seq:03d}",
             "customer_id": cid, "customer_name": cname,
             "type": ftype, "title": title,
             "monthly_recoverable": round(float(amount), 2),
             "clause_ref": clause_ref, "detail": detail,
-            "math": math, "clause_text": clause_text,
+            "math": math, "clause_text": clause_text, "provenance": clause_text,
+            "period": period, "confidence_score": round(confidence, 4),
             "status": "open",
         }
         if assumption:
@@ -120,7 +133,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             f"Contract commits to a ${minimum:,.0f}/mo minimum; only ${base:,.0f} was billed.",
             math=f"committed minimum ${minimum:,.0f}/mo − billed ${base:,.0f}/mo = ${amount:,.0f}/mo",
             clause_text=(minimum_provenance
-                         or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")))
+                         or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")),
+            confidence=minimum_conf, term="committed_minimum_monthly")
 
     # Rule 2 - usage overage not billed
     included = contract.get("included_units")
@@ -150,7 +164,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 f"{used:,} units used vs {included:,} included; {overage_units:,} overage units "
                 f"at {_fmt_rate(rate)} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.",
                 math=math,
-                clause_text=_clause_text(contract, "overage", "overage_rate"))
+                clause_text=_clause_text(contract, "overage", "overage_rate"),
+                confidence=min(included_conf, rate_conf), term="included_units/overage_rate")
 
     # Rule 3 - expired discount still applied
     discounts = contract.get("discounts")
@@ -177,7 +192,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     f"deducted in {period}.",
                     math=(f"'{applied['name']}' discount of {pct}% is past its expiry but "
                          f"${amount:,.0f}/mo is still deducted = ${amount:,.0f}/mo"),
-                    clause_text=d.get("provenance") or _clause_text(contract, "discount", "discounts"))
+                    clause_text=d.get("provenance") or _clause_text(contract, "discount", "discounts"),
+                    confidence=discount_conf, term="discounts")
 
     # Rule 4 - annual escalator not applied
     esc = contract.get("annual_escalator_pct")
@@ -211,6 +227,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     math=(f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
                          f"− billed ${base:,.0f}/mo = ${amount:,.0f}/mo"),
                     clause_text=_clause_text(contract, "escalator", "annual_escalator_pct"),
+                    confidence=min(esc_conf, esc_date_conf), term="annual_escalator_pct",
                     assumption="Applies a single escalator step; earlier anniversaries are not compounded.")
 
     return findings
