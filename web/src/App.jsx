@@ -1529,7 +1529,7 @@ function App() {
                   <div className="contract-review-list">
                     <h3 className="queue-title">Needs review ({reviewQueue.length})</h3>
                     {reviewQueue.map((item, idx) => (
-                      <article key={`${item.customer_id || 'unknown'}-${item.term || idx}`} className="glass-panel contract-review-card">
+                      <article key={`${item.customer_id || 'unknown'}-${item.term}-${idx}`} className="glass-panel contract-review-card">
                         <div className="review-header">
                           <div>
                             <h3>{item.customer_name || 'Unknown customer'}</h3>
