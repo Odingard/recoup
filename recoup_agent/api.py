@@ -43,6 +43,7 @@ from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .recovery import assert_transition
+from .rights_graph import RightsGraphService
 from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
@@ -788,7 +789,6 @@ def get_customer_rights_graph(customer_id: str, user: dict = Depends(verify_toke
     account_id = _account_id(user)
     contracts, usage_list, invoices_list = _load_book(account_id)
     findings_by_id = {f["finding_id"]: f for f in _findings_for(account_id)}
-    from .rights_graph import RightsGraphService
     graph = RightsGraphService(account_id).build_for_customer(
         customer_id, contracts, usage_list, invoices_list,
         findings_by_id=findings_by_id)

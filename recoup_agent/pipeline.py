@@ -13,6 +13,7 @@ from pathlib import Path
 from .reconciliation import reconcile
 from .billing.connector_keys import resolve_connector_key
 from .book_loader import load_book, load_contracts, book_periods
+from .rights_graph.service import annotate_findings_with_graph
 from . import db
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -98,7 +99,6 @@ def compute_findings_and_review(
                 continue
             findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
 
-    from .rights_graph.service import annotate_findings_with_graph
     findings = annotate_findings_with_graph(
         findings, contracts, usage_list, invoices_list, period, account_id)
     findings.sort(key=lambda f: f["monthly_recoverable"], reverse=True)
