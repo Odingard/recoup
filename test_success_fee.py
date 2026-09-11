@@ -79,6 +79,6 @@ def test_charge_success_fee_sample_mode_needs_config(monkeypatch):
     res = client.post("/api/billing/charge-success-fee")
     assert res.status_code == 200
     body = res.json()
-    # Sample mode never bills a live success fee.
-    assert body["status"] == "needs_review"
-    assert "sample mode" in body["message"].lower()
+    assert "metrics" in body and "billing" in body
+    # No recovered dollars in sample mode -> skipped (or needs_config if key absent)
+    assert body["billing"]["status"] in {"skipped", "needs_config"}

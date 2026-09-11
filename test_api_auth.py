@@ -80,6 +80,16 @@ def test_sample_header_serves_synthetic_without_env(monkeypatch):
     assert fee.status_code == 200
     assert fee.json()["status"] == "needs_review"
 
+    upload = client.post(
+        "/api/ingest/contract/document",
+        headers={"X-Recoup-Sample": "1"},
+        files={"file": ("a.txt", b"hello", "text/plain")},
+    )
+    assert upload.status_code == 200
+    upload_payload = upload.json()
+    assert upload_payload["status"] == "needs_review"
+    assert "sample mode" in upload_payload["message"].lower()
+
     report = client.get("/report/sample")
     assert report.status_code == 200
     assert "text/html" in report.headers["content-type"]
