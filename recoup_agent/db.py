@@ -66,25 +66,38 @@ def get_all_findings(account_id: str) -> list[dict]:
     findings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return findings
 
-def update_finding_status(account_id: str, finding_id: str, status: str, event_name: str):
+def get_finding(account_id: str, finding_id: str) -> dict | None:
+    db = get_client()
+    doc = _collection(db, account_id, "findings").document(finding_id).get()
+    if not doc.exists:
+        return None
+    return {"finding_id": doc.id, **doc.to_dict()}
+
+
+def update_finding_status(account_id: str, finding_id: str, status: str, event_name: str,
+                          fields: dict | None = None):
     db = get_client()
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # Update finding
     doc_ref = _collection(db, account_id, "findings").document(finding_id)
     update_fields = {"status": status}
     if status == "recovered":
         update_fields["recovered_at"] = now
+    if fields:
+        update_fields.update(fields)
     doc_ref.update(update_fields)
-    
+
     # Insert audit log
-    audit_ref = _collection(db, account_id, "audit_log").document()
-    audit_ref.set({
+    entry = {
         "finding_id": finding_id,
         "event": event_name,
         "decision": status,
-        "ts": now
-    })
+        "ts": now,
+    }
+    if fields:
+        entry["details"] = fields
+    _collection(db, account_id, "audit_log").document().set(entry)
 
 # --- INGESTION APIs ---
 

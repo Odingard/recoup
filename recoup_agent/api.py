@@ -34,6 +34,7 @@ from .billing.stripe_oauth import (
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
+from .recovery import assert_transition
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
@@ -130,8 +131,16 @@ app.add_middleware(
 )
 
 
+_RECOVERY_PATHS = ("/invoiced", "/recovered", "/disputed", "/written-off")
+
+
 @app.exception_handler(RequestValidationError)
-async def request_validation_handler(_, exc: RequestValidationError):
+async def request_validation_handler(request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/findings/") and request.url.path.endswith(_RECOVERY_PATHS):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Recovery evidence is required.", "errors": exc.errors()},
+        )
     fields: list[dict[str, str]] = []
     for error in exc.errors():
         loc = [part for part in error.get("loc", []) if part not in {"body", "query", "path", "header"}]
@@ -150,6 +159,25 @@ async def request_validation_handler(_, exc: RequestValidationError):
 
 class StatusUpdate(BaseModel):
     status: str
+    reason: str = ""
+
+
+class InvoiceEvidence(BaseModel):
+    invoice_ref: str
+    invoice_amount: float
+    invoice_date: str | None = None
+    invoice_url: str | None = None
+    note: str = ""
+
+
+class PaymentEvidence(BaseModel):
+    paid_amount: float
+    paid_date: str | None = None
+    payment_ref: str | None = None
+    note: str = ""
+
+
+class DisputeNote(BaseModel):
     reason: str = ""
 
 
@@ -356,14 +384,85 @@ def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(v
     return {"status": "rejected", "finding_id": finding_id}
 
 
-@app.post("/api/findings/{finding_id}/recovered")
-def mark_finding_recovered(finding_id: str, user: dict = Depends(verify_token)):
-    """Mark an approved finding as RECOVERED. Recoup's 20% fee applies only to
-    dollars that reach this state."""
+def _transition_fields(account_id: str | None, finding_id: str, new_status: str) -> None:
+    """Enforce the finding lifecycle when a persistent account is attached."""
+    finding = db.get_finding(account_id, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    try:
+        assert_transition(finding.get("status", "open"), new_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/api/findings/{finding_id}/invoiced")
+def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: dict = Depends(verify_token)):
+    """Record the corrective invoice sent to the customer for an approved finding."""
+    if not evidence.invoice_ref.strip():
+        raise HTTPException(status_code=422, detail="invoice_ref is required.")
     account_id = _account_id(user)
+    fields = {
+        "corrective_invoice": {
+            "ref": evidence.invoice_ref,
+            "amount": evidence.invoice_amount,
+            "date": evidence.invoice_date,
+            "url": evidence.invoice_url,
+            "note": evidence.note,
+            "recorded_by": user.get("email", "unknown"),
+        }
+    }
     if account_id is not None:
-        db.update_finding_status(account_id, finding_id, "recovered", f"ui_recovered_by_{user.get('email', 'unknown')}")
-    return {"status": "recovered", "finding_id": finding_id}
+        _transition_fields(account_id, finding_id, "invoiced")
+        db.update_finding_status(account_id, finding_id, "invoiced",
+                                 f"ui_invoiced_by_{user.get('email', 'unknown')}", fields=fields)
+    return {"status": "invoiced", "finding_id": finding_id, **fields}
+
+
+@app.post("/api/findings/{finding_id}/recovered")
+def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dict = Depends(verify_token)):
+    """Record payment against an approved/invoiced finding. Recoup's 20% fee
+    applies only to dollars that reach this state."""
+    if evidence.paid_amount <= 0:
+        raise HTTPException(status_code=422, detail="paid_amount must be greater than zero.")
+    account_id = _account_id(user)
+    fields = {
+        "recovered_amount": evidence.paid_amount,
+        "payment": {
+            "ref": evidence.payment_ref,
+            "date": evidence.paid_date,
+            "note": evidence.note,
+            "recorded_by": user.get("email", "unknown"),
+        },
+    }
+    if account_id is not None:
+        _transition_fields(account_id, finding_id, "recovered")
+        db.update_finding_status(account_id, finding_id, "recovered",
+                                 f"ui_recovered_by_{user.get('email', 'unknown')}", fields=fields)
+    return {"status": "recovered", "finding_id": finding_id, **fields}
+
+
+@app.post("/api/findings/{finding_id}/disputed")
+def mark_finding_disputed(finding_id: str, note: DisputeNote, user: dict = Depends(verify_token)):
+    """Flag an invoiced finding as disputed by the customer."""
+    account_id = _account_id(user)
+    fields = {"dispute": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
+    if account_id is not None:
+        _transition_fields(account_id, finding_id, "disputed")
+        db.update_finding_status(account_id, finding_id, "disputed",
+                                 f"ui_disputed_by_{user.get('email', 'unknown')}", fields=fields)
+    return {"status": "disputed", "finding_id": finding_id, **fields}
+
+
+@app.post("/api/findings/{finding_id}/written-off")
+def mark_finding_written_off(finding_id: str, note: DisputeNote, user: dict = Depends(verify_token)):
+    """Write off an approved/invoiced/disputed finding as uncollectible."""
+    account_id = _account_id(user)
+    fields = {"write_off": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
+    if account_id is not None:
+        _transition_fields(account_id, finding_id, "written_off")
+        db.update_finding_status(account_id, finding_id, "written_off",
+                                 f"ui_written_off_by_{user.get('email', 'unknown')}", fields=fields)
+    return {"status": "written_off", "finding_id": finding_id, **fields}
 
 
 def _findings_for(account_id: str | None) -> list[dict]:
@@ -402,13 +501,17 @@ def export_findings(user: dict = Depends(verify_token)):
     findings = _findings_for(account_id)
     columns = [
         "finding_id", "customer_id", "customer_name", "period", "title",
-        "monthly_recoverable", "status", "recovered_at", "confidence_score", "clause_ref",
+        "monthly_recoverable", "status", "recovered_at", "recovered_amount",
+        "corrective_invoice_ref", "payment_ref", "confidence_score", "clause_ref",
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
     writer.writeheader()
     for finding in findings:
-        writer.writerow({col: finding.get(col, "") for col in columns})
+        row = {col: finding.get(col, "") for col in columns}
+        row["corrective_invoice_ref"] = (finding.get("corrective_invoice") or {}).get("ref", "")
+        row["payment_ref"] = (finding.get("payment") or {}).get("ref", "")
+        writer.writerow(row)
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv",

@@ -79,6 +79,36 @@
   text-decoration: underline;
 }
 
+.recovery-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.recovery-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.recovery-form input {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+}
+
+.recovery-form .review-actions {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+
 .auth-button,
 .action-button,
 .stepper-item,
