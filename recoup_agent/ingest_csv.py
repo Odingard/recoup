@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .book_loader import match_discount
-from .line_roles import classify_line
+from .line_roles import SEAT_RE, classify_line
 from .identity import CustomerResolver
 
 
@@ -129,7 +129,7 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
     where = str(path)
     header, rows = _read_rows(path, where=where)
     cols = resolve_columns(header, required=["customer", "amount"],
-                           optional=["period", "period_start", "description", "invoice_id", "status"],
+                           optional=["period", "period_start", "description", "invoice_id", "status", "units"],
                            where=where)
     if "period" not in cols and "period_start" not in cols:
         raise IngestError(
@@ -189,6 +189,12 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             inv["overage_charge"] += amount
         else:
             inv["base_charge"] += amount
+        if "units" in cols and SEAT_RE.search(description):
+            try:
+                inv["seat_units"] = inv.get("seat_units", 0.0) + float(
+                    (row.get(cols["units"]) or "0").replace(",", "").strip() or 0)
+            except ValueError:
+                pass
 
     return list(invoices.values()), needs_review
 

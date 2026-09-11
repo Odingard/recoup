@@ -41,6 +41,7 @@ from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .recovery import assert_transition
+from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
@@ -835,6 +836,15 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
         "needs_review": result.needs_review,
         "periods": periods,
     }
+
+
+@app.get("/api/renewals")
+def get_renewals(user: dict = Depends(verify_token)):
+    """Renewal calendar: term end + cancellation notice deadline per contract."""
+    from datetime import date as _date
+    account_id = _account_id(user)
+    contracts = _load_book(None)[0] if account_id is None else db.get_all_contracts(account_id)
+    return build_renewal_calendar(contracts, _date.today())
 
 
 @app.get("/api/templates/{system}/{kind}.csv", include_in_schema=False)
