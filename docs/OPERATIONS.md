@@ -96,7 +96,22 @@ the record DNS-only / grey cloud).
 8. **Billing** — Recoup invoices 20% of *recovered* dollars via its own Stripe account.
    Export findings to CSV anytime.
 
-## 5. Robustness
+## 5. Recovery evidence
+
+Findings follow a lifecycle: `open → approved → invoiced → recovered`, with side
+states `rejected`, `disputed`, and `written_off`. Illegal transitions return 409.
+
+- `POST /api/findings/{id}/invoiced` records the corrective invoice sent to the
+  customer (`invoice_ref`, `invoice_amount`, optional date/URL/note).
+- `POST /api/findings/{id}/recovered` requires payment evidence (`paid_amount`,
+  optional `paid_date`, `payment_ref`) and stores `recovered_amount`.
+- `POST /api/findings/{id}/disputed` and `…/written-off` take an optional reason.
+
+Recoup's 20% success fee is computed on **recorded paid amounts** (`recovered_amount`),
+falling back to `monthly_recoverable` only for legacy findings recorded before
+payment evidence existed.
+
+## 6. Robustness
 
 No bad input returns a 500. Corrupt files, scanned/image PDFs, unsupported formats,
 empty Stripe accounts, and missing fields all return a clear, actionable message and
