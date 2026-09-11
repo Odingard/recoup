@@ -1059,7 +1059,10 @@ function App() {
                           </p>
                           {row.provenance && <small>{row.provenance}</small>}
                         </div>
-                        <span className={`badge ${row.state === 'notice_window_open' ? 'badge-pending' : 'badge-approved'}`}>
+                        <span className={`badge ${
+                          row.state === 'notice_window_open' || row.state === 'unknown' ? 'badge-pending'
+                            : row.state === 'expired' ? 'badge-rejected'
+                            : 'badge-approved'}`}>
                           {row.state === 'notice_window_open' ? 'Notice window open'
                             : row.state === 'upcoming_90d' ? 'Within 90 days'
                             : row.state === 'expired' ? 'Expired'
