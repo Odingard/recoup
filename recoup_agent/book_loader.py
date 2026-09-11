@@ -91,6 +91,19 @@ def normalize_contract(raw: dict) -> dict:
             "escalator": notes,
         },
     }
+    term = raw.get("term") or {}
+    seats = raw.get("seats") or {}
+    for key, value in (
+        ("term_start", term.get("start", raw.get("contract_start"))),
+        ("term_end", term.get("end", raw.get("contract_end"))),
+        ("auto_renew_months", term.get("auto_renew_months", raw.get("auto_renew_months"))),
+        ("renewal_notice_days", term.get("notice_days", raw.get("renewal_notice_days"))),
+        ("committed_seats", seats.get("committed", raw.get("committed_seats"))),
+        ("seat_price", seats.get("price", raw.get("seat_price"))),
+    ):
+        if value is not None:
+            contract[key] = value
+            contract.setdefault("term_meta", {})[key] = {"confidence": 1.0, "provenance": notes}
     if tier.get("overage_tiers"):
         contract["overage_tiers"] = sorted(
             ({"up_to": t.get("up_to"), "rate": t["rate"], "provenance": notes}
@@ -154,7 +167,7 @@ def _match_discount_strict(contract_discounts: list[dict], description: str) -> 
 
 def normalize_invoice(raw: dict, contract: dict | None) -> dict:
     """Clean test set invoice (line_items) -> internal schema."""
-    from .line_roles import classify_line
+    from .line_roles import SEAT_RE, classify_line
 
     invoice = {
         "customer_id": raw["customer_id"],
@@ -186,6 +199,9 @@ def normalize_invoice(raw: dict, contract: dict | None) -> dict:
             invoice["overage_charge"] += amount
         else:
             invoice["base_charge"] += amount
+        units = item.get("units", item.get("quantity", item.get("qty")))
+        if units is not None and SEAT_RE.search(description):
+            invoice["seat_units"] = invoice.get("seat_units", 0.0) + float(units)
     if "invoice_id" in raw:
         invoice["invoice_id"] = raw["invoice_id"]
     return invoice
