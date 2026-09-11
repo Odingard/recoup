@@ -1,0 +1,93 @@
+{
+  "usage_records": [
+    {
+      "customer_id": "northpeak",
+      "period": "2026-06",
+      "product": "API Calls",
+      "units_consumed": 1340000,
+      "unit": "api_calls",
+      "note": "340,000 calls over the 1,000,000 committed tier"
+    },
+    {
+      "customer_id": "northpeak",
+      "period": "2026-07",
+      "product": "API Calls",
+      "units_consumed": 1512000,
+      "unit": "api_calls",
+      "note": "512,000 calls over committed tier"
+    },
+    {
+      "customer_id": "sterling",
+      "period": "2026-06",
+      "product": "Practice Suite - Enterprise",
+      "units_consumed": 40,
+      "unit": "seats"
+    },
+    {
+      "customer_id": "sterling",
+      "period": "2026-07",
+      "product": "Practice Suite - Enterprise",
+      "units_consumed": 40,
+      "unit": "seats"
+    },
+    {
+      "customer_id": "cascade",
+      "period": "2026-06",
+      "product": "Data Platform - Growth",
+      "units_consumed": 25,
+      "unit": "seats"
+    },
+    {
+      "customer_id": "cascade",
+      "period": "2026-07",
+      "product": "Data Platform - Growth",
+      "units_consumed": 25,
+      "unit": "seats"
+    },
+    {
+      "customer_id": "meridian",
+      "period": "2026-06",
+      "product": "Supply Chain Cloud",
+      "units_consumed": 6,
+      "unit": "facilities",
+      "note": "Only 6 facilities active but floor commit is 10-facility equivalent ($8,000)"
+    },
+    {
+      "customer_id": "meridian",
+      "period": "2026-07",
+      "product": "Supply Chain Cloud",
+      "units_consumed": 6,
+      "unit": "facilities"
+    },
+    {
+      "customer_id": "volt",
+      "period": "2026-06",
+      "product": "Fleet Ops Platform",
+      "units_consumed": 22,
+      "unit": "robots",
+      "note": "Fleet downsized to 22 robots; amendment lowered minimum to 6000"
+    },
+    {
+      "customer_id": "volt",
+      "period": "2026-07",
+      "product": "Fleet Ops Platform",
+      "units_consumed": 22,
+      "unit": "robots"
+    },
+    {
+      "customer_id": "harbor",
+      "period": "2026-06",
+      "product": "Logistics API - Standard",
+      "units_consumed": 480000,
+      "unit": "api_calls",
+      "note": "Under the 500,000 tier; no overage"
+    },
+    {
+      "customer_id": "harbor",
+      "period": "2026-07",
+      "product": "Logistics API - Standard",
+      "units_consumed": 495000,
+      "unit": "api_calls"
+    }
+  ]
+}

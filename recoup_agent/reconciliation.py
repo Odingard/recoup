@@ -7,8 +7,14 @@ ground these findings, but the numbers come from this module.
 Four leakage rules:
   1. unenforced_minimum  - billed below the committed monthly minimum
   2. unbilled_overage    - usage above the included tier was not charged
+     (flat overage_rate or tiered overage_tiers bands)
   3. expired_discount    - a discount past its expiry was still applied
   4. missed_escalator    - an annual price escalator was not applied
+     (compounds once per anniversary of the effective date)
+
+Line hygiene: prorated invoices skip rules 1 and 4 entirely; tax lines are
+excluded from base; credits/refunds are kept out of discounts_applied and
+surface as a needs_review note when other findings exist.
 """
 from __future__ import annotations
 from datetime import date
@@ -116,12 +122,27 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         seq += 1
 
     period_d = _parse(period + "-01")
+    findings_before = len(findings)
+
+    # Prorated/partial-period invoices: minimum and escalator checks are
+    # meaningless for a partial month — record a review note and skip them.
+    prorated = bool(invoice.get("prorated"))
+    if prorated:
+        _needs_review(
+            needs_review,
+            contract,
+            "base_charge",
+            f"invoice contains prorated line(s) (net ${invoice.get('proration_amount', 0):,.2f}); "
+            "partial-period billing — committed-minimum and escalator checks skipped",
+        )
 
     # Rule 1 - committed minimum not enforced
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
-    if minimum is None or base is None or minimum_conf < CONFIDENCE_THRESHOLD:
+    if prorated:
+        pass
+    elif minimum is None or base is None or minimum_conf < CONFIDENCE_THRESHOLD:
         _needs_review(
             needs_review,
             contract,
@@ -141,33 +162,71 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     # Rule 2 - usage overage not billed
     included = contract.get("included_units")
     rate = contract.get("overage_rate")
+    tiers = contract.get("overage_tiers")
     used = usage.get("units")
     billed_overage = invoice.get("overage_charge")
     included_conf = _confidence(contract, "included_units")
-    rate_conf = _confidence(contract, "overage_rate")
-    if included is None or rate is None or used is None or billed_overage is None or min(included_conf, rate_conf) < CONFIDENCE_THRESHOLD:
+    if tiers:
+        rate_conf = _confidence(contract, "overage_tiers")
+        rate_term = "overage_tiers"
+    else:
+        rate_conf = _confidence(contract, "overage_rate")
+        rate_term = "overage_rate"
+    if included is None or (rate is None and not tiers) or used is None or billed_overage is None or min(included_conf, rate_conf) < CONFIDENCE_THRESHOLD:
         _needs_review(
             needs_review,
             contract,
-            "included_units/overage_rate",
+            f"included_units/{rate_term}",
             f"missing or low-confidence included units/overage rate (confidence={min(included_conf, rate_conf):.2f})",
         )
     else:
         overage_units = max(0, used - included)
-        expected_overage = overage_units * rate
-        if expected_overage - billed_overage > 0.01:
-            amount = expected_overage - billed_overage
+        if tiers:
+            expected_overage = 0.0
+            bands: list[str] = []
+            lower = 0.0
+            remaining = overage_units
+            for tier in tiers:
+                up_to = tier.get("up_to")
+                band_units = remaining if up_to is None else min(remaining, max(0.0, up_to - lower))
+                if band_units > 0:
+                    band_amount = band_units * tier["rate"]
+                    expected_overage += band_amount
+                    hi = f"{lower + band_units:,.0f}"
+                    bands.append(f"{lower:,.0f}–{hi} × {_fmt_rate(tier['rate'])} = ${band_amount:,.2f}")
+                    lower += band_units
+                    remaining -= band_units
+                elif up_to is not None:
+                    lower = up_to
+                if remaining <= 0:
+                    break
+            math = (f"{overage_units:,} overage units: " + "; ".join(bands)
+                    + f"; total ${expected_overage:,.2f}/mo")
+        else:
+            expected_overage = overage_units * rate
             math = (f"{used:,} units − {included:,} included = {overage_units:,} units "
                     f"× {_fmt_rate(rate)} = ${expected_overage:,.2f}/mo")
-            if billed_overage > 0.005:
-                math += f" − ${billed_overage:,.2f} already billed = ${amount:,.2f}/mo"
-            add("unbilled_overage", "Usage overage not billed",
-                amount, "overage",
-                f"{used:,} units used vs {included:,} included; {overage_units:,} overage units "
-                f"at {_fmt_rate(rate)} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.",
-                math=math,
-                clause_text=_clause_text(contract, "overage", "overage_rate"),
-                confidence=min(included_conf, rate_conf), term="included_units/overage_rate")
+        if expected_overage - billed_overage > 0.01:
+            amount = expected_overage - billed_overage
+            math += f" − ${billed_overage:,.2f} already billed = ${amount:,.2f}/mo"
+            if tiers:
+                tier_provenance = next((t.get("provenance") for t in tiers if t.get("provenance")), "")
+                add("unbilled_overage", "Usage overage not billed",
+                    amount, "overage",
+                    f"{used:,} units used vs {included:,} included; {overage_units:,} overage units "
+                    f"across {len(tiers)} tier(s) = ${expected_overage:,.2f}, but ${billed_overage:,.0f} was billed.",
+                    math=math,
+                    clause_text=tier_provenance or _clause_text(contract, "overage", "overage_tiers"),
+                    confidence=min(included_conf, rate_conf), term="included_units/overage_tiers",
+                    extra={"overage_tiers": [{"up_to": t.get("up_to"), "rate": t["rate"]} for t in tiers]})
+            else:
+                add("unbilled_overage", "Usage overage not billed",
+                    amount, "overage",
+                    f"{used:,} units used vs {included:,} included; {overage_units:,} overage units "
+                    f"at {_fmt_rate(rate)} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.",
+                    math=math,
+                    clause_text=_clause_text(contract, "overage", "overage_rate"),
+                    confidence=min(included_conf, rate_conf), term="included_units/overage_rate")
 
     # Rule 3 - expired discount still applied
     discounts = contract.get("discounts")
@@ -218,6 +277,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 "annual_escalator_pct",
                 "escalator rule requires both base charge and committed minimum to be present",
             )
+        elif prorated:
+            pass
         elif period_d and period_d >= esc_date:
             steps = (1 + (period_d.year - esc_date.year)
                      - (1 if (period_d.month, period_d.day) < (esc_date.month, esc_date.day) else 0))
@@ -242,5 +303,21 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     confidence=min(esc_conf, esc_date_conf), term="annual_escalator_pct",
                     assumption="Escalator compounds annually on each anniversary of the effective date.",
                     extra={"escalator_steps": steps})
+
+    # Credits/refunds never offset base or discounts_applied; if this customer
+    # produced findings this period, flag the credits for a human to confirm
+    # they don't already cover them.
+    credits = invoice.get("credits_applied") or []
+    if credits and len(findings) > findings_before:
+        total = sum(float(c.get("amount", 0)) for c in credits)
+        descriptions = "; ".join(c.get("description", "") for c in credits)
+        _needs_review(
+            needs_review,
+            contract,
+            "credits_applied",
+            f"${total:,.2f} in credits/refunds this period ({descriptions}); "
+            "confirm they do not already offset the findings above",
+            extra={"amount": round(total, 2)},
+        )
 
     return findings

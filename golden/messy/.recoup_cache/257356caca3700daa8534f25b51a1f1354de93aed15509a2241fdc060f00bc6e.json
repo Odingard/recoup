@@ -1,0 +1,35 @@
+{
+  "customer_name": "Cascade Analytics, Inc.",
+  "entitlements": [
+    {
+      "term_type": "included_units",
+      "value": 25.0,
+      "label": "25 seats included",
+      "effective_date": null,
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "25 seats included"
+    },
+    {
+      "term_type": "committed_minimum",
+      "value": 5000.0,
+      "label": "Monthly list price",
+      "effective_date": "2025-06-01",
+      "start_date": null,
+      "end_date": null,
+      "confidence_score": 1.0,
+      "provenance": "List price: $5,000 / month"
+    },
+    {
+      "term_type": "discount",
+      "value": 0.2,
+      "label": "New customer launch incentive",
+      "effective_date": null,
+      "start_date": "2025-06-01",
+      "end_date": "2025-11-30",
+      "confidence_score": 1.0,
+      "provenance": "New customer launch incentive: twenty percent (20%) off the monthly list price for the first six (6) billing cycles only. Promotional pricing ends after the sixth cycle and the account reverts to full list price automatically."
+    }
+  ]
+}
