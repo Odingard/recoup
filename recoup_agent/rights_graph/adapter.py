@@ -631,3 +631,182 @@ class B2BContractAdapter:
                 evidence=finding.get("payment") or {},
             ))
         return [action], outcomes
+
+
+class NovelRightsAdapter:
+    """Projects AI-discovered compiled rights and runtime evaluations into the
+    Rights Graph. Everything it emits is already compiled/evaluated
+    deterministically by recoup_agent.rights_discovery — this adapter only
+    shapes entities."""
+
+    def extract_rights(self, compiled, account_id: str | None):
+        """compiled: CompiledRight or its dict form + candidate quote/context."""
+        from ..rights_discovery.models import CompiledRight, RightSpec
+        if isinstance(compiled, dict):
+            compiled = CompiledRight.from_dict(compiled)
+        spec = compiled.spec if isinstance(compiled.spec, RightSpec) \
+            else RightSpec.from_dict(compiled.spec)
+        meta = compiled.to_dict().get("metadata", {}) or {}
+        source_id = meta.get("source_id") or stable_id(
+            "src", account_id, "compiled", spec.right_id)
+        now = datetime.now(timezone.utc).isoformat()
+        source = AuthoritySource(
+            source_id=source_id,
+            account_id=account_id,
+            source_type="contract",
+            external_reference=meta.get("external_reference"),
+            counterparty_id=spec.obligor_party_id,
+            effective_date=spec.effective_from,
+            expiration_date=spec.effective_until,
+            ingestion_timestamp=now,
+            status="active",
+        )
+        quote = meta.get("source_quote", "")
+        evidence = [EvidenceReference(
+            evidence_id=spec.evidence_refs[0] if spec.evidence_refs
+            else stable_id("ev", source_id, quote),
+            source_id=source_id,
+            locator="contract.source_quote",
+            quoted_text=quote,
+            extraction_method="ai_discovery",
+            content_hash=sha256(quote.encode()).hexdigest() if quote else None,
+        )] if quote or spec.evidence_refs else []
+        right = FinancialRight(
+            right_id=spec.right_id,
+            account_id=account_id,
+            source_id=source_id,
+            holder_party_id=spec.holder_party_id or account_id,
+            obligor_party_id=spec.obligor_party_id,
+            right_type=spec.right_family,
+            description=meta.get("description", ""),
+            effective_from=spec.effective_from,
+            effective_until=spec.effective_until,
+            trigger_definition="per RightSpec trigger",
+            calculation_rule=spec.right_family,
+            calculation_inputs={
+                "required_observations": spec.required_observations,
+                "constants": {c["name"]: c["value"]
+                              for c in spec.contractual_constants or []},
+            },
+            evidence_refs=[e.evidence_id for e in evidence],
+            review_status=ReviewStatus.confirmed.value,
+            status=RightStatus.active.value,
+            metadata={
+                "discovery_origin": "ai",
+                "compiler_version": compiled.compiler_version,
+                "spec_version": spec.spec_version,
+                "discovery_model": compiled.discovery_model,
+                "verification_model": compiled.verification_model,
+                "candidate_id": compiled.candidate_id,
+            },
+        )
+        return source, evidence, [right], []
+
+    def normalize_observations(self, observations: list[dict],
+                               account_id: str | None) -> list[Observation]:
+        out = []
+        for o in observations:
+            out.append(Observation(
+                observation_id=o.get("observation_id") or stable_id(
+                    "obs", account_id, o.get("customer_id"), o.get("period"),
+                    o.get("type") or o.get("observation_type"),
+                    o.get("external_reference") or ""),
+                account_id=account_id,
+                observation_type=o.get("type") or o.get("observation_type"),
+                party_id=o.get("customer_id"),
+                period=o.get("period"),
+                amount=o.get("amount"),
+                quantity=o.get("quantity"),
+                value=o.get("value"),
+                unit=o.get("unit"),
+                source_system=o.get("source_system"),
+                external_reference=o.get("external_reference"),
+                evidence=o.get("evidence") or {},
+            ))
+        return out
+
+    def project_evaluation(self, spec, result, account_id, obs_ids):
+        """EvaluationResult -> ExpectedState + Discrepancy (only when
+        evaluated with recoverable > 0)."""
+        now = datetime.now(timezone.utc).isoformat()
+        period = getattr(result, "period", None) or \
+            result.calculation_trace.get("period")
+        expected_state = ExpectedState(
+            expected_state_id=stable_id("exp", spec.right_id, period),
+            right_id=spec.right_id,
+            period=period,
+            expected_amount=result.expected_amount,
+            currency=result.currency,
+            deterministic_rule=spec.right_family,
+            calculation_trace=result.calculation_trace,
+            input_observation_ids=list(result.input_observation_ids or obs_ids),
+            generated_at=now,
+        )
+        discrepancy = Discrepancy(
+            discrepancy_id=stable_id("dsc", spec.right_id, period,
+                                     ",".join(sorted(
+                                         result.input_observation_ids or obs_ids)),
+                                     spec.right_family),
+            right_id=spec.right_id,
+            expected_state_id=expected_state.expected_state_id,
+            actual_observation_ids=list(result.input_observation_ids or obs_ids),
+            discrepancy_type=spec.right_family,
+            expected_amount=result.expected_amount,
+            actual_amount=result.actual_amount,
+            recoverable_amount=result.recoverable_amount,
+            calculation_trace=result.calculation_trace,
+            status="open",
+        )
+        return expected_state, discrepancy
+
+    def build_recovery_context(self, finding: dict, discrepancy_id: str):
+        return B2BContractAdapter().build_recovery_context(finding, discrepancy_id)
+
+
+def project_novel_rights(compiled_rights, observations, evaluations,
+                         account_id) -> RightsGraph:
+    """Merge AI-discovered rights + runtime evaluations into a RightsGraph."""
+    from ..rights_discovery.models import EvaluationResult, RightSpec
+    adapter = NovelRightsAdapter()
+    graph = RightsGraph()
+    specs = {}
+    for compiled in compiled_rights or []:
+        source, evidence, rights, _ = adapter.extract_rights(compiled, account_id)
+        graph.sources.append(source)
+        graph.evidence.extend(evidence)
+        graph.rights.extend(rights)
+        spec_dict = compiled["spec"] if isinstance(compiled, dict) \
+            else compiled.spec
+        specs[right_id_of(spec_dict)] = spec_dict
+    graph.observations.extend(
+        adapter.normalize_observations(observations or [], account_id))
+    obs_ids = [o.observation_id for o in graph.observations]
+    for ev in evaluations or []:
+        result = ev if isinstance(ev, EvaluationResult) \
+            else EvaluationResult.from_dict(ev)
+        spec = specs.get(result.right_id)
+        if spec is None:
+            continue
+        spec = spec if isinstance(spec, RightSpec) else RightSpec.from_dict(spec)
+        if result.status == "not_evaluable":
+            graph.not_evaluable.append({
+                "right_id": result.right_id,
+                "right_type": spec.right_family,
+                "period": getattr(result, "period", None)
+                or result.calculation_trace.get("period"),
+                "missing_observation": ", ".join(result.missing_observations),
+                "reason": "novel right valid but not evaluable: missing "
+                          + ", ".join(result.missing_observations),
+            })
+            continue
+        if result.status == "evaluated" and (result.recoverable_amount or 0) > 0:
+            state, disc = adapter.project_evaluation(spec, result, account_id,
+                                                     obs_ids)
+            graph.expected_states.append(state)
+            graph.discrepancies.append(disc)
+    return graph
+
+
+def right_id_of(spec_dict) -> str:
+    return spec_dict.get("right_id") if isinstance(spec_dict, dict) \
+        else spec_dict.right_id

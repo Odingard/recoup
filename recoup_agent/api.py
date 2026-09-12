@@ -288,6 +288,76 @@ def _save_contract_if_needed(account_id: str | None, normalized: dict) -> None:
         db.save_contract(account_id, normalized)
 
 
+def _document_text_for_discovery(path: str, suffix: str) -> str | None:
+    """Best-effort plain text for rights discovery (untrusted data)."""
+    try:
+        if suffix in (".txt", ".md"):
+            return Path(path).read_text(errors="replace")
+        if suffix == ".docx":
+            from .ingestion_doc import _docx_to_text
+            return _docx_to_text(path).decode("utf-8", errors="replace")
+        if suffix == ".pdf":
+            reader = PdfReader(path)
+            text = "\n".join((p.extract_text() or "") for p in reader.pages)
+            return text if text.strip() else None
+    except Exception:
+        logger.warning("rights discovery text extraction failed for %s", path)
+    return None
+
+
+def _run_novel_discovery(account_id: str | None, document_text: str | None,
+                         normalized: dict) -> dict | None:
+    """Best-effort AI right discovery + verify + compile for an uploaded
+    contract. Never raises — the upload must not fail because of it."""
+    if account_id is None or not document_text:
+        return None
+    try:
+        from .rights_discovery import compiler, discovery, verifier
+        from .rights_discovery.models import CompiledRight
+        from .rights_graph.ids import stable_id as _sid
+
+        customer_id = normalized.get("customer_id")
+        source_id = _sid("src", account_id, customer_id,
+                         normalized.get("contract_id") or "contract")
+        candidates = discovery.discover_financial_rights(
+            document_text,
+            {"account_id": account_id, "source_id": source_id,
+             "customer_name": normalized.get("customer_name")})
+        counts = {"discovered": len(candidates), "compiled": 0,
+                  "needs_review": 0, "legacy_routed": 0}
+        for cand in candidates:
+            cand.metadata["customer_id"] = customer_id
+            if cand.status == "discovered":
+                cand = verifier.verify_candidate_right(cand, document_text)
+            if cand.status == "verified":
+                result = compiler.compile_candidate_right(cand, document_text)
+                if isinstance(result, CompiledRight):
+                    counts["compiled"] += 1
+                    compiled_doc = result.to_dict()
+                    compiled_doc["customer_id"] = customer_id
+                    compiled_doc["metadata"] = {
+                        "source_id": source_id,
+                        "source_quote": cand.source_quote,
+                        "description": cand.description,
+                    }
+                    db.save_compiled_right(account_id, compiled_doc)
+                else:
+                    key = {"legacy_routed": "legacy_routed",
+                           "needs_review": "needs_review"}.get(result.status)
+                    counts[key or "needs_review"] += 1
+                    cand.status = result.status
+            elif cand.status in ("needs_review", "unsupported"):
+                counts["needs_review"] += 1
+        if candidates:
+            db.save_candidate_rights(
+                account_id,
+                [{**c.to_dict(), "customer_id": customer_id} for c in candidates])
+        return counts
+    except Exception:
+        logger.warning("novel rights discovery failed (non-fatal)", exc_info=True)
+        return None
+
+
 def _contract_preview(normalized: dict, *, saved: bool, needs_review: list[dict] | None = None,
                       message: str = "Contract extracted successfully", ocr: bool = False) -> dict:
     payload = {
@@ -789,12 +859,264 @@ def get_customer_rights_graph(customer_id: str, user: dict = Depends(verify_toke
     account_id = _account_id(user)
     contracts, usage_list, invoices_list = _load_book(account_id)
     findings_by_id = {f["finding_id"]: f for f in _findings_for(account_id)}
+    compiled_rights, observations, evaluations = _novel_state(account_id, customer_id)
     graph = RightsGraphService(account_id).build_for_customer(
         customer_id, contracts, usage_list, invoices_list,
-        findings_by_id=findings_by_id)
+        findings_by_id=findings_by_id,
+        compiled_rights=compiled_rights, observations=observations,
+        evaluations=evaluations)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found.")
     return graph.to_dict()
+
+
+def _novel_state(account_id: str | None, customer_id: str | None = None):
+    """Load persisted novel rights + observations and evaluate each compiled
+    right for every observed period. Returns (compiled, observations,
+    evaluations) — all empty lists for sample/offline mode."""
+    if account_id is None:
+        return [], [], []
+    from .rights_discovery import evaluate_right
+    from .rights_discovery.models import RightSpec
+
+    compiled = db.get_compiled_rights(account_id, customer_id)
+    observations = db.get_observations(account_id, customer_id)
+    periods = sorted({o.get("period") for o in observations if o.get("period")})
+    evaluations = []
+    for cr in compiled:
+        try:
+            spec = RightSpec.from_dict(cr["spec"])
+        except Exception:
+            continue
+        for period in periods:
+            evaluations.append(evaluate_right(spec, observations, period))
+    return compiled, observations, evaluations
+
+
+@app.get("/api/rights/candidates")
+def list_candidate_rights(customer_id: str | None = None,
+                          user: dict = Depends(verify_token)):
+    """Candidate financial rights discovered in uploaded contract documents."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"candidates": []}
+    return {"candidates": db.get_candidate_rights(account_id, customer_id)}
+
+
+class ObservationPayload(BaseModel):
+    customer_id: str
+    type: str
+    period: str
+    value: float | None = None
+    quantity: float | None = None
+    amount: float | None = None
+    source_system: str | None = None
+    external_reference: str | None = None
+    evidence: dict | None = None
+
+
+@app.post("/api/observations")
+def create_observation(payload: ObservationPayload, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode is read-only; sign in to use real data.")
+    if not payload.customer_id.strip() or not payload.type.strip() or not payload.period.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="customer_id, type and period are required.")
+    if payload.value is None and payload.quantity is None and payload.amount is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one of value, quantity or amount.")
+    from .rights_graph.ids import stable_id
+    obs = {
+        "observation_id": stable_id("obs", account_id, payload.customer_id,
+                                    payload.type, payload.period,
+                                    payload.external_reference or ""),
+        "account_id": account_id,
+        "customer_id": payload.customer_id.strip(),
+        "observation_type": payload.type.strip(),
+        "period": payload.period.strip(),
+        "value": payload.value,
+        "quantity": payload.quantity,
+        "amount": payload.amount,
+        "source_system": payload.source_system or "manual",
+        "external_reference": payload.external_reference,
+        "evidence": payload.evidence or {},
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+    }
+    db.save_observation(account_id, obs)
+    return {"status": "success", "observation": obs}
+
+
+class EvaluateRightsPayload(BaseModel):
+    customer_id: str
+    period: str
+
+
+def _finding_math_from_trace(trace: dict) -> str:
+    parts = []
+    for name, t in (trace.get("trigger") or {}).items():
+        if isinstance(t, dict):
+            parts.append(
+                f"{name} {t.get('op')} {t.get('threshold')} "
+                f"(observed {t.get('observed')})")
+        else:
+            parts.append(f"{name}: {t}")
+    calc = trace.get("calculation")
+    if isinstance(calc, dict):
+        parts.append(
+            f"{calc.get('type')}: expected {calc.get('expected')} "
+            f"− actual {calc.get('actual')} = {calc.get('recoverable')}")
+    elif calc is not None:
+        parts.append(str(calc))
+    return " | ".join(parts)
+
+
+@app.post("/api/rights/evaluate")
+def evaluate_rights(payload: EvaluateRightsPayload, user: dict = Depends(verify_token)):
+    """Evaluate compiled novel rights against recorded observations for one
+    customer/period; persisting discrepancies as findings."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no novel rights to evaluate.")
+    if not payload.customer_id.strip() or not payload.period.strip():
+        raise HTTPException(status_code=400,
+                            detail="customer_id and period are required.")
+
+    from .rights_discovery import evaluate_right
+    from .rights_discovery.models import RightSpec
+    from .rights_graph.adapter import project_novel_rights
+
+    compiled = [c for c in db.get_compiled_rights(account_id)
+                if c.get("customer_id") == payload.customer_id]
+    observations = db.get_observations(
+        account_id, payload.customer_id, payload.period)
+
+    evaluations = []
+    for cr in compiled:
+        try:
+            spec = RightSpec.from_dict(cr["spec"])
+        except Exception:
+            continue
+        evaluations.append(evaluate_right(spec, observations, payload.period))
+
+    graph = project_novel_rights(compiled, observations, evaluations, account_id)
+
+    existing = db.get_all_findings(account_id)
+    existing_dsc = {f.get("discrepancy_id") for f in existing}
+    discrepancies = sorted(
+        (d for d in graph.discrepancies if d.discrepancy_id not in existing_dsc),
+        key=lambda d: d.discrepancy_id)
+    sequence = sum(1 for f in existing
+                   if str(f.get("finding_id", "")).startswith(
+                       f"F-{payload.customer_id.upper()}-N"))
+    findings = []
+    for disc in discrepancies:
+        sequence += 1
+        evaluation = next((e for e in evaluations
+                           if e.right_id == disc.right_id), None)
+        trace = (evaluation.trace if evaluation else {}) or {}
+        finding = {
+            "finding_id": f"F-{payload.customer_id.upper()}-N{sequence:03d}",
+            "customer_id": payload.customer_id,
+            "customer": payload.customer_id,
+            "type": f"novel:{disc.discrepancy_type}",
+            "title": f"Novel right: {disc.discrepancy_type}",
+            "severity": "needs_review",
+            "confidence_score": disc.confidence or 0.0,
+            "monthly_recoverable": round(disc.recoverable_amount or 0.0, 2),
+            "period": payload.period,
+            "math": _finding_math_from_trace(trace),
+            "clause_text": next(
+                (e.quoted_text for e in graph.evidence
+                 if e.evidence_id in (next(
+                     (r.evidence_refs for r in graph.rights
+                      if r.right_id == disc.right_id), []))),
+                None),
+            "status": "open",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "discrepancy_id": disc.discrepancy_id,
+            "right_id": disc.right_id,
+            "expected_state_id": disc.expected_state_id,
+        }
+        findings.append(finding)
+    if findings:
+        db.save_findings(account_id, findings)
+
+    return {
+        "status": "success",
+        "customer_id": payload.customer_id,
+        "period": payload.period,
+        "evaluations": [e.to_dict() for e in evaluations],
+        "discrepancies": [d.to_dict() for d in graph.discrepancies],
+        "not_evaluable": graph.not_evaluable,
+        "findings_created": len(findings),
+    }
+
+
+def _recovery_case_ctx(finding: dict, spec: dict | None) -> dict:
+    meta = (spec or {}).get("metadata") or {}
+    return {
+        "discrepancy_id": finding.get("discrepancy_id")
+        or finding.get("finding_id"),
+        "right_summary": meta.get("description") or finding.get("title"),
+        "right_family": finding.get("type", "").split(":", 1)[-1],
+        "source_evidence": meta.get("source_quote") or finding.get("clause_text"),
+        "observed_facts": {"period": finding.get("period")},
+        "governing_authority": finding.get("customer_id"),
+        # deterministic values — the model must echo, never recompute:
+        "amount": finding.get("monthly_recoverable"),
+        "calculation_trace": {"formula": finding.get("math")},
+        "confidence": finding.get("confidence_score"),
+    }
+
+
+def _novel_finding_and_spec(account_id: str, finding_id: str):
+    """Locate a persisted novel finding and its compiled right."""
+    finding = next(
+        (f for f in db.get_all_findings(account_id)
+         if f.get("finding_id") == finding_id), None)
+    if finding is None or not str(finding.get("type", "")).startswith("novel:"):
+        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    spec = next(
+        (c for c in db.get_compiled_rights(account_id, finding.get("customer_id"))
+         if c.get("spec", {}).get("right_id") == finding.get("right_id")), None)
+    return finding, spec
+
+
+@app.get("/api/rights/discrepancies/{finding_id}/case")
+def get_discrepancy_case(finding_id: str, user: dict = Depends(verify_token)):
+    """LLM-investigated recovery case for a novel discrepancy."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no novel discrepancies.")
+    from .rights_discovery import build_recovery_case
+    finding, spec = _novel_finding_and_spec(account_id, finding_id)
+    case = build_recovery_case(_recovery_case_ctx(finding, spec))
+    case = case.to_dict()
+    case["finding_id"] = finding_id
+    return case
+
+
+@app.get("/api/rights/discrepancies/{finding_id}/strategy")
+def get_discrepancy_strategy(finding_id: str, user: dict = Depends(verify_token)):
+    """Recommended recovery strategy for a novel discrepancy (always requires
+    human approval)."""
+    _require_unlocked(user)
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no novel discrepancies.")
+    from .rights_discovery import build_recovery_case, recommend_recovery
+    finding, spec = _novel_finding_and_spec(account_id, finding_id)
+    case = build_recovery_case(_recovery_case_ctx(finding, spec))
+    recommendation = recommend_recovery(case).to_dict()
+    recommendation["finding_id"] = finding_id
+    recommendation["amount"] = finding.get("monthly_recoverable")
+    return recommendation
 
 
 @app.get("/report/sample")
@@ -942,8 +1264,15 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
         message = ("Contract extracted from scanned PDF (OCR); verify amounts against the original"
                    if ocr else "Contract extracted successfully")
-        return _contract_preview(normalized, saved=saved, needs_review=needs_review,
-                                 message=message, ocr=ocr)
+        payload = _contract_preview(normalized, saved=saved, needs_review=needs_review,
+                                    message=message, ocr=ocr)
+        novel = _run_novel_discovery(
+            account_id,
+            _document_text_for_discovery(temp_path, suffix),
+            normalized)
+        if novel is not None:
+            payload["novel_rights"] = novel
+        return payload
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
@@ -1054,7 +1383,7 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
         db.save_usage(account_id, usage_rec)
 
     periods = sorted({r.get("period") for r in result.invoices + result.usage if r.get("period")})
-    return {
+    payload = {
         "status": "success",
         "files": result.files,
         "contracts": len(result.contracts),
@@ -1064,6 +1393,43 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
         "periods": periods,
         "contract_records": result.contracts,
     }
+    novel_counts = {"discovered": 0, "compiled": 0,
+                    "needs_review": 0, "legacy_routed": 0}
+    for fname, raw in items:
+        suffix = Path(fname).suffix.lower()
+        if suffix in IMAGE_SUFFIXES:
+            continue
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(raw)
+                tmp_path = tmp.name
+            text = _document_text_for_discovery(tmp_path, suffix)
+        except Exception:
+            text = None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        if not text:
+            continue
+        customer_id = None
+        for contract in result.contracts:
+            if (contract.get("metadata") or {}).get("upload_filename") == fname or \
+                    contract.get("upload_filename") == fname:
+                customer_id = contract["customer_id"]
+                break
+        stub = {"customer_id": customer_id or f"upload:{fname}",
+                "contract_id": fname}
+        novel = _run_novel_discovery(account_id, text, stub)
+        if novel:
+            for k in novel_counts:
+                novel_counts[k] += novel.get(k, 0)
+    if novel_counts["discovered"]:
+        payload["novel_rights"] = novel_counts
+    return payload
 
 
 @app.get("/api/contracts")
