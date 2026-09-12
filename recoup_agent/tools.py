@@ -150,3 +150,108 @@ def record_approval_decision(finding_id: str, approved: bool, tool_context) -> d
         return {"finding_id": finding_id, "status": "not_found"}
     return {"finding_id": finding_id, "status": status,
             "message": f"{finding_id} {status}; decision written to the audit log."}
+
+
+def discover_rights_for_book(tool_context) -> dict:
+    """Report AI-discovered candidate financial rights persisted for this
+    account (from uploaded contract documents). Novel only — legacy B2B rights
+    stay with `run_reconciliation`."""
+    _, account_id = _period_and_account(tool_context)
+    candidates = db.get_candidate_rights(account_id) if account_id is not None else []
+    by_status: dict[str, int] = {}
+    for c in candidates:
+        by_status[c.get("status", "unknown")] = by_status.get(c.get("status", "unknown"), 0) + 1
+    _state(tool_context)["candidates"] = candidates
+    return {
+        "candidate_count": len(candidates),
+        "by_status": by_status,
+        "candidates": [
+            {"candidate_id": c.get("candidate_id"),
+             "right_family": c.get("right_family"),
+             "name": c.get("name"),
+             "status": c.get("status")}
+            for c in candidates],
+        "message": ("No novel rights discovered yet; upload contract documents."
+                    if not candidates else
+                    "These are AI-discovered candidates; only 'compiled' ones can be evaluated."),
+    }
+
+
+def evaluate_compiled_rights(tool_context) -> dict:
+    """Evaluate persisted compiled rights against recorded observations.
+    Deterministic — no LLM math."""
+    period, account_id = _period_and_account(tool_context)
+    if account_id is None:
+        return {"evaluations": [], "message": "Sample mode has no compiled rights."}
+    from .rights_discovery import evaluate_right
+    from .rights_discovery.models import RightSpec
+    compiled = db.get_compiled_rights(account_id)
+    observations = db.get_observations(account_id)
+    periods = sorted({o.get("period") for o in observations if o.get("period")}) or [period]
+    evaluations = []
+    for cr in compiled:
+        try:
+            spec = RightSpec.from_dict(cr["spec"])
+        except Exception:
+            continue
+        for p in periods:
+            evaluations.append(evaluate_right(spec, observations, p).to_dict())
+    _state(tool_context)["evaluations"] = evaluations
+    recoverable = sum(
+        (e.get("expected_amount") or 0) - (e.get("actual_amount") or 0)
+        for e in evaluations
+        if e.get("status") == "evaluated" and e.get("triggered"))
+    return {
+        "evaluation_count": len(evaluations),
+        "evaluations": evaluations,
+        "total_novel_recoverable": round(max(recoverable, 0.0), 2),
+    }
+
+
+def _novel_recovery_context(finding_id: str, account_id: str | None) -> dict | None:
+    if account_id is None:
+        return None
+    finding = next(
+        (f for f in db.get_all_findings(account_id)
+         if f.get("finding_id") == finding_id
+         and str(f.get("type", "")).startswith("novel:")), None)
+    if finding is None:
+        return None
+    spec = next(
+        (c for c in db.get_compiled_rights(account_id, finding.get("customer_id"))
+         if c.get("spec", {}).get("right_id") == finding.get("right_id")), None)
+    meta = (spec or {}).get("metadata") or {}
+    return {
+        "discrepancy_id": finding.get("discrepancy_id") or finding_id,
+        "right_summary": meta.get("description") or finding.get("title"),
+        "right_family": finding.get("type", "").split(":", 1)[-1],
+        "source_evidence": meta.get("source_quote") or finding.get("clause_text"),
+        "observed_facts": {"period": finding.get("period")},
+        "governing_authority": finding.get("customer_id"),
+        "amount": finding.get("monthly_recoverable"),
+        "calculation_trace": {"formula": finding.get("math")},
+        "confidence": finding.get("confidence_score"),
+    }
+
+
+def build_recovery_case_tool(finding_id: str, tool_context) -> dict:
+    """Build an LLM-investigated recovery case for a novel-right finding. The
+    amount and calculation always come from the deterministic evaluation."""
+    _, account_id = _period_and_account(tool_context)
+    ctx = _novel_recovery_context(finding_id, account_id)
+    if ctx is None:
+        return {"finding_id": finding_id, "status": "not_found"}
+    from .rights_discovery import build_recovery_case
+    return build_recovery_case(ctx).to_dict()
+
+
+def recommend_recovery_tool(finding_id: str, tool_context) -> dict:
+    """Recommend a recovery strategy for a novel-right finding. Always requires
+    human approval; unknown strategies route to manual_review."""
+    _, account_id = _period_and_account(tool_context)
+    ctx = _novel_recovery_context(finding_id, account_id)
+    if ctx is None:
+        return {"finding_id": finding_id, "status": "not_found"}
+    from .rights_discovery import build_recovery_case, recommend_recovery
+    case = build_recovery_case(ctx).to_dict()
+    return recommend_recovery(case).to_dict()

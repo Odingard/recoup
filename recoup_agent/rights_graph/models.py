@@ -108,6 +108,7 @@ class Observation(_Entity):
     occurred_at: str | None = None
     amount: float | None = None
     quantity: float | None = None
+    value: float | None = None  # generic numeric reading (novel rights)
     unit: str | None = None
     source_system: str | None = None
     external_reference: str | None = None
@@ -170,6 +171,15 @@ class RecoveryOutcome(_Entity):
     resolution: str | None = None
     evidence: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    # Intelligence fields (additive; populated when outcome data is available)
+    strategy_used: str | None = None
+    counterparty_response: str | None = None
+    accepted_without_dispute: bool | None = None
+    dispute_reason: str | None = None
+    amount_requested: float | None = None
+    days_to_resolution: int | None = None
+    evidence_strength: str | None = None
+    right_family: str | None = None
 
 
 _ENTITY_LISTS = (

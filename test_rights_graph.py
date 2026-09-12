@@ -229,6 +229,10 @@ def test_rights_endpoint_tenant_isolation(monkeypatch):
 
     monkeypatch.setattr(api, "_load_book", fake_load_book)
     monkeypatch.setattr(api, "_findings_for", lambda _a: [])
+    monkeypatch.setattr(api.db, "get_compiled_rights",
+                        lambda _a, customer_id=None: [])
+    monkeypatch.setattr(api.db, "get_observations",
+                        lambda _a, customer_id=None, period=None: [])
     api.app.dependency_overrides[api.verify_token] = \
         lambda: {"uid": "acct-A", "account_id": "acct-A"}
     try:

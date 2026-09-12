@@ -130,6 +130,29 @@ Invoice/usage fields normalize to Observations: `base_charge` →
 `units` → `usage_measured`, `seat_units` → `seat_count_billed`, and
 `invoice_issued` per invoice.
 
+### 6b. Novel (AI-discovered) rights
+
+`NovelRightsAdapter` projects compiled `RightSpec`s (see `docs/RIGHTSPEC.md`)
+into the same graph. Each `CompiledRight` yields an `AuthoritySource`
+(`source_type="contract"`), one `EvidenceReference` carrying the verbatim
+`source_quote` (`extraction_method="ai_discovery"`), and a `FinancialRight`
+(`status=active`, `review_status=confirmed`,
+`metadata.discovery_origin="ai"`). Observations posted via
+`POST /api/observations` normalize to `Observation`s; each `EvaluationResult`
+from the deterministic runtime yields an `ExpectedState`, and a `Discrepancy`
+only when `status=="evaluated"` with `recoverable > 0`. A `not_evaluable`
+evaluation lands in `graph.not_evaluable` — same channel as the legacy path.
+`RightsGraphService.build_for_book`/`build_for_customer` accept optional
+`compiled_rights`/`observations`/`evaluations` and merge this output; legacy
+families discovered by AI are routed back to `reconciliation.py` and never
+enter this projection, so no clause can be double-counted.
+
+`RecoveryOutcome` additionally carries optional intelligence fields used by
+novel recovery cases: `strategy_used`, `counterparty_response`,
+`accepted_without_dispute`, `dispute_reason`, `amount_requested`,
+`days_to_resolution`, `evidence_strength`, `right_family` (plus the existing
+`amount_recovered`).
+
 ## 7. Expected vs actual state
 
 For each finding, the adapter creates an `ExpectedState` and a `Discrepancy`
@@ -231,3 +254,8 @@ preflight enforcement yet.
 - `missed_escalator` and `underbilled_seats` projections are lossy by design
   (expected/actual `None`); the authoritative numbers live in the finding's
   `math`/`monthly_recoverable`.
+- AI-discovered novel rights enter the graph only after deterministic
+  compilation; they inherit the same tenant and gating rules.
+
+---
+Architecture: James · Security review: Mark · QA: Jamie · PM: Michael
