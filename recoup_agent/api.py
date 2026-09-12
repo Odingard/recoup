@@ -1044,7 +1044,7 @@ def evaluate_rights(payload: EvaluateRightsPayload, user: dict = Depends(verify_
         }
         findings.append(finding)
     if findings:
-        db.save_findings(account_id, payload.customer_id, findings)
+        db.save_findings(account_id, findings)
 
     return {
         "status": "success",
