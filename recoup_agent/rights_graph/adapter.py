@@ -624,13 +624,24 @@ class B2BContractAdapter:
                 action_id=action.action_id,
                 discrepancy_id=discrepancy_id,
                 outcome_type=outcome_type,
-                amount_recovered=finding.get("recovered_amount"),
+                amount_recovered=_net_recovered(finding),
                 resolved_at=None if status == "disputed"
                 else finding.get("recovered_at"),
                 resolution=resolution,
                 evidence=finding.get("payment") or {},
             ))
         return [action], outcomes
+
+
+def _net_recovered(finding: dict):
+    """Net realized value when recovery events are attached to the finding;
+    otherwise the legacy recovered_amount field (which the event endpoints
+    already maintain as net)."""
+    events = finding.get("recovery_events")
+    if events:
+        from ..billing.realized_value import net_realized
+        return net_realized(events)
+    return finding.get("recovered_amount")
 
 
 class NovelRightsAdapter:

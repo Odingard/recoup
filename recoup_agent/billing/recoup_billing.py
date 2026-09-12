@@ -188,7 +188,8 @@ def billing_status(account_id: str) -> dict:
 
 
 def charge_success_fee_for_finding(account_id: str, finding: dict, paid_amount: float) -> dict:
-    """Charge the stored card 20% of a just-recovered amount. Never raises."""
+    """Legacy: charge 20% of a lump recovered amount. Kept for compatibility;
+    the API now charges per realization event (charge_success_fee_for_event)."""
     fee = round(paid_amount * SUCCESS_FEE_PCT, 2)
     finding_id = finding.get("finding_id", "unknown")
     key = _billing_key()
@@ -230,3 +231,88 @@ def charge_success_fee_for_finding(account_id: str, finding: dict, paid_amount: 
         }
     except Exception as exc:
         return {"status": "error", "message": f"Recoup billing failed: {exc}"}
+
+
+def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
+    """Charge the stored card the fee on one realization event
+    (event.fee_amount). Idempotent per (account, finding, event). Never raises."""
+    fee = round(event.fee_amount or 0, 2)
+    finding_id = finding.get("finding_id", "unknown")
+    key = _billing_key()
+    if key is None:
+        return _needs_config()
+    billing = _db.get_account_billing(account_id) or {}
+    cust_id = billing.get("stripe_customer_id")
+    if not billing.get("payment_method_id") or not cust_id:
+        return {"status": "unbilled", "message": "No payment method on file."}
+    try:
+        import stripe
+        invoice = stripe.Invoice.create(
+            customer=cust_id,
+            collection_method="charge_automatically",
+            auto_advance=True,
+            description=(f"Recoup success fee — {finding.get('customer_name', '')} "
+                         f"{finding.get('period', '')}"),
+            metadata={"finding_id": finding_id,
+                      "recoup_account_id": account_id,
+                      "recovery_event_id": event.recovery_event_id,
+                      "recovery_basis": event.recovery_basis},
+            idempotency_key=f"fee-{account_id}-{finding_id}-{event.recovery_event_id}",
+            api_key=key,
+        )
+        stripe.InvoiceItem.create(
+            customer=cust_id,
+            invoice=invoice.id,
+            amount=int(round(fee * 100)),
+            currency="usd",
+            description=(f"Recoup success fee ({SUCCESS_FEE_PCT:.0%} of "
+                         f"${event.realized_value:,.2f} recovered "
+                         f"[{event.recovery_basis}] — "
+                         f"{finding.get('customer_name', '')})"),
+            api_key=key,
+        )
+        invoice = stripe.Invoice.finalize_invoice(invoice.id, api_key=key)
+        invoice = stripe.Invoice.pay(invoice.id, api_key=key)
+        return {
+            "status": "paid" if getattr(invoice, "status", None) == "paid" else "pending",
+            "invoice_id": invoice.id,
+            "amount": fee,
+            "recovery_event_id": event.recovery_event_id,
+            "hosted_invoice_url": getattr(invoice, "hosted_invoice_url", None),
+            "charged_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Recoup billing failed: {exc}"}
+
+
+def adjust_success_fee_for_reversal(account_id: str, original_event,
+                                    reversal_event) -> dict:
+    """Credit the fee on a reversed realization. Only paid invoices get a
+    Stripe credit note; pending/unbilled originals stay 'adjustment_pending'
+    for a human to void/adjust. Never raises."""
+    fee_credit = abs(reversal_event.fee_amount or 0)
+    charge = original_event.fee_charge or {}
+    invoice_id = charge.get("invoice_id")
+    if charge.get("status") != "paid" or not invoice_id:
+        return {"status": "adjustment_pending",
+                "message": "Original fee was not a paid invoice; no credit note issued."}
+    key = _billing_key()
+    if key is None:
+        return _needs_config()
+    try:
+        import stripe
+        note = stripe.CreditNote.create(
+            invoice=invoice_id,
+            amount=int(round(fee_credit * 100)),
+            reason="order_change",
+            memo=(f"Reversal of recovered value ({reversal_event.recovery_basis}) "
+                  f"on finding {original_event.finding_id}: "
+                  f"-${reversal_event.reversal_amount:,.2f} realized, "
+                  f"-${fee_credit:,.2f} fee credited"),
+            idempotency_key=f"feeadj-{account_id}-{reversal_event.recovery_event_id}",
+            api_key=key,
+        )
+        return {"status": "adjusted", "credit_note_id": note.id,
+                "amount": round(fee_credit, 2)}
+    except Exception as exc:
+        return {"status": "error", "message": f"Fee adjustment failed: {exc}"}
