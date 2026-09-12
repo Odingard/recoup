@@ -436,3 +436,45 @@ def test_observation_validation_and_tenant_isolation(monkeypatch):
     assert r.status_code == 400
     r = client.get("/api/rights/candidates", headers=auth)
     assert r.status_code == 200 and r.json()["candidates"]
+
+
+def test_rights_evaluate_persists_finding_end_to_end(monkeypatch):
+    """POST /api/rights/evaluate: compiled right + observation in the store
+    -> evaluation -> discrepancy -> finding persisted via
+    db.save_findings(account_id, findings); second call is idempotent."""
+    store = {"account": "u1"}
+    api = _api(monkeypatch, store)
+    compiled = _compile(_verified_candidate()).to_dict()
+    compiled["customer_id"] = "cust"
+    observations = [_obs("monthly_uptime", 99.72), _obs("credit_received", 0)]
+    saved_findings = []
+    monkeypatch.setattr(api.db, "get_compiled_rights",
+                        lambda a, customer_id=None: [compiled])
+    monkeypatch.setattr(api.db, "get_observations",
+                        lambda a, customer_id=None, period=None: observations)
+    monkeypatch.setattr(api.db, "get_all_findings", lambda a: [])
+    monkeypatch.setattr(api.db, "save_findings",
+                        lambda a, fs: saved_findings.extend(fs))
+    from fastapi.testclient import TestClient
+    client = TestClient(api.app)
+    r = client.post("/api/rights/evaluate",
+                    headers={"Authorization": "Bearer x"},
+                    json={"customer_id": "cust", "period": "2026-06"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["findings_created"] == 1
+    assert len(saved_findings) == 1
+    f = saved_findings[0]
+    assert f["monthly_recoverable"] == 15000.0
+    assert f["discrepancy_id"] and f["right_id"]
+    assert f["status"] == "open"
+
+    # same evaluate again: discrepancy_id dedupe -> no new findings
+    monkeypatch.setattr(api.db, "get_all_findings",
+                        lambda a: [dict(x) for x in saved_findings])
+    r2 = client.post("/api/rights/evaluate",
+                     headers={"Authorization": "Bearer x"},
+                     json={"customer_id": "cust", "period": "2026-06"})
+    assert r2.status_code == 200
+    assert r2.json()["findings_created"] == 0
+    assert len(saved_findings) == 1

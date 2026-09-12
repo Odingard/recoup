@@ -238,6 +238,10 @@ def test_sync_recoveries_paid_invoice(monkeypatch):
                         lambda *a, **k: status_calls.append(a[:3]))
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda *a, **k: field_calls.append(a[1:]))
+    monkeypatch.setattr(api.db, "get_recovery_events", lambda *a, **k: [])
+    monkeypatch.setattr(api.db, "save_recovery_event", lambda *a, **k: True)
+    monkeypatch.setattr(api.db, "update_recovery_event_fields",
+                        lambda *a, **k: None)
 
     # tenant invoice retrieve → paid
     def retrieve_paid(ref, api_key=None):
