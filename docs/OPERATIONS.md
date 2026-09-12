@@ -160,6 +160,18 @@ No bad input returns a 500. Corrupt files, scanned/image PDFs, unsupported forma
 empty Stripe accounts, and missing fields all return a clear, actionable message and
 keep going. Low-confidence or unmappable data becomes `needs_review`.
 
+## 8. Production launch blockers
+
+Items that must be resolved before the first real customer onboarding:
+
+- **Terms jurisdiction placeholders.** `web/public/terms.html` still contains
+  `[STATE]` and `[COUNTY, STATE]` placeholders (governing law, venue). These must be
+  confirmed by Andre and filled in before the Terms are shown to a real customer.
+- **Real-card billing verification.** The success-fee flow (card on file →
+  20% charge on realized value → credit note on reversal) has been verified
+  against mocked and test-mode Stripe only. Run one end-to-end charge and
+  reversal against a real card in live mode before onboarding a paying customer.
+
 ## Team
 
 - Architecture: James

@@ -242,3 +242,39 @@ def get_observations(account_id: str, customer_id: str | None = None,
     if period is not None:
         docs = [d for d in docs if str(d.get("period", "")).startswith(period)]
     return docs
+
+
+# --- RECOVERY EVENTS (realized recovered value) ---
+
+def save_recovery_event(account_id: str, event: dict) -> bool:
+    """Create-only: returns True when the event doc was written, False when an
+    event with the same recovery_event_id already exists (duplicate)."""
+    db = get_client()
+    ref = _collection(db, account_id, "recovery_events").document(
+        event["recovery_event_id"])
+    if ref.get().exists:
+        return False
+    ref.set(event)
+    return True
+
+
+def update_recovery_event_fields(account_id: str, event_id: str, fields: dict,
+                                 event_name: str):
+    """Merge fields into a recovery event; audit-logged like findings."""
+    db = get_client()
+    _collection(db, account_id, "recovery_events").document(event_id).update(fields)
+    _collection(db, account_id, "audit_log").document().set({
+        "event": event_name,
+        "recovery_event_id": event_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "details": fields,
+    })
+
+
+def get_recovery_events(account_id: str, finding_id: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "recovery_events").stream()]
+    if finding_id is not None:
+        docs = [d for d in docs if d.get("finding_id") == finding_id]
+    return docs
