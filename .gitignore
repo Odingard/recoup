@@ -13,3 +13,5 @@ seed_db.py
 .recoup_cache/
 key.json
 
+
+validation_corpus/
