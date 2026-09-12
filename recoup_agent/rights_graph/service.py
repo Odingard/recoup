@@ -28,7 +28,9 @@ class RightsGraphService:
 
     def build_for_book(self, contracts, usage_list, invoices_list,
                        periods=None, mode: EvaluationMode = EvaluationMode.audit,
-                       findings_by_id: dict[str, dict] | None = None) -> RightsGraph:
+                       findings_by_id: dict[str, dict] | None = None,
+                       compiled_rights=None, observations=None,
+                       evaluations=None) -> RightsGraph:
         graph = RightsGraph()
         usage = {(u["customer_id"], u["period"]): u for u in usage_list}
         invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}
@@ -74,19 +76,35 @@ class RightsGraphService:
                             "reason": "right is valid but not evaluable for this "
                                       "period: no invoice_issued observation",
                         })
+        if compiled_rights or observations or evaluations:
+            from .adapter import project_novel_rights
+            graph.merge(project_novel_rights(
+                compiled_rights, observations, evaluations, self.account_id))
         self.assert_tenant(graph)
         return graph
 
     def build_for_customer(self, customer_id, contracts, usage_list, invoices_list,
                            periods=None, mode: EvaluationMode = EvaluationMode.audit,
-                           findings_by_id: dict[str, dict] | None = None):
-        """Graph for one customer only; None if the customer isn't in the book."""
+                           findings_by_id: dict[str, dict] | None = None,
+                           compiled_rights=None, observations=None,
+                           evaluations=None):
+        """Graph for one customer only; None if the customer isn't in the book
+        and has no novel rights either."""
         mine = [c for c in contracts if c["customer_id"] == customer_id]
-        if not mine:
+        novel_rights = [r for r in compiled_rights or []
+                        if (r.get("customer_id") if isinstance(r, dict)
+                            else getattr(r, "customer_id", None)) == customer_id]
+        novel_obs = [o for o in observations or []
+                     if o.get("customer_id") == customer_id]
+        novel_evals = [e for e in evaluations or []]
+        if not mine and not novel_rights:
             return None
         return self.build_for_book(mine, usage_list, invoices_list,
                                    periods=periods, mode=mode,
-                                   findings_by_id=findings_by_id)
+                                   findings_by_id=findings_by_id,
+                                   compiled_rights=novel_rights,
+                                   observations=novel_obs,
+                                   evaluations=novel_evals)
 
     # ---- queries ----------------------------------------------------------
 

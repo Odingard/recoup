@@ -184,3 +184,61 @@ def delete_account_data(account_id: str) -> dict[str, int]:
         counts[coll.id] = deleted
     root.delete()
     return counts
+
+
+# --- RIGHTS DISCOVERY (candidate rights, compiled rights, observations) ---
+
+def save_candidate_rights(account_id: str, candidates: list[dict]):
+    db = get_client()
+    batch = db.batch()
+    for c in candidates:
+        d = c.to_dict() if hasattr(c, "to_dict") else dict(c)
+        doc = _collection(db, account_id, "candidate_rights").document(
+            d["candidate_id"])
+        batch.set(doc, d, merge=True)
+    batch.commit()
+
+
+def get_candidate_rights(account_id: str, customer_id: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "candidate_rights").stream()]
+    if customer_id is not None:
+        docs = [d for d in docs
+                if d.get("customer_id") == customer_id
+                or (d.get("metadata") or {}).get("customer_id") == customer_id]
+    return docs
+
+
+def save_compiled_right(account_id: str, compiled: dict):
+    db = get_client()
+    d = compiled.to_dict() if hasattr(compiled, "to_dict") else dict(compiled)
+    _collection(db, account_id, "compiled_rights").document(
+        d["spec"]["right_id"]).set(d, merge=True)
+
+
+def get_compiled_rights(account_id: str, customer_id: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "compiled_rights").stream()]
+    if customer_id is not None:
+        docs = [d for d in docs if d.get("customer_id") == customer_id]
+    return docs
+
+
+def save_observation(account_id: str, obs: dict):
+    db = get_client()
+    _collection(db, account_id, "observations").document(
+        obs["observation_id"]).set(obs, merge=True)
+
+
+def get_observations(account_id: str, customer_id: str | None = None,
+                     period: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "observations").stream()]
+    if customer_id is not None:
+        docs = [d for d in docs if d.get("customer_id") == customer_id]
+    if period is not None:
+        docs = [d for d in docs if str(d.get("period", "")).startswith(period)]
+    return docs
