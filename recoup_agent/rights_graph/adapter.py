@@ -782,7 +782,16 @@ def project_novel_rights(compiled_rights, observations, evaluations,
     graph = RightsGraph()
     specs = {}
     for compiled in compiled_rights or []:
-        source, evidence, rights, _ = adapter.extract_rights(compiled, account_id)
+        try:
+            source, evidence, rights, _ = adapter.extract_rights(
+                compiled, account_id)
+        except Exception:
+            graph.needs_review.append({
+                "right_id": "unknown",
+                "reason": "stored compiled right is malformed; skipped "
+                          "(fail-closed)",
+            })
+            continue
         graph.sources.append(source)
         graph.evidence.extend(evidence)
         graph.rights.extend(rights)
