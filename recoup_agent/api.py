@@ -576,36 +576,238 @@ def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: di
     return {"status": "invoiced", "finding_id": finding_id, **fields}
 
 
+def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
+                        realized_value: float, realized_at: str | None,
+                        external_reference: str | None, evidence: dict,
+                        recorded_by: str) -> dict:
+    """Persist a realization event, roll the finding forward, and charge the
+    success fee for that event. Returns (event_dict, fee_charge)."""
+    from .billing import realized_value as rv
+
+    event = rv.new_realization(
+        account_id, finding,
+        recovery_basis=recovery_basis,
+        realized_value=realized_value,
+        realized_at=realized_at,
+        external_reference=external_reference,
+        evidence=evidence)
+    existing = db.get_recovery_events(account_id, finding["finding_id"])
+    if not db.save_recovery_event(account_id, event.to_dict()):
+        raise HTTPException(
+            status_code=409,
+            detail={"status": "duplicate",
+                    "recovery_event_id": event.recovery_event_id})
+
+    all_events = existing + [event.to_dict()]
+    net = rv.net_realized(all_events)
+    payment = {
+        "ref": external_reference,
+        "date": event.realized_at,
+        "note": evidence.get("note"),
+        "recorded_by": recorded_by,
+        "verified_via": evidence.get("verified_via"),
+    }
+    finding_fields = {
+        "recovered_amount": net,
+        "payment": payment,
+        "recovery_events_count": len(
+            [e for e in all_events if e.get("event_type") == "realization"]),
+    }
+    if finding.get("status") != "recovered":
+        _transition_fields(account_id, finding["finding_id"], "recovered")
+        db.update_finding_status(account_id, finding["finding_id"], "recovered",
+                                 f"recovery_realized_{recovery_basis}",
+                                 fields=finding_fields)
+    else:
+        db.update_finding_fields(account_id, finding["finding_id"],
+                                 finding_fields, "recovery_realized")
+
+    fee_charge = None
+    eligible, _reason = rv.billing_eligibility(
+        event, {**finding, "status": "recovered"}, all_events)
+    if eligible:
+        fee_charge = recoup_billing.charge_success_fee_for_event(
+            account_id, finding, event)
+        if fee_charge:
+            fee_status = fee_charge.get("status") or "error"
+            if fee_status not in ("paid", "pending", "error",
+                                  "needs_config"):
+                fee_status = "unbilled"
+            db.update_recovery_event_fields(
+                account_id, event.recovery_event_id,
+                {"fee_status": fee_status, "fee_charge": fee_charge},
+                "success_fee_charge")
+            event.fee_status = fee_status
+            event.fee_charge = fee_charge
+            db.update_finding_fields(account_id, finding["finding_id"],
+                                     {"fee_charge": fee_charge},
+                                     "success_fee_charge")
+    return event.to_dict(), fee_charge, payment, net
+
+
+class RecoveryEventPayload(BaseModel):
+    recovery_basis: str
+    realized_value: float
+    currency: str = "USD"
+    realized_at: str | None = None
+    external_reference: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/findings/{finding_id}/recovery-events")
+def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
+                          user: dict = Depends(verify_token)):
+    """Record realized recovered value for a finding (cash, credit, offset…).
+    Billing eligibility is deterministic; the 20% fee applies only to value
+    actually realized."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode is read-only; sign in to use real data.")
+    finding = db.get_finding(account_id, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    from .billing import realized_value as rv
+    if payload.recovery_basis not in rv.RECOVERY_BASES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"recovery_basis must be one of {rv.RECOVERY_BASES}")
+    if (payload.realized_value or 0) <= 0:
+        raise HTTPException(status_code=422,
+                            detail="realized_value must be greater than zero.")
+    if finding.get("status", "open") not in rv.BILLABLE_FINDING_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="recovery requires an approved finding")
+    event, fee_charge, _payment, _net = _record_realization(
+        account_id, finding,
+        recovery_basis=payload.recovery_basis,
+        realized_value=payload.realized_value,
+        realized_at=payload.realized_at,
+        external_reference=payload.external_reference,
+        evidence={"note": payload.note},
+        recorded_by=user.get("email", "unknown"))
+    event["fee_charge"] = fee_charge or event.get("fee_charge")
+    return event
+
+
+class ReversalPayload(BaseModel):
+    reversal_amount: float
+    reversal_reference: str | None = None
+    reason: str | None = None
+
+
+@app.post("/api/findings/{finding_id}/recovery-events/{event_id}/reverse")
+def reverse_recovery_event(finding_id: str, event_id: str,
+                           payload: ReversalPayload,
+                           user: dict = Depends(verify_token)):
+    """Reverse (part of) a realization. The original event is never mutated;
+    the fee is credited back via a Stripe credit note when it was paid."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode is read-only; sign in to use real data.")
+    finding = db.get_finding(account_id, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    from .billing import realized_value as rv
+    events = db.get_recovery_events(account_id, finding_id)
+    original_dict = next(
+        (e for e in events if e.get("recovery_event_id") == event_id), None)
+    if original_dict is None:
+        raise HTTPException(status_code=404,
+                            detail=f"Recovery event {event_id} not found.")
+    original = rv.RecoveryRealizationEvent.from_dict(original_dict)
+    if original.event_type != "realization":
+        raise HTTPException(status_code=422,
+                            detail="Only realization events can be reversed.")
+    try:
+        reversal = rv.new_reversal(
+            account_id, original,
+            reversal_amount=payload.reversal_amount,
+            reversal_reference=payload.reversal_reference,
+            reason=payload.reason,
+            existing_events=[rv.RecoveryRealizationEvent.from_dict(e)
+                             for e in events])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not db.save_recovery_event(account_id, reversal.to_dict()):
+        raise HTTPException(
+            status_code=409,
+            detail={"status": "duplicate",
+                    "recovery_event_id": reversal.recovery_event_id})
+
+    net = rv.net_realized(events + [reversal.to_dict()])
+    update = {"recovered_amount": net}
+    if net == 0:
+        update["metadata"] = {**(finding.get("metadata") or {}),
+                              "fully_reversed": True}
+    db.update_finding_fields(account_id, finding_id, update,
+                             "recovery_reversal")
+
+    adjustment = recoup_billing.adjust_success_fee_for_reversal(
+        account_id, original, reversal)
+    if adjustment:
+        reversal_status = ("adjusted" if adjustment.get("status") == "adjusted"
+                           else "adjustment_pending")
+        db.update_recovery_event_fields(
+            account_id, reversal.recovery_event_id,
+            {"fee_status": reversal_status, "fee_charge": adjustment},
+            "success_fee_adjustment")
+        reversal.fee_status = reversal_status
+        reversal.fee_charge = adjustment
+        if adjustment.get("status") == "adjusted":
+            db.update_recovery_event_fields(
+                account_id, original.recovery_event_id,
+                {"fee_status": "adjusted"}, "success_fee_adjustment")
+    out = reversal.to_dict()
+    out["net_realized"] = net
+    return out
+
+
+@app.get("/api/findings/{finding_id}/recovery-events")
+def list_recovery_events(finding_id: str, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"events": []}
+    return {"events": db.get_recovery_events(account_id, finding_id)}
+
+
 @app.post("/api/findings/{finding_id}/recovered")
 def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dict = Depends(verify_token)):
-    """Record payment against an approved/invoiced finding. Recoup's 20% fee
-    applies only to dollars that reach this state."""
+    """Record cash received against an approved/invoiced finding — a
+    cash_payment realization event. Recoup's 20% fee applies only to dollars
+    that reach this state."""
     if evidence.paid_amount <= 0:
         raise HTTPException(status_code=422, detail="paid_amount must be greater than zero.")
     account_id = _account_id(user)
-    fields = {
-        "recovered_amount": evidence.paid_amount,
-        "payment": {
-            "ref": evidence.payment_ref,
-            "date": evidence.paid_date,
-            "note": evidence.note,
-            "recorded_by": user.get("email", "unknown"),
-        },
+    payment = {
+        "ref": evidence.payment_ref,
+        "date": evidence.paid_date,
+        "note": evidence.note,
+        "recorded_by": user.get("email", "unknown"),
     }
     fee_charge = None
+    recovered_amount = evidence.paid_amount
     if account_id is not None:
-        _transition_fields(account_id, finding_id, "recovered")
-        db.update_finding_status(account_id, finding_id, "recovered",
-                                 f"ui_recovered_by_{user.get('email', 'unknown')}", fields=fields)
-        # Collect Recoup's 20% against the just-recorded paid amount; billing
-        # problems never block the recovery transition.
-        finding = db.get_finding(account_id, finding_id) or {"finding_id": finding_id}
-        fee_charge = recoup_billing.charge_success_fee_for_finding(
-            account_id, finding, evidence.paid_amount)
-        if fee_charge:
-            db.update_finding_fields(account_id, finding_id,
-                                     {"fee_charge": fee_charge}, "success_fee_charge")
-    return {"status": "recovered", "finding_id": finding_id, "fee_charge": fee_charge, **fields}
+        finding = db.get_finding(account_id, finding_id)
+        if finding is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Finding {finding_id} not found.")
+        if finding.get("status", "open") == "open":
+            raise HTTPException(
+                status_code=409,
+                detail="recovery requires an approved finding")
+        _event, fee_charge, _p, net = _record_realization(
+            account_id, finding,
+            recovery_basis="cash_payment",
+            realized_value=evidence.paid_amount,
+            realized_at=evidence.paid_date,
+            external_reference=evidence.payment_ref,
+            evidence={"note": evidence.note},
+            recorded_by=user.get("email", "unknown"))
+        recovered_amount = net
+    return {"status": "recovered", "finding_id": finding_id,
+            "fee_charge": fee_charge, "recovered_amount": recovered_amount,
+            "payment": payment}
 
 
 @app.post("/api/findings/{finding_id}/disputed")
@@ -642,7 +844,8 @@ def _findings_for(account_id: str | None) -> list[dict]:
 def get_metrics(user: dict = Depends(verify_token)):
     """Recovered-to-date and Recoup's success fee this month."""
     account_id = _account_id(user)
-    return compute_metrics(_findings_for(account_id))
+    events = db.get_recovery_events(account_id) if account_id else None
+    return compute_metrics(_findings_for(account_id), events=events)
 
 
 @app.get("/api/billing/status")
@@ -704,27 +907,21 @@ def sync_recoveries(user: dict = Depends(verify_token)):
             amount_paid = inv.get("amount_paid") or 0
             paid_at = (inv.get("status_transitions") or {}).get("paid_at")
             payment_ref = inv.get("payment_intent") or inv.get("charge")
-            fields = {
-                "recovered_amount": amount_paid / 100.0,
-                "payment": {
-                    "ref": payment_ref,
-                    "date": (datetime.fromtimestamp(paid_at, tz=timezone.utc).isoformat()
-                             if paid_at else None),
-                    "verified_via": "stripe_connect",
-                    "recorded_by": "stripe_connect",
-                },
-            }
             try:
-                _transition_fields(account_id, f["finding_id"], "recovered")
+                _event, fee, _payment, _net = _record_realization(
+                    account_id, f,
+                    recovery_basis="cash_payment",
+                    realized_value=amount_paid / 100.0,
+                    realized_at=(datetime.fromtimestamp(
+                        paid_at, tz=timezone.utc).isoformat() if paid_at else None),
+                    external_reference=ref,
+                    evidence={"ref": payment_ref,
+                              "verified_via": "stripe_connect",
+                              "recorded_by": "stripe_connect"},
+                    recorded_by="stripe_connect")
             except HTTPException:
                 continue
-            db.update_finding_status(account_id, f["finding_id"], "recovered",
-                                     "stripe_connect_sync", fields=fields)
-            fee = recoup_billing.charge_success_fee_for_finding(
-                account_id, f, fields["recovered_amount"])
             if fee:
-                db.update_finding_fields(account_id, f["finding_id"],
-                                         {"fee_charge": fee}, "success_fee_charge")
                 fee_charges.append(fee)
             recovered.append(f["finding_id"])
         except Exception as exc:
@@ -740,22 +937,55 @@ def charge_success_fee(user: dict = Depends(verify_token)):
     account_id = _account_id(user)
     if _is_header_sample(user):
         return _needs_review_payload("Sample mode does not bill a success fee.")
-    metrics = compute_metrics(_findings_for(account_id))
+    from .billing import realized_value as rv
     findings = _findings_for(account_id)
-    unbilled = [f for f in findings
-                if f.get("status") == "recovered"
-                and (f.get("fee_charge") or {}).get("status") not in {"paid", "pending"}]
+    metrics = compute_metrics(
+        findings,
+        events=db.get_recovery_events(account_id) if account_id else None)
+
+    # Collect the unbilled eligible events; findings recovered before the
+    # event model existed get a single synthesized legacy event (billed once).
+    billable_events = []
+    for f in findings:
+        if f.get("status") != "recovered":
+            continue
+        events = db.get_recovery_events(account_id, f["finding_id"]) \
+            if account_id else []
+        if not events:
+            amount = f.get("recovered_amount") or f.get("monthly_recoverable") or 0
+            if (f.get("fee_charge") or {}).get("status") in {"paid", "pending"} \
+                    or amount <= 0:
+                continue
+            legacy = rv.new_realization(
+                account_id, f, recovery_basis="other_verified_value",
+                realized_value=amount,
+                external_reference=f"legacy:{f['finding_id']}",
+                evidence={"verified_via": "legacy_findings"})
+            db.save_recovery_event(account_id, legacy.to_dict())
+            events = [legacy.to_dict()]
+        for e in events:
+            if e.get("event_type") != "realization":
+                continue
+            ev = rv.RecoveryRealizationEvent.from_dict(e)
+            if rv.billing_eligibility(ev, f, events)[0]:
+                billable_events.append((f, ev))
 
     billing = (db.get_account_billing(account_id) or {}) if account_id else {}
     if billing.get("payment_method_id"):
         charged = []
-        for f in unbilled:
-            amount = f.get("recovered_amount") or f.get("monthly_recoverable") or 0
-            result = recoup_billing.charge_success_fee_for_finding(account_id, f, amount)
+        for f, ev in billable_events:
+            result = recoup_billing.charge_success_fee_for_event(account_id, f, ev)
             if result:
+                fee_status = result.get("status") or "error"
+                db.update_recovery_event_fields(
+                    account_id, ev.recovery_event_id,
+                    {"fee_status": fee_status, "fee_charge": result},
+                    "success_fee_charge")
                 db.update_finding_fields(account_id, f["finding_id"],
                                          {"fee_charge": result}, "success_fee_charge")
-            charged.append({"finding_id": f.get("finding_id"), **result})
+            charged.append({"finding_id": f.get("finding_id"),
+                            "recovery_event_id": ev.recovery_event_id,
+                            **result})
         return {"metrics": metrics,
                 "billing": {"status": "success" if charged else "skipped",
                             "charged": charged}}
@@ -766,12 +996,16 @@ def charge_success_fee(user: dict = Depends(verify_token)):
         current_month=metrics["current_month"],
     )
     if result.get("status") == "success" and account_id is not None:
-        for f in unbilled:
+        for f, ev in billable_events:
+            charge = {"status": "invoiced", "invoice_id": result["invoice_id"],
+                      "hosted_invoice_url": result.get("hosted_invoice_url"),
+                      "amount": result.get("amount")}
+            db.update_recovery_event_fields(
+                account_id, ev.recovery_event_id,
+                {"fee_status": "pending", "fee_charge": charge},
+                "success_fee_charge")
             db.update_finding_fields(
-                account_id, f["finding_id"],
-                {"fee_charge": {"status": "invoiced", "invoice_id": result["invoice_id"],
-                                "hosted_invoice_url": result.get("hosted_invoice_url"),
-                                "amount": result.get("amount")}},
+                account_id, f["finding_id"], {"fee_charge": charge},
                 "success_fee_charge")
     return {"metrics": metrics, "billing": {**result, "fallback": True}}
 
@@ -1018,7 +1252,7 @@ def evaluate_rights(payload: EvaluateRightsPayload, user: dict = Depends(verify_
         sequence += 1
         evaluation = next((e for e in evaluations
                            if e.right_id == disc.right_id), None)
-        trace = (evaluation.trace if evaluation else {}) or {}
+        trace = (evaluation.calculation_trace if evaluation else {}) or {}
         finding = {
             "finding_id": f"F-{payload.customer_id.upper()}-N{sequence:03d}",
             "customer_id": payload.customer_id,
