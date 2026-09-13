@@ -348,18 +348,13 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 ann = esc_date.replace(year=esc_date.year + steps - 1)
             except ValueError:  # Feb 29 anniversaries resolve to Feb 28
                 ann = esc_date.replace(year=esc_date.year + steps - 1, day=28)
-            if ann.day != 1 and period_d < ann <= period_end:
-                _needs_review(
-                    needs_review, contract, "escalator_effective_date",
-                    f"escalator anniversary {ann} falls mid-period {period}; "
-                    "partial-period escalation needs manual confirmation")
-                steps = None
-            if steps is not None:
-                expected_base = minimum * (1 + esc) ** steps
-                baseline = max(base, minimum)
-                amount = expected_base - baseline
-            else:
-                amount = 0
+            # An anniversary falling inside the period counts as a full step:
+            # the invoice for that period is issued on/after the anniversary
+            # and therefore lies in the new contract year.
+            mid_period = ann.day != 1 and period_d < ann <= period_end
+            expected_base = minimum * (1 + esc) ** steps
+            baseline = max(base, minimum)
+            amount = expected_base - baseline
             if amount > 0.01:
                 if steps == 1:
                     math = (f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
@@ -367,17 +362,19 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 else:
                     math = (f"${minimum:,.0f}/mo × (1 + {esc:.0%})^{steps} = ${expected_base:,.2f}/mo "
                             f"− billed ${baseline:,.2f}/mo = ${amount:,.2f}/mo")
-                ann = "anniversary" if steps == 1 else "anniversaries"
+                noun = "anniversary" if steps == 1 else "anniversaries"
                 add("missed_escalator", "Annual price escalator not applied",
                     amount, "escalator",
-                    f"{esc*100:.0f}% escalator, {steps} {ann} since "
+                    f"{esc*100:.0f}% escalator, {steps} {noun} since "
                     f"{contract['escalator_effective_date']}; base should be "
                     f"${expected_base:,.2f} vs ${baseline:,.2f} billed.",
                     math=math,
                     clause_text=_clause_text(contract, "escalator", "annual_escalator_pct"),
                     confidence=min(esc_conf, esc_date_conf), term="annual_escalator_pct",
-                    assumption="Escalator compounds annually on each anniversary of the effective date.",
-                    extra={"escalator_steps": steps})
+                    assumption=("Escalator compounds annually on each anniversary of the effective date"
+                                + (f"; anniversary {ann} falls within the billing period and the "
+                                   "full escalated rate applies to that period." if mid_period else ".")),
+                    extra={"escalator_steps": steps, "anniversary_mid_period": mid_period})
 
     # Rule 5 - post-term billing (review only, no dollars)
     term_end = _parse(contract.get("term_end"))

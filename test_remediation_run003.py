@@ -357,10 +357,14 @@ def test_d15_before_effective_date_nothing():
     assert esc == []
 
 
-def test_d15_effective_month_mid_period_reviews():
+def test_d15_effective_month_mid_period_full_step():
+    # REC-050 ruling: an anniversary inside the billing period is a full step
+    # (the invoice for that period is in the new contract year), not a review.
     esc, nr = _d15("2025-03-15", "2025-03")
-    assert esc == []
-    assert any(e["term"] == "escalator_effective_date" for e in nr)
+    assert len(esc) == 1 and esc[0]["escalator_steps"] == 1
+    assert esc[0]["monthly_recoverable"] == 50.0
+    assert esc[0]["anniversary_mid_period"] is True
+    assert not any(e["term"] == "escalator_effective_date" for e in nr)
 
 
 def test_d15_next_month_one_step():
@@ -374,10 +378,26 @@ def test_d15_before_anniversary_still_one_step():
     assert len(esc) == 1 and esc[0]["escalator_steps"] == 1
 
 
-def test_d15_mid_period_anniversary_reviews_no_finding():
+def test_d15_mid_period_anniversary_counts_full_step():
     esc, nr = _d15("2025-03-15", "2026-03")
-    assert esc == []
-    assert any(e["term"] == "escalator_effective_date" for e in nr)
+    assert len(esc) == 1 and esc[0]["escalator_steps"] == 2
+    assert esc[0]["monthly_recoverable"] == quantize(1000 * 1.05 ** 2 - 1000)
+    assert esc[0]["anniversary_mid_period"] is True
+    assert not any(e["term"] == "escalator_effective_date" for e in nr)
+
+
+def test_rec050_oracle_anniversary_day_is_contract_year_two():
+    """Validator REC-050: base $5,000, 5% escalator effective 2025-03-15,
+    invoice for 2026-03 billed at $5,000 -> $250 leakage."""
+    nr = []
+    c = _contract(annual_escalator_pct=0.05, escalator_effective_date="2026-03-15",
+                  committed_minimum_monthly=5000.0,
+                  clauses={**_contract()["clauses"], "escalator": "5% annual escalator"})
+    findings = reconcile(c, _usage(period="2026-03"),
+                         _invoice(base_charge=5000.0, period="2026-03"), "2026-03", nr)
+    esc = [f for f in findings if f["type"] == "missed_escalator"]
+    assert len(esc) == 1 and esc[0]["monthly_recoverable"] == 250.0
+    assert not any(e["term"] == "escalator_effective_date" for e in nr)
 
 
 def test_d15_two_years_two_steps():

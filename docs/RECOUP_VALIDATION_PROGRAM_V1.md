@@ -73,7 +73,7 @@ recovery, not a wrong number. Any false `$` figure is blocking.
 
 ## 4. Shadow-pilot readiness checklist
 
-- [ ] Terms of Service jurisdiction placeholders `[STATE]` / `[COUNTY, STATE]` filled (Andre).
+- [x] Terms of Service jurisdiction filled: Texas, USA / Travis County, Texas.
 - [ ] Live-mode Stripe fee charge exercised once on the Odingard account with a real card.
 - [ ] Full three-run Gemini discovery sweep completed without 503 gaps and recorded in `docs/AI_DISCOVERY_EVALUATION.md`.
 - [ ] Non-Stripe (QuickBooks/Xero) recoveries recorded as `other_verified_value` events with evidence attached.
