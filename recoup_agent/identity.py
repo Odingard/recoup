@@ -32,38 +32,52 @@ class CustomerResolver:
 
     def __init__(self, contracts: list[dict]) -> None:
         self.contracts = contracts
-        self._exact: dict[str, set[str]] = {}
-        self._stripped: dict[str, set[str]] = {}
+        self._exact_id: dict[str, set[str]] = {}
+        self._exact_name: dict[str, set[str]] = {}
+        self._stripped_id: dict[str, set[str]] = {}
+        self._stripped_name: dict[str, set[str]] = {}
         for c in contracts:
             cid = c["customer_id"]
-            for label in {c.get("customer_name"), cid}:
+            for label, exact_idx, stripped_idx in (
+                    (cid, self._exact_id, self._stripped_id),
+                    (c.get("customer_name"), self._exact_name,
+                     self._stripped_name)):
                 exact = normalized_key(label or "")
                 stripped = canonical_key(label or "")
                 if exact:
-                    self._exact.setdefault(exact, set()).add(cid)
+                    exact_idx.setdefault(exact, set()).add(cid)
                 if stripped:
-                    self._stripped.setdefault(stripped, set()).add(cid)
+                    stripped_idx.setdefault(stripped, set()).add(cid)
+
+    def _indexes(self) -> list[dict[str, set[str]]]:
+        # Most authoritative first: exact id, exact name, then the
+        # suffix-stripped fallbacks.
+        return [self._exact_id, self._exact_name,
+                self._stripped_id, self._stripped_name]
 
     def resolve(self, label: str) -> str | None:
         exact = normalized_key(label or "")
-        exact_hits = self._exact.get(exact, set())
-        if len(exact_hits) == 1:
-            return next(iter(exact_hits))
         stripped = canonical_key(label or "")
-        hits = self._stripped.get(stripped, set())
-        if len(hits) == 1:
-            return next(iter(hits))
+        for key, index in ((exact, self._exact_id),
+                           (exact, self._exact_name),
+                           (stripped, self._stripped_id),
+                           (stripped, self._stripped_name)):
+            hits = index.get(key, set())
+            if len(hits) == 1:
+                return next(iter(hits))
         return None
 
     def explain(self, label: str) -> str:
         exact = normalized_key(label or "")
-        exact_hits = self._exact.get(exact, set())
-        if len(exact_hits) == 1:
-            return f"matched '{label}' to {next(iter(exact_hits))}"
-        if len(exact_hits) > 1:
-            return f"ambiguous: '{label}' matches {', '.join(sorted(exact_hits))}"
         stripped = canonical_key(label or "")
-        hits = self._stripped.get(stripped, set())
-        if len(hits) > 1:
-            return f"ambiguous: '{label}' matches {', '.join(sorted(hits))}"
+        for key, index in ((exact, self._exact_id),
+                           (exact, self._exact_name),
+                           (stripped, self._stripped_id),
+                           (stripped, self._stripped_name)):
+            hits = index.get(key, set())
+            if len(hits) == 1:
+                return f"matched '{label}' to {next(iter(hits))}"
+            if len(hits) > 1:
+                return (f"ambiguous: '{label}' matches "
+                        f"{', '.join(sorted(hits))}")
         return "no contract matches"
