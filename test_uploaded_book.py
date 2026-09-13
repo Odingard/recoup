@@ -72,7 +72,7 @@ def test_get_contracts_endpoint(monkeypatch):
     monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(firebase_auth, "verify_id_token",
-                        lambda token: {"uid": "acct1", "email": "a@b.c"})
+                        lambda token, **kw: {"uid": "acct1", "email": "a@b.c"})
     monkeypatch.setattr(api.db, "get_all_contracts",
                         lambda _a: [{"customer_id": "acme", "customer_name": "Acme Corp"}])
     client = TestClient(api.app)

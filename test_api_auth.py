@@ -26,17 +26,39 @@ def test_api_uses_firebase_claim_account_id_then_uid(monkeypatch):
         return []
 
     monkeypatch.setattr(api.db, "get_all_findings", fake_get_all_findings)
-    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: {"uid": "uid-123", "email": "u@example.com", "account_id": "acct-456"})
+    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token, check_revoked=False: {"uid": "uid-123", "email": "u@example.com", "account_id": "acct-456"})
     client = TestClient(api.app)
 
     resp = client.get("/api/findings", headers={"Authorization": "Bearer token-123"})
     assert resp.status_code == 200
     assert captured["account_id"] == "acct-456"
 
-    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: {"uid": "uid-789", "email": "u2@example.com"})
+    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token, check_revoked=False: {"uid": "uid-789", "email": "u2@example.com"})
     resp = client.get("/api/findings", headers={"Authorization": "Bearer token-456"})
     assert resp.status_code == 200
     assert captured["account_id"] == "uid-789"
+
+
+def test_api_rejects_revoked_or_deleted_user_token(monkeypatch):
+    """A signature-valid token must be re-checked against the live user record
+    so tokens of revoked or deleted users are refused (AUTH-006/AUTH-012)."""
+    monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
+    monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
+    calls = {}
+
+    def fake_verify(token, check_revoked=False):
+        calls["check_revoked"] = check_revoked
+        if check_revoked:
+            raise firebase_auth.UserNotFoundError("deleted")
+        return {"uid": "gone", "email": "gone@example.com"}
+
+    monkeypatch.setattr(firebase_auth, "verify_id_token", fake_verify)
+    monkeypatch.setattr(api.db, "get_all_findings", lambda account_id: [])
+    client = TestClient(api.app)
+
+    resp = client.get("/api/findings", headers={"Authorization": "Bearer deleted-user"})
+    assert resp.status_code == 401
+    assert calls["check_revoked"] is True
 
 
 def test_sample_mode_routes_work_offline(monkeypatch):

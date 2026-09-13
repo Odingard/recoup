@@ -134,7 +134,7 @@ def verify_token(authorization: str | None = Header(default=None),
 
     token = authorization.split("Bearer ", 1)[1].strip()
     try:
-        decoded = firebase_auth.verify_id_token(token)
+        decoded = firebase_auth.verify_id_token(token, check_revoked=True)
     except Exception:
         raise HTTPException(status_code=401, detail="Unauthorized")
 

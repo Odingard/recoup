@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import fields as _dc_fields
 from datetime import date, datetime
 from typing import Any
 
@@ -15,7 +16,7 @@ from ..reconciliation import CONFIDENCE_THRESHOLD  # noqa: F401 (re-exported for
 from ..rights_graph.ids import stable_id
 from .models import (
     CALCULATION_PRIMITIVES, TRIGGER_OPERATORS, CandidateStatus,
-    CompiledRight, CompileFailure, RightSpec,
+    CompiledRight, CompileFailure, ContractualConstant, RightSpec,
 )
 
 # ---- spec size limits (D-10) ------------------------------------------------
@@ -417,11 +418,91 @@ def _validate_calculation(calc: Any, constant_names: set[str],
                 reasons.append(f"{ctype}.{modifier} constant not declared")
 
 
+# ---- closed-grammar key sets (R-06) ------------------------------------------
+# Only the keys the runtime actually reads are allowed anywhere in a spec.
+_RIGHT_SPEC_FIELDS = {f.name for f in _dc_fields(RightSpec)}
+_CONSTANT_FIELDS = {f.name for f in _dc_fields(ContractualConstant)}
+_TRIGGER_NODE_KEYS = {"op", "observation", "value", "low", "high", "children"}
+_CONST_REF_KEYS = {"constant"}
+_OPERAND_REF_KEYS = {"constant", "observation"}
+_CALC_NODE_KEYS = {
+    "type", "amount", "rate", "base_observation", "quantity_observation",
+    "above", "minuend", "subtrahend", "floor_zero", "tiers", "bands",
+    "band_observation", "cap", "floor", "operands",
+}
+_BAND_KEYS = {"up_to", "rate"}
+
+
+def _unknown_keys(node: Any, allowed: set[str], path: str,
+                  reasons: list[str]) -> None:
+    if isinstance(node, dict):
+        bad = sorted(set(node) - allowed)
+        if bad:
+            reasons.append(f"unknown_spec_keys: {path}: {bad}")
+
+
+def _spec_key_reasons(candidate) -> list[str]:
+    """Reject any key the runtime never reads — anywhere in the spec."""
+    reasons: list[str] = []
+    if isinstance(candidate, dict):
+        _unknown_keys(candidate, _RIGHT_SPEC_FIELDS, "spec", reasons)
+        constants = candidate.get("contractual_constants") or []
+        trigger = candidate.get("trigger")
+        calc = candidate.get("calculation")
+    else:
+        constants = (candidate.metadata or {}).get("constants") or []
+        trigger = candidate.trigger_spec
+        calc = candidate.calculation_spec
+
+    if isinstance(candidate, dict):
+        reasons.append("candidate is not a CandidateFinancialRight")
+
+    for i, c in enumerate(constants):
+        _unknown_keys(c, _CONSTANT_FIELDS, f"constants[{i}]", reasons)
+
+    stack = [(trigger, "trigger")]
+    while stack:
+        node, path = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        _unknown_keys(node, _TRIGGER_NODE_KEYS, path, reasons)
+        for key in ("value", "low", "high"):
+            _unknown_keys(node.get(key), _CONST_REF_KEYS,
+                          f"{path}.{key}", reasons)
+        for i, child in enumerate(node.get("children") or []):
+            stack.append((child, f"{path}.children[{i}]"))
+
+    if isinstance(calc, dict):
+        _unknown_keys(calc, _CALC_NODE_KEYS, "calculation", reasons)
+        for key in ("amount", "rate", "above", "cap", "floor"):
+            _unknown_keys(calc.get(key), _CONST_REF_KEYS,
+                          f"calculation.{key}", reasons)
+        # minuend/subtrahend accept constant or observation refs.
+        for key in ("minuend", "subtrahend"):
+            _unknown_keys(calc.get(key), _OPERAND_REF_KEYS,
+                          f"calculation.{key}", reasons)
+        for seq_key in ("tiers", "bands"):
+            for i, b in enumerate(calc.get(seq_key) or []):
+                _unknown_keys(b, _BAND_KEYS,
+                              f"calculation.{seq_key}[{i}]", reasons)
+                if isinstance(b, dict):
+                    for key in ("up_to", "rate"):
+                        _unknown_keys(b.get(key), _CONST_REF_KEYS,
+                                      f"calculation.{seq_key}[{i}].{key}",
+                                      reasons)
+        for i, op in enumerate(calc.get("operands") or []):
+            _unknown_keys(op, _OPERAND_REF_KEYS,
+                          f"calculation.operands[{i}]", reasons)
+    return reasons
+
+
 def _check_limits(candidate) -> list[str]:
     """Bounded scan of candidate size limits; returns violation reasons.
     Runs FIRST in compile_candidate_right — nothing else executes when a
     spec exceeds limits."""
-    reasons: list[str] = []
+    reasons: list[str] = _spec_key_reasons(candidate)
+    if isinstance(candidate, dict):
+        return reasons
     raw_constants = (candidate.metadata or {}).get("constants") or []
     if len(raw_constants) > MAX_CONSTANTS:
         reasons.append(f"constants: {len(raw_constants)} > MAX_CONSTANTS "
@@ -479,7 +560,8 @@ def compile_candidate_right(candidate, document_text: str = ""
                             ) -> CompiledRight | CompileFailure:
     """verified candidate + grounded constants -> CompiledRight; else a
     CompileFailure with status needs_review|unsupported|legacy_routed."""
-    cid = candidate.candidate_id
+    cid = candidate.get("candidate_id") if isinstance(candidate, dict) \
+        else candidate.candidate_id
     limit_reasons = _check_limits(candidate)
     if limit_reasons:
         return CompileFailure(candidate_id=cid,
