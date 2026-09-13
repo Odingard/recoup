@@ -185,6 +185,7 @@ def build_novel_findings(account_id: str, customer_id: str, period: str) -> Nove
         evaluation = next((e for e in evaluations
                            if e.right_id == disc.right_id), None)
         trace = (evaluation.calculation_trace if evaluation else {}) or {}
+        calc = trace.get("calculation") if isinstance(trace.get("calculation"), dict) else {}
         findings.append({
             "finding_id": f"F-{customer_id.upper()}-{period.replace('-', '')}-N-"
                           + hashlib.sha1(disc.discrepancy_id.encode()).hexdigest()[:8].upper(),
@@ -203,6 +204,8 @@ def build_novel_findings(account_id: str, customer_id: str, period: str) -> Nove
                      (r.evidence_refs for r in graph.rights
                       if r.right_id == disc.right_id), []))),
                 None),
+            "expected_value": calc.get("expected"),
+            "actual_value": calc.get("actual"),
             "status": "open",
             "created_at": _now(),
             "discrepancy_id": disc.discrepancy_id,

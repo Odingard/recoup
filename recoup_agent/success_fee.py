@@ -11,6 +11,17 @@ from datetime import datetime, timezone
 SUCCESS_FEE_PCT = 0.20
 
 
+def recovered_dollars(f: dict, events_by_finding: dict[str, list[dict]] | None) -> float:
+    """Net realized dollars for one finding: realizations minus reversals.
+    Falls back to recovered_amount/monthly_recoverable when no events exist."""
+    if events_by_finding is None or f.get("finding_id") not in events_by_finding:
+        return float(f.get("recovered_amount") or f.get("monthly_recoverable", 0) or 0)
+    return round(sum(
+        -(e.get("reversal_amount") or 0) if e.get("event_type") == "reversal"
+        else (e.get("realized_value") or 0)
+        for e in events_by_finding[f["finding_id"]]), 2)
+
+
 def _month(ts: str | None) -> str | None:
     return ts[:7] if ts else None
 
@@ -41,12 +52,9 @@ def compute_metrics(findings: list[dict], events: list[dict] | None = None,
                 by_basis[basis] = by_basis.get(basis, 0.0) + (e.get("realized_value") or 0)
 
     def _recovered_dollars(f: dict) -> float:
-        if events is not None and f["finding_id"] in events_by_finding:
-            return round(sum(
-                -(e.get("reversal_amount") or 0) if e.get("event_type") == "reversal"
-                else (e.get("realized_value") or 0)
-                for e in events_by_finding[f["finding_id"]]), 2)
-        return float(f.get("recovered_amount") or f.get("monthly_recoverable", 0) or 0)
+        if events is None:
+            return float(f.get("recovered_amount") or f.get("monthly_recoverable", 0) or 0)
+        return recovered_dollars(f, events_by_finding)
 
     recovered_to_date = sum(_recovered_dollars(f) for f in recovered)
     recovered_this_month = sum(

@@ -8,6 +8,7 @@ import {
   DollarSign,
   Download,
   FileText,
+  LayoutDashboard,
   LogIn,
   LogOut,
   LockKeyhole,
@@ -19,11 +20,12 @@ import {
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 import { auth } from './firebase'
+import CommandCenter from './CommandCenter'
 import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle]
+void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter]
 
 const STEPS = [
   { id: 1, title: 'Upload contracts', icon: Upload },
@@ -32,6 +34,7 @@ const STEPS = [
   { id: 4, title: 'Confirm extracted terms', icon: BadgeCheck },
   { id: 5, title: 'Review findings', icon: FileText },
   { id: 6, title: 'Recovered & billing', icon: DollarSign },
+  { id: 7, title: 'Command Center', icon: LayoutDashboard },
 ]
 
 const emptyContractDraft = {
@@ -155,6 +158,7 @@ function App() {
   const [syncingRecoveries, setSyncingRecoveries] = useState(false)
   const [reviewQueue, setReviewQueue] = useState([])
   const [assurance, setAssurance] = useState(null)
+  const [commandCenter, setCommandCenter] = useState(null)
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -221,6 +225,16 @@ function App() {
     }
   }, [apiReady, apiRequest])
 
+  const loadCommandCenter = useCallback(async () => {
+    if (!apiReady) return
+    try {
+      const result = await apiRequest('/command-center')
+      setCommandCenter(result)
+    } catch (error) {
+      console.error(error)
+    }
+  }, [apiReady, apiRequest])
+
   const loadAssurance = useCallback(async () => {
     if (!apiReady) return
     try {
@@ -239,6 +253,7 @@ function App() {
     ])
     void loadMetrics()
     void loadAssurance()
+    void loadCommandCenter()
     setFindings(Array.isArray(pending) ? pending : [])
     setAllFindings(Array.isArray(all) ? all : [])
     setSelectedFinding((current) => {
@@ -247,7 +262,7 @@ function App() {
       }
       return (pending && pending[0]) || all[0] || null
     })
-  }, [apiReady, apiRequest, loadMetrics, loadAssurance])
+  }, [apiReady, apiRequest, loadMetrics, loadAssurance, loadCommandCenter])
 
   useEffect(() => {
     if (!apiReady) return
@@ -1678,6 +1693,17 @@ function App() {
                 )}
               </div>
             </section>
+          )}
+
+          {activeStep === 7 && (
+            <CommandCenter
+              data={commandCenter}
+              onOpenInReview={(findingId) => {
+                const target = allFindings.find((f) => f.finding_id === findingId)
+                if (target) setSelectedFinding(target)
+                setActiveStep(5)
+              }}
+            />
           )}
         </main>
       </div>

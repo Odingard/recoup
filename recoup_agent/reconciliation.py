@@ -111,7 +111,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
 
     def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str,
             math: str = "", clause_text: str = "", assumption: str | None = None,
-            confidence: float = 1.0, term: str = "", extra: dict | None = None) -> None:
+            confidence: float = 1.0, term: str = "", extra: dict | None = None,
+            expected_value: float | None = None,
+            actual_value: float | None = None) -> None:
         if not (clause_text or "").strip():
             _needs_review(
                 needs_review, contract, term or clause_ref,
@@ -135,6 +137,10 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         }
         if assumption:
             finding["assumption"] = assumption
+        if expected_value is not None:
+            finding["expected_value"] = quantize(expected_value)
+        if actual_value is not None:
+            finding["actual_value"] = quantize(actual_value)
         if extra:
             finding.update(extra)
         findings.append(finding)
@@ -223,7 +229,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             math=f"committed minimum ${minimum:,.0f}/mo − billed ${base:,.0f}/mo = ${amount:,.0f}/mo",
             clause_text=(minimum_provenance
                          or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")),
-            confidence=minimum_conf, term="committed_minimum_monthly")
+            confidence=minimum_conf, term="committed_minimum_monthly",
+            expected_value=minimum, actual_value=base)
 
     # Rule 2 - usage overage not billed
     included = contract.get("included_units")
@@ -289,7 +296,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     math=math,
                     clause_text=tier_provenance or _clause_text(contract, "overage", "overage_tiers"),
                     confidence=min(included_conf, rate_conf), term="included_units/overage_tiers",
-                    extra={"overage_tiers": [{"up_to": t.get("up_to"), "rate": t["rate"]} for t in tiers]})
+                    extra={"overage_tiers": [{"up_to": t.get("up_to"), "rate": t["rate"]} for t in tiers]},
+                    expected_value=expected_overage, actual_value=billed_overage)
             else:
                 add("unbilled_overage", "Usage overage not billed",
                     amount, "overage",
@@ -297,7 +305,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     f"at {_fmt_rate(rate)} = ${expected_overage:,.0f}, but ${billed_overage:,.0f} was billed.",
                     math=math,
                     clause_text=_clause_text(contract, "overage", "overage_rate"),
-                    confidence=min(included_conf, rate_conf), term="included_units/overage_rate")
+                    confidence=min(included_conf, rate_conf), term="included_units/overage_rate",
+                    expected_value=expected_overage, actual_value=billed_overage)
 
     # Rule 3 - expired discount still applied
     discounts = contract.get("discounts")
@@ -325,7 +334,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     math=(f"'{applied['name']}' discount of {pct}% is past its expiry but "
                          f"${amount:,.0f}/mo is still deducted = ${amount:,.0f}/mo"),
                     clause_text=d.get("provenance") or _clause_text(contract, "discount", "discounts"),
-                    confidence=discount_conf, term="discounts")
+                    confidence=discount_conf, term="discounts",
+                    expected_value=(base + amount) if base is not None else None,
+                    actual_value=base)
 
     # Rule 4 - annual escalator not applied
     esc = contract.get("annual_escalator_pct")
@@ -386,7 +397,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     assumption=("Escalator compounds annually on each anniversary of the effective date"
                                 + (f"; anniversary {ann} falls within the billing period and the "
                                    "full escalated rate applies to that period." if mid_period else ".")),
-                    extra={"escalator_steps": steps, "anniversary_mid_period": mid_period})
+                    extra={"escalator_steps": steps, "anniversary_mid_period": mid_period},
+                    expected_value=expected_base, actual_value=baseline)
 
     # Rule 5 - post-term billing (review only, no dollars)
     term_end = _parse(contract.get("term_end"))
@@ -410,7 +422,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             math=f"committed minimum ${minimum:,.2f}/mo − billed base $0.00 = ${minimum:,.2f}",
             clause_text=(minimum_provenance
                          or _clause_text(contract, "committed_minimum", "committed_minimum_monthly")),
-            confidence=minimum_conf, term="committed_minimum_monthly")
+            confidence=minimum_conf, term="committed_minimum_monthly",
+            expected_value=minimum, actual_value=0.0)
 
     # Rule 7 - seats underbilled
     committed_seats = contract.get("committed_seats")
@@ -453,7 +466,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     clause_text=_clause_text(contract, "seats", "committed_seats"),
                     confidence=min(_confidence(contract, "committed_seats"),
                                    _confidence(contract, "seat_price")),
-                    term="committed_seats/seat_price")
+                    term="committed_seats/seat_price",
+                    expected_value=expected_seats * seat_price,
+                    actual_value=billed_seats * seat_price)
 
     # Credits/refunds never offset base or discounts_applied; if this customer
     # produced findings this period, flag the credits for a human to confirm
