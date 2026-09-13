@@ -47,12 +47,13 @@ def test_credits_flagged_but_never_discounts():
     findings = reconcile(contract, {}, invoice, "2026-06", needs_review=nr)
     assert len(findings) == 1 and findings[0]["type"] == "unenforced_minimum"
     assert any(r["term"] == "credits_applied" and r["amount"] == 500.0 for r in nr)
-    # Credits alone (no findings) → no credits review noise
+    # D-14: credits/refunds are always surfaced for review, even with no
+    # findings — they must never be silently netted or hidden.
     nr2 = []
     reconcile(contract, {}, {"base_charge": 9000,
                            "credits_applied": [{"description": "Service credit", "amount": 500}]},
               "2026-06", needs_review=nr2)
-    assert not [r for r in nr2 if r["term"] == "credits_applied"]
+    assert [r for r in nr2 if r["term"] == "credits_applied"]
 
 
 def test_tiered_overage_math():

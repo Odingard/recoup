@@ -112,6 +112,8 @@ def test_db_failure_during_recovery_event_leaves_finding_untouched(monkeypatch):
     writes = []
     monkeypatch.setattr(api.db, "update_finding_status",
                         lambda *a, **k: writes.append(a))
+    monkeypatch.setattr(api.db, "transition_finding_status",
+                        lambda *a, **k: writes.append(a))
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda *a, **k: writes.append(a))
 

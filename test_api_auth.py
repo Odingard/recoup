@@ -49,6 +49,7 @@ def test_sample_mode_routes_work_offline(monkeypatch):
     monkeypatch.setattr(api.db, "get_pending_findings", _boom)
     monkeypatch.setattr(api.db, "save_findings", _boom)
     monkeypatch.setattr(api.db, "update_finding_status", _boom)
+    monkeypatch.setattr(api.db, "transition_finding_status", _boom)
     monkeypatch.setattr(api.db, "save_usage", _boom)
     monkeypatch.setattr(api.db, "save_invoice", _boom)
     monkeypatch.setattr(api.db, "save_contract", _boom)
