@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 import re
 from datetime import datetime
-from pathlib import Path
 
 from .book_loader import match_discount
 from .line_roles import SEAT_RE, classify_line
@@ -107,6 +106,23 @@ def _row_period(row: dict, cols: dict[str, str], *, where: str, rownum: int) -> 
     raise IngestError(f"{where}: row {rownum}: no period or start date")
 
 
+def _dup_key(row: dict, cols: dict[str, str], *, where: str,
+             rownum: int) -> tuple:
+    """Exact-duplicate signature: every mapped column's normalized value."""
+    parts = []
+    for role in sorted(cols):
+        value = (row.get(cols[role]) or "").strip()
+        if role == "customer":
+            value = value.lower()
+        elif role == "amount":
+            value = _parse_amount(value, where=where, row=rownum)
+        elif role in ("period", "period_start"):
+            if value:
+                value = parse_period(value, where=f"{where} row {rownum}")
+        parts.append((role, value))
+    return tuple(parts)
+
+
 def _unresolved_review(resolver: CustomerResolver, label: str) -> dict:
     return {
         "customer_id": None,
@@ -145,6 +161,8 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
     invoices: dict[tuple[str, str], dict] = {}
     needs_review: list[dict] = []
     seen_unresolved: set[str] = set()
+    seen_rows: dict[tuple, int] = {}
+    duped_rows: set[tuple] = set()
     discounts_by_cid = {c["customer_id"]: (c.get("discounts") or []) for c in resolver.contracts}
 
     for idx, row in enumerate(rows, start=2):
@@ -168,6 +186,21 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
         period = _row_period(row, cols, where=where, rownum=idx)
         amount = _parse_amount(row.get(cols["amount"], ""), where=where, row=idx)
         description = (row.get(cols["description"], "") if "description" in cols else "") or ""
+
+        dkey = _dup_key(row, cols, where=where, rownum=idx)
+        if dkey in seen_rows:
+            if dkey not in duped_rows:
+                duped_rows.add(dkey)
+                needs_review.append({
+                    "customer_id": cid, "customer_name": label,
+                    "term": "duplicate_row",
+                    "reason": f"row {idx} duplicates row {seen_rows[dkey]} "
+                              "(same invoice line); counted once",
+                    "suggested_action": "Confirm whether the export contains a "
+                                        "repeated line or two genuinely "
+                                        "identical charges"})
+            continue
+        seen_rows[dkey] = idx
 
         inv = invoices.setdefault((cid, period), {
             "customer_id": cid, "period": period,
@@ -234,6 +267,8 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
     usage: dict[tuple[str, str], dict] = {}
     needs_review: list[dict] = []
     seen_unresolved: set[str] = set()
+    seen_rows: dict[tuple, int] = {}
+    duped_rows: set[tuple] = set()
 
     for idx, row in enumerate(rows, start=2):
         label = (row.get(cols["customer"]) or "").strip()
@@ -248,6 +283,20 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
             units = float((row.get(cols["units"]) or "").replace(",", "").strip())
         except ValueError:
             raise IngestError(f"{where}: row {idx}: unparseable units '{row.get(cols['units'])}'")
+        dkey = _dup_key(row, cols, where=where, rownum=idx)
+        if dkey in seen_rows:
+            if dkey not in duped_rows:
+                duped_rows.add(dkey)
+                needs_review.append({
+                    "customer_id": cid, "customer_name": label,
+                    "term": "duplicate_row",
+                    "reason": f"row {idx} duplicates row {seen_rows[dkey]} "
+                              "(same invoice line); counted once",
+                    "suggested_action": "Confirm whether the export contains a "
+                                        "repeated line or two genuinely "
+                                        "identical charges"})
+            continue
+        seen_rows[dkey] = idx
         if units < 0:
             needs_review.append({"customer_id": cid, "customer_name": label,
                                  "term": "usage_units",
