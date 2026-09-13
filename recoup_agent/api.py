@@ -10,6 +10,8 @@ import os
 import re
 import tempfile
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -141,7 +143,26 @@ def verify_token(authorization: str | None = Header(default=None),
     return {"uid": uid, "email": email, "account_id": account_id}
 
 
-app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform")
+def _startup_config_check():
+    """Fail fast in production when required configuration is missing."""
+    from .readiness import config_problems, production_mode
+    if not production_mode():
+        return
+    problems = config_problems()
+    if problems:
+        message = "Recoup production startup failed: " + "; ".join(problems)
+        logger.error(message)
+        raise RuntimeError(message)
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    _startup_config_check()
+    yield
+
+
+app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform",
+              lifespan=_lifespan)
 assert_key_separation()
 
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv("RECOUP_ALLOWED_ORIGINS", "").split(",") if o.strip()] or [
@@ -173,7 +194,33 @@ async def security_headers(request, call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": os.getenv("RECOUP_GIT_SHA", "dev")}
+    return {"status": "ok", "version": os.getenv("RECOUP_GIT_SHA", "dev"),
+            "mode": "sample" if _sample_mode_enabled() else "live"}
+
+
+_ready_cache: dict[str, Any] = {"ts": 0.0, "status": None, "body": None}
+
+
+@app.get("/api/ready")
+def ready():
+    """Readiness probe: dependency checks, cached 10s, 503 when not ready."""
+    from .readiness import dependency_checks, production_mode
+    now = time.time()
+    if _ready_cache["body"] is not None and now - _ready_cache["ts"] < 10:
+        return JSONResponse(status_code=_ready_cache["status"],
+                            content=_ready_cache["body"])
+    checks = dependency_checks(deep=True)
+    # In sample mode nothing is required — the probe only reports config.
+    required = ("project_config", "firestore", "firebase_auth") \
+        if production_mode() else ()
+    ok = all(checks.get(name, {}).get("ok") for name in required)
+    body = {"status": "ready" if ok else "not_ready",
+            "version": os.getenv("RECOUP_GIT_SHA", "dev"),
+            "mode": "sample" if _sample_mode_enabled() else "live",
+            "checks": checks}
+    status = 200 if ok else 503
+    _ready_cache.update({"ts": now, "status": status, "body": body})
+    return JSONResponse(status_code=status, content=body)
 
 
 _RECOVERY_PATHS = ("/invoiced", "/recovered", "/disputed", "/written-off")

@@ -48,6 +48,19 @@ RECOUP_SAMPLE_MODE=1 uvicorn recoup_agent.api:app --port 8001
 cd web && npm install && VITE_API_BASE=http://127.0.0.1:8001/api npm run dev
 ```
 
+### Health and readiness
+
+- `GET /api/health` — liveness, always 200; body adds `"mode": "sample"|"live"`.
+- `GET /api/ready` — unauthenticated readiness probe. Runs the dependency
+  checks in `recoup_agent/readiness.py` (deep result cached 10s). In live mode
+  `project_config`, `firestore`, and `firebase_auth` are required; billing,
+  connector, and Vertex checks are reported but non-blocking. 200 `ready` /
+  503 `not_ready`. Responses contain check names and booleans only — never
+  secret values.
+- Startup: in production mode (anything but `RECOUP_SAMPLE_MODE`) the process
+  fails fast on config problems such as a missing `GOOGLE_CLOUD_PROJECT`,
+  rather than booting and looking healthy.
+
 ## 3. Deploy to Cloud Run
 
 Use the one-time stack from `docs/SECURITY_ONEPAGER.md` / the deployment-security
