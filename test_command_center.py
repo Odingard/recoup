@@ -127,7 +127,15 @@ def test_next_step_matrix():
     nv = _f("x", "open", conf=0.5)
     assert next_step(v, []) == "Approve for recovery"
     assert next_step(nv, []) == "Review evidence / confirm term"
-    assert next_step(_f("x", "approved"), []) == "Issue true-up / corrective invoice"
+    assert next_step(_f("x", "approved"), []) == "Prepare recovery action"
+    assert next_step(_f("x", "approved"), [],
+                     [{"status": "draft"}]) == "Submit for approval"
+    assert next_step(_f("x", "approved"), [],
+                     [{"status": "pending_approval"}]) == "Approve recovery action"
+    assert next_step(_f("x", "approved"), [],
+                     [{"status": "approved"}]) == "Execute approved action"
+    assert next_step(_f("x", "approved"), [],
+                     [{"status": "sent"}]) == "Await counterparty response"
     assert next_step(_f("x", "invoiced"), []) == "Follow up on payment"
     assert next_step(_f("x", "disputed"), []) == "Resolve dispute"
     assert next_step(_f("x", "recovered"), []) == "Record realized value"
@@ -166,9 +174,10 @@ def test_locked_account_blanks_evidence(monkeypatch):
         def get_recovery_events(self, a): return []
         def get_audit_log(self, a): return []
         def get_assurance_status(self, a): return None
+        def get_recovery_actions(self, a): return []
     db = _Db()
     for name in ("get_all_findings", "get_all_contracts", "get_recovery_events",
-                 "get_audit_log", "get_assurance_status"):
+                 "get_audit_log", "get_assurance_status", "get_recovery_actions"):
         monkeypatch.setattr(api.db, name, getattr(db, name))
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     from firebase_admin import auth as firebase_auth

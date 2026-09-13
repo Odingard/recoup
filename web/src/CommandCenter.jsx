@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { AlertCircle, LockKeyhole } from 'lucide-react'
+import RecoveryActions from './RecoveryActions'
 
-void [AlertCircle, LockKeyhole]
+void [AlertCircle, LockKeyhole, RecoveryActions]
 
 function formatCurrency(value) {
   return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
@@ -23,7 +24,8 @@ const EMPTY_FILTERS = {
   maxAge: '', minConfidence: '', agreement: '', period: '',
 }
 
-export default function CommandCenter({ data, onOpenInReview }) {
+export default function CommandCenter({ data, onOpenInReview, apiRequest,
+                                        onChanged }) {
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [selected, setSelected] = useState(null)
 
@@ -222,6 +224,27 @@ export default function CommandCenter({ data, onOpenInReview }) {
                 ))}
               </ul>
             </div>
+          )}
+          {(selected.recovery_actions || []).length > 0 && (
+            <div className="info-group"><div className="info-label">Recovery actions</div>
+              <ul className="upload-history">
+                {selected.recovery_actions.map((a) => (
+                  <li key={a.id} className="upload-history-item">
+                    <span>{a.action_type?.replace(/_/g, ' ')} · {a.status} · {formatCurrency(a.requested_value)}</span>
+                    <span className="muted-copy">{a.channel || ''}{a.executed_at ? ` · ${a.executed_at}` : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {apiRequest && (
+            <RecoveryActions
+              finding={{ finding_id: selected.finding_id, status: selected.status,
+                         customer_name: selected.counterparty?.customer_name,
+                         monthly_recoverable: selected.recoverable_difference }}
+              apiRequest={apiRequest}
+              onChanged={onChanged}
+            />
           )}
           {selected.locked && (
             <p className="muted-copy"><AlertCircle size={13} /> Proof is locked until a payment method is on file.</p>

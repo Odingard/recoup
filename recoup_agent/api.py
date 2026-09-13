@@ -274,6 +274,31 @@ class DisputeNote(BaseModel):
     reason: str = ""
 
 
+class RecoveryActionCreate(BaseModel):
+    action_type: str
+    draft_mode: str = "template"
+    channel: str | None = None
+
+
+class RecoveryActionDraftUpdate(BaseModel):
+    draft_communication: str
+
+
+class RecoveryActionNote(BaseModel):
+    note: str = ""
+
+
+class RecoveryActionExecute(BaseModel):
+    channel: str
+    external_reference: str | None = None
+
+
+class RecoveryActionOutcome(BaseModel):
+    result: str
+    note: str | None = None
+    response_reference: str | None = None
+
+
 class UsagePayload(BaseModel):
     customer_id: str
     period: str
@@ -956,6 +981,8 @@ def _command_center_payload(user: dict) -> dict:
         db.get_audit_log(account_id) if account_id else [],
         contracts,
         assurance_status=(db.get_assurance_status(account_id)
+                          if account_id else None),
+        recovery_actions=(db.get_recovery_actions(account_id)
                           if account_id else None))
     if not _proof_unlocked(user):
         for case in result["cases"]:
@@ -980,6 +1007,227 @@ def get_command_center_case(finding_id: str, user: dict = Depends(verify_token))
     if case is None:
         raise HTTPException(status_code=404, detail="Finding not found.")
     return case
+
+
+# --- Recovery actions: Recoup prepares; humans approve and execute. ---
+
+def _get_action_or_404(account_id: str, action_id: str) -> dict:
+    action = db.get_recovery_action(account_id, action_id)
+    if action is None:
+        raise HTTPException(status_code=404,
+                            detail="Recovery action not found.")
+    return action
+
+
+@app.post("/api/findings/{finding_id}/recovery-actions")
+def create_recovery_action(finding_id: str, body: RecoveryActionCreate,
+                           user: dict = Depends(verify_token)):
+    from .recovery_actions import drafting, models
+    account_id = _account_id(user)
+    if account_id is None:
+        if finding_id not in {f["finding_id"] for f in _offline_findings()}:
+            raise HTTPException(status_code=404, detail="Finding not found.")
+        return {"status": "not_persisted", "mode": "sample",
+                "message": "Sample mode is read-only; recovery actions are not recorded."}
+    finding = db.get_finding(account_id, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    if (finding.get("status") or "open") not in models.ACTIONABLE_FINDING_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="recovery action requires an approved, invoiced, or "
+                   "disputed finding")
+    existing = [a for a in db.get_recovery_actions(account_id)
+                if a.get("finding_id") == finding_id
+                and a.get("action_type") == body.action_type]
+    if body.draft_mode == "model":
+        draft_text, draft_source = drafting.model_draft(finding,
+                                                        body.action_type)
+    else:
+        draft_text, draft_source = (drafting.template_draft(finding,
+                                                            body.action_type),
+                                    "template")
+    try:
+        action = models.new_action(
+            account_id, finding, body.action_type,
+            created_by=user.get("email", "unknown"),
+            seq=len(existing) + 1, draft=draft_text, draft_source=draft_source)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.save_recovery_action(account_id, action.to_dict())
+    db.update_recovery_action(account_id, action.to_dict(), "action_created")
+    return action.to_dict()
+
+
+@app.get("/api/findings/{finding_id}/recovery-actions")
+def list_finding_recovery_actions(finding_id: str,
+                                  user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return []
+    return db.get_recovery_actions(account_id, finding_id=finding_id)
+
+
+@app.get("/api/recovery-actions")
+def list_recovery_actions(user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return []
+    return db.get_recovery_actions(account_id)
+
+
+@app.get("/api/recovery-actions/{action_id}")
+def get_recovery_action(action_id: str, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        raise HTTPException(status_code=404,
+                            detail="Recovery action not found.")
+    return _get_action_or_404(account_id, action_id)
+
+
+@app.post("/api/recovery-actions/{action_id}/draft")
+def update_recovery_action_draft(action_id: str, body: RecoveryActionDraftUpdate,
+                                 user: dict = Depends(verify_token)):
+    from .recovery_actions import drafting
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    action = _get_action_or_404(account_id, action_id)
+    if action.get("status") not in {"draft", "pending_approval"}:
+        raise HTTPException(
+            status_code=409,
+            detail="draft can only be edited while draft or pending approval")
+    finding = db.get_finding(account_id, action.get("finding_id")) or {}
+    err = drafting.validate_draft_text(finding, body.draft_communication)
+    if err is not None:
+        raise HTTPException(status_code=422, detail=err)
+    action["draft_communication"] = body.draft_communication
+    action.setdefault("history", []).append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "draft_edited", "from": action.get("status"),
+        "to": action.get("status"),
+        "actor": user.get("email", "unknown"), "details": {}})
+    db.update_recovery_action(account_id, action, "draft_edited")
+    return action
+
+
+def _action_transition(account_id: str, action_id: str, user: dict,
+                       new_status: str, event: str, details=None):
+    from .recovery_actions import service
+    action = _get_action_or_404(account_id, action_id)
+    finding = db.get_finding(account_id, action.get("finding_id")) or {}
+    try:
+        action = service.transition(
+            action, new_status, actor=user.get("email", "unknown"),
+            details=details, finding=finding)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.update_recovery_action(account_id, action, event)
+    return action
+
+
+@app.post("/api/recovery-actions/{action_id}/submit")
+def submit_recovery_action(action_id: str, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    return _action_transition(account_id, action_id, user, "pending_approval",
+                              "submitted_for_approval")
+
+
+@app.post("/api/recovery-actions/{action_id}/approve")
+def approve_recovery_action(action_id: str, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    return _action_transition(account_id, action_id, user, "approved",
+                              "action_approved")
+
+
+@app.post("/api/recovery-actions/{action_id}/reject")
+def reject_recovery_action(action_id: str, body: RecoveryActionNote,
+                           user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    return _action_transition(account_id, action_id, user, "rejected",
+                              "action_rejected", {"note": body.note})
+
+
+@app.get("/api/recovery-actions/{action_id}/preview")
+def preview_recovery_action(action_id: str, channel: str,
+                            user: dict = Depends(verify_token)):
+    from .recovery_actions.adapters import REGISTRY
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    action = _get_action_or_404(account_id, action_id)
+    adapter = REGISTRY.get(channel or "")
+    if adapter is None:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown channel '{channel}'")
+    finding = db.get_finding(account_id, action.get("finding_id")) or {}
+    return adapter.prepare(action, finding)
+
+
+@app.post("/api/recovery-actions/{action_id}/execute")
+def execute_recovery_action(action_id: str, body: RecoveryActionExecute,
+                            user: dict = Depends(verify_token)):
+    from .recovery_actions import models as ra_models, service
+    from .recovery_actions.adapters import REGISTRY
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    action = _get_action_or_404(account_id, action_id)
+    if action.get("status") != "approved":
+        raise HTTPException(status_code=409,
+                            detail="execute requires status 'approved'")
+    adapter = REGISTRY.get(body.channel or "")
+    if adapter is None:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown channel '{body.channel}'")
+    finding = db.get_finding(account_id, action.get("finding_id")) or {}
+    try:
+        action, result = service.execute(
+            action, finding, adapter, user.get("email", "unknown"),
+            external_reference=body.external_reference)
+    except ra_models.NotAuthorized as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ra_models.AmountTampered as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.update_recovery_action(account_id, action, "action_executed")
+    return action
+
+
+@app.post("/api/recovery-actions/{action_id}/outcome")
+def record_recovery_action_outcome(action_id: str, body: RecoveryActionOutcome,
+                                   user: dict = Depends(verify_token)):
+    from .recovery_actions import service
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    action = _get_action_or_404(account_id, action_id)
+    finding = db.get_finding(account_id, action.get("finding_id")) or {}
+    try:
+        action = service.record_outcome(
+            action, body.result, body.note, body.response_reference,
+            user.get("email", "unknown"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.update_recovery_action(account_id, action, "outcome_recorded")
+    response = dict(action)
+    if body.result == "resolved":
+        response["next"] = (f"record realized value at "
+                            f"/api/findings/{action.get('finding_id')}"
+                            f"/recovery-events")
+    elif body.result == "disputed" and finding.get("status") == "invoiced":
+        try:
+            db.transition_finding_status(
+                account_id, action.get("finding_id"), "disputed",
+                "action_outcome_disputed")
+        except (db.FindingNotFound, db.IllegalTransition):
+            pass
+    return response
 
 
 @app.get("/api/billing/status")

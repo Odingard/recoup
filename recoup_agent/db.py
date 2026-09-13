@@ -381,3 +381,43 @@ def get_assurance_status(account_id: str) -> dict | None:
 def set_assurance_status(account_id: str, status: dict) -> None:
     db = get_client()
     _account_root(db, account_id).set({"assurance": status}, merge=True)
+
+# --- RECOVERY ACTIONS ---
+
+def save_recovery_action(account_id: str, action: dict):
+    db = get_client()
+    _collection(db, account_id, "recovery_actions").document(
+        action["recovery_action_id"]).set(action, merge=True)
+
+
+def get_recovery_action(account_id: str, action_id: str) -> dict | None:
+    db = get_client()
+    doc = _collection(db, account_id, "recovery_actions").document(action_id).get()
+    if not doc.exists:
+        return None
+    return doc.to_dict()
+
+
+def get_recovery_actions(account_id: str, finding_id: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "recovery_actions").stream()]
+    if finding_id is not None:
+        docs = [d for d in docs if d.get("finding_id") == finding_id]
+    docs.sort(key=lambda d: d.get("created_at") or "")
+    return docs
+
+
+def update_recovery_action(account_id: str, action: dict, event_name: str):
+    """Write the full action doc plus an audit_log entry."""
+    db = get_client()
+    _collection(db, account_id, "recovery_actions").document(
+        action["recovery_action_id"]).set(action, merge=True)
+    _collection(db, account_id, "audit_log").document().set({
+        "event": event_name,
+        "recovery_action_id": action.get("recovery_action_id"),
+        "finding_id": action.get("finding_id"),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "details": {"status": action.get("status"),
+                    "channel": action.get("channel")},
+    })
