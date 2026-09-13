@@ -322,6 +322,16 @@ def map_stripe_billing_to_reconcile_inputs(
     }
 
     period_invoices = [invoice for invoice in invoices if invoice.period == period]
+    currencies = {str(invoice.currency or "").upper() for invoice in period_invoices
+                  if invoice.currency or any(line.get("currency") for line in invoice.line_items)}
+    line_currencies = {str(line.get("currency") or "").upper()
+                       for invoice in period_invoices for line in invoice.line_items
+                       if line.get("currency")}
+    currencies |= line_currencies
+    if currencies:
+        invoice_dict["currency"] = next(iter(currencies))
+    if len(currencies) > 1:
+        invoice_dict["currency_mixed"] = True
     if not period_invoices:
         needs_review.append({
             "customer_id": customer_id,
@@ -369,4 +379,8 @@ def map_stripe_billing_to_reconcile_inputs(
                     "suggested_action": "Classify this Stripe line item as base, overage, discount, or tax and re-run reconciliation.",
                 })
 
+    if usage.total_units < 0:
+        needs_review.append({"customer_id": customer_id, "customer_name": customer_name,
+                             "term": "usage_units", "reason": "negative usage quantity"})
+        usage_dict["units"] = None
     return usage_dict, invoice_dict, needs_review

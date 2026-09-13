@@ -82,7 +82,7 @@ def normalize_contract(raw: dict) -> dict:
         "included_units": tier.get("included_units"),
         "overage_rate": tier.get("overage_rate_per_unit"),
         "annual_escalator_pct": raw.get("annual_escalator_pct", 0.0),
-        "escalator_effective_date": f"{esc_month}-01" if esc_month else None,
+        "escalator_effective_date": raw.get("escalator_effective_date") or (f"{esc_month}-01" if esc_month else None),
         "discounts": discounts,
         "clauses": {
             "committed_minimum": notes,
