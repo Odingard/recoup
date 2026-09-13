@@ -1,5 +1,6 @@
 """Run-003 defect remediation regression tests, grouped by D-id."""
 import io
+import json
 import zipfile
 from types import SimpleNamespace
 
@@ -342,32 +343,45 @@ def _esc_contract(date_str):
                  "escalator": "5% annual escalator"})
 
 
-def test_d15_mid_period_anniversary_reviews_no_finding():
+def _d15(esc_date, period):
     nr = []
-    c = _esc_contract("2025-03-15")
-    findings = reconcile(c, _usage(), _invoice(base_charge=1000.0, period="2026-03"),
-                         "2026-03", nr)
-    assert not any(f["type"] == "missed_escalator" for f in findings)
+    c = _esc_contract(esc_date)
+    findings = reconcile(c, _usage(period=period),
+                         _invoice(base_charge=1000.0, period=period),
+                         period, nr)
+    return [f for f in findings if f["type"] == "missed_escalator"], nr
+
+
+def test_d15_before_effective_date_nothing():
+    esc, nr = _d15("2025-03-15", "2025-02")
+    assert esc == []
+
+
+def test_d15_effective_month_mid_period_reviews():
+    esc, nr = _d15("2025-03-15", "2025-03")
+    assert esc == []
     assert any(e["term"] == "escalator_effective_date" for e in nr)
 
 
 def test_d15_next_month_one_step():
-    nr = []
-    c = _esc_contract("2025-03-15")
-    findings = reconcile(c, _usage(), _invoice(base_charge=1000.0, period="2026-04"),
-                         "2026-04", nr)
-    esc = [f for f in findings if f["type"] == "missed_escalator"]
-    assert len(esc) == 1
-    assert esc[0]["escalator_steps"] == 1
+    esc, _ = _d15("2025-03-15", "2025-04")
+    assert len(esc) == 1 and esc[0]["escalator_steps"] == 1
     assert esc[0]["monthly_recoverable"] == 50.0
 
 
+def test_d15_before_anniversary_still_one_step():
+    esc, nr = _d15("2025-03-15", "2026-02")
+    assert len(esc) == 1 and esc[0]["escalator_steps"] == 1
+
+
+def test_d15_mid_period_anniversary_reviews_no_finding():
+    esc, nr = _d15("2025-03-15", "2026-03")
+    assert esc == []
+    assert any(e["term"] == "escalator_effective_date" for e in nr)
+
+
 def test_d15_two_years_two_steps():
-    nr = []
-    c = _esc_contract("2025-03-15")
-    findings = reconcile(c, _usage(), _invoice(base_charge=1000.0, period="2027-04"),
-                         "2027-04", nr)
-    esc = [f for f in findings if f["type"] == "missed_escalator"]
+    esc, _ = _d15("2025-03-15", "2026-04")
     assert len(esc) == 1 and esc[0]["escalator_steps"] == 2
     assert esc[0]["monthly_recoverable"] == quantize(1000 * 1.05 ** 2 - 1000)
 
@@ -726,3 +740,331 @@ def test_d17_member_actual_over_limit(monkeypatch):
     items, err = ingest_bulk.expand_zip("a.zip", b"fake")
     monkeypatch.setattr(ingest_bulk.zipfile, "ZipFile", orig)
     assert items == [] and "exceeds" in err
+
+
+# ---------------- D-09: strict numeric grammar ----------------
+
+def test_d09_parse_numeric_literal_rejects():
+    from recoup_agent.rights_discovery.compiler import parse_numeric_literal
+    for bad in ["eval(1)", "1+1", "1; DROP TABLE", "15000 dollars", "1e5",
+                "1E+5", "١٢٣", "１２３", "1_000", "--5", "5-", "0x1F",
+                "NaN", "inf", "1" * 40]:
+        assert parse_numeric_literal(bad, allow_negative=True) is None, bad
+    assert parse_numeric_literal("-5%", allow_negative=False) is None
+    assert parse_numeric_literal("nan", allow_negative=True) is None
+    assert parse_numeric_literal(float("inf"), allow_negative=True) is None
+    assert parse_numeric_literal(True, allow_negative=True) is None
+    assert parse_numeric_literal(2e12, allow_negative=True) is None
+
+
+def test_d09_parse_numeric_literal_accepts():
+    from recoup_agent.rights_discovery.compiler import parse_numeric_literal
+    assert parse_numeric_literal("$15,000", allow_negative=True) == 15000.0
+    assert parse_numeric_literal("99.95%", allow_negative=False) == 99.95
+    assert parse_numeric_literal("-250", allow_negative=True) == -250.0
+    assert parse_numeric_literal(1500, allow_negative=False) == 1500.0
+    assert parse_numeric_literal(0.05, allow_negative=False) == 0.05
+
+
+def _candidate_d16(trigger, calc, constants, quote, name="Some right",
+                   family="service_level_credit"):
+    from recoup_agent.rights_discovery.models import CandidateFinancialRight
+    return CandidateFinancialRight(
+        candidate_id="c_d16", account_id="acct", source_id="src",
+        holder_party_id="Buyer", obligor_party_id="Supplier",
+        right_name=name, right_family=family,
+        trigger_spec=trigger, calculation_spec=calc,
+        required_observations=["units_purchased"],
+        source_quote=quote, status="verified",
+        metadata={"constants": constants},
+    )
+
+
+def test_d09_invalid_literal_fails_compile():
+    from recoup_agent.rights_discovery.compiler import (CompileFailure,
+                                                        compile_candidate_right)
+    quote = "Buyer pays $1,000 per month for the service."
+    cand = _candidate_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "fixed_amount", "amount": {"constant": "amt"}},
+        [{"name": "amt", "value": "1e5", "kind": "amount"}],
+        quote)
+    out = compile_candidate_right(cand, quote)
+    assert isinstance(out, CompileFailure)
+    assert out.status == "needs_review"
+    assert any("not a valid numeric literal" in r for r in out.reasons)
+
+
+def test_d09_negative_rate_rejected():
+    from recoup_agent.rights_discovery.compiler import (CompileFailure,
+                                                        compile_candidate_right)
+    quote = "Buyer pays -5% of the invoice."
+    cand = _candidate_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "percentage_of", "rate": {"constant": "r"},
+         "base_observation": "units_purchased"},
+        [{"name": "r", "value": "-5%", "kind": "rate"}],
+        quote)
+    out = compile_candidate_right(cand, quote)
+    assert isinstance(out, CompileFailure)
+    assert out.status == "needs_review"
+
+
+# ---------------- D-10: spec size limits ----------------
+
+def test_d10_limits_rejected_fast():
+    import time as _time
+    from recoup_agent.rights_discovery.compiler import (CompileFailure,
+                                                        compile_candidate_right)
+    quote = "Buyer pays $1.00 per unit."
+    trigger = {"op": "event_exists", "observation": "units_purchased"}
+
+    # 100k tiers
+    cand = _candidate_d16(
+        trigger,
+        {"type": "tiered", "quantity_observation": "units_purchased",
+         "tiers": [{"rate": {"constant": "r"}} for _ in range(100_000)]},
+        [{"name": "r", "value": "$1.00", "kind": "rate"}], quote)
+    start = _time.monotonic()
+    out = compile_candidate_right(cand, quote)
+    elapsed = _time.monotonic() - start
+    assert isinstance(out, CompileFailure) and out.status == "rejected"
+    assert elapsed < 0.5
+
+    # 100k constants
+    cand = _candidate_d16(
+        trigger,
+        {"type": "fixed_amount", "amount": {"constant": "c0"}},
+        [{"name": f"c{i}", "value": "1", "kind": "amount"}
+         for i in range(100_000)], quote)
+    start = _time.monotonic()
+    out = compile_candidate_right(cand, quote)
+    assert isinstance(out, CompileFailure) and out.status == "rejected"
+    assert _time.monotonic() - start < 0.5
+
+    # trigger nesting depth 50
+    node = {"op": "event_exists", "observation": "units_purchased"}
+    for _ in range(50):
+        node = {"op": "and", "children": [node]}
+    cand = _candidate_d16(
+        node, {"type": "fixed_amount", "amount": {"constant": "r"}},
+        [{"name": "r", "value": "$1.00", "kind": "rate"}], quote)
+    out = compile_candidate_right(cand, quote)
+    assert isinstance(out, CompileFailure) and out.status == "rejected"
+
+    # 1M-char quote rejected without grounding work
+    cand = _candidate_d16(
+        trigger, {"type": "fixed_amount", "amount": {"constant": "r"}},
+        [{"name": "r", "value": "$1.00", "kind": "rate"}],
+        "x" * 1_000_000)
+    start = _time.monotonic()
+    out = compile_candidate_right(cand, "x" * 1_000_000)
+    assert isinstance(out, CompileFailure) and out.status == "rejected"
+    assert _time.monotonic() - start < 0.5
+
+
+def test_d10_runtime_spec_limits_defensive():
+    from recoup_agent.rights_discovery.runtime import evaluate_right
+    spec = _spec({"calculation": {
+        "type": "tiered", "quantity_observation": "units_purchased",
+        "tiers": [{"rate": {"constant": "rebate_rate"}} for _ in range(40)]}})
+    result = evaluate_right(spec, [], "2026-06")
+    assert result.status == "error"
+    assert result.calculation_trace["reason"] == "spec_limits_exceeded"
+
+
+# ---------------- D-16: RightSpec v1 grammar additions ----------------
+
+def _compile_d16(trigger, calc, constants, quote):
+    from recoup_agent.rights_discovery.compiler import (CompiledRight,
+                                                        compile_candidate_right)
+    from recoup_agent.rights_discovery.models import RightSpec
+    out = compile_candidate_right(
+        _candidate_d16(trigger, calc, constants, quote), quote)
+    assert isinstance(out, CompiledRight), out
+    return RightSpec.from_dict(out.spec)
+
+
+def _ev(spec, obs, period="2026-06"):
+    from recoup_agent.rights_discovery.runtime import evaluate_right
+    return evaluate_right(spec, obs, period)
+
+
+def test_d16_volume_tiered():
+    quote = ("Buyer pays $0.10 per unit for the first 1,000 units and "
+             "$0.08 per unit above that.")
+    spec = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "volume_tiered", "quantity_observation": "units_purchased",
+         "tiers": [{"up_to": {"constant": "t1"}, "rate": {"constant": "r1"}},
+                    {"up_to": None, "rate": {"constant": "r2"}}]},
+        [{"name": "t1", "value": "1,000", "kind": "quantity"},
+         {"name": "r1", "value": "$0.10", "kind": "rate"},
+         {"name": "r2", "value": "$0.08", "kind": "rate"}],
+        quote)
+    r = _ev(spec, [{"observation_type": "units_purchased", "period": "2026-06",
+                    "value": 1500}])
+    assert r.status == "evaluated" and r.expected_amount == 120.00
+
+
+def test_d16_banded_percentage_of():
+    quote = "A fee of 2% applies under 10 days and 5% at or above 10 days."
+    spec = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "banded_percentage_of", "base_observation": "fee_base",
+         "band_observation": "days_late",
+         "bands": [{"up_to": {"constant": "limit"}, "rate": {"constant": "lo"}},
+                    {"up_to": None, "rate": {"constant": "hi"}}]},
+        [{"name": "limit", "value": "10", "kind": "quantity"},
+         {"name": "lo", "value": "2%", "kind": "percentage"},
+         {"name": "hi", "value": "5%", "kind": "percentage"}],
+        quote)
+    r = _ev(spec, [{"observation_type": "units_purchased",
+                    "period": "2026-06", "value": 1},
+                   {"observation_type": "fee_base", "period": "2026-06",
+                    "value": 10000},
+                   {"observation_type": "days_late", "period": "2026-06",
+                    "value": 12}])
+    assert r.status == "evaluated" and r.expected_amount == 500.00
+
+
+def test_d16_cap_and_floor():
+    quote = "Buyer pays $500 subject to a cap of $400."
+    spec = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "fixed_amount", "amount": {"constant": "amt"},
+         "cap": {"constant": "cap_amt"}},
+        [{"name": "amt", "value": "$500", "kind": "amount"},
+         {"name": "cap_amt", "value": "$400", "kind": "amount"}],
+        quote)
+    r = _ev(spec, [{"observation_type": "units_purchased",
+                    "period": "2026-06", "value": 1}])
+    assert r.status == "evaluated" and r.expected_amount == 400.0
+
+    quote2 = "Buyer pays $50 subject to a floor of $100."
+    spec2 = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "fixed_amount", "amount": {"constant": "amt"},
+         "floor": {"constant": "floor_amt"}},
+        [{"name": "amt", "value": "$50", "kind": "amount"},
+         {"name": "floor_amt", "value": "$100", "kind": "amount"}],
+        quote2)
+    r = _ev(spec2, [{"observation_type": "units_purchased",
+                     "period": "2026-06", "value": 1}])
+    assert r.status == "evaluated" and r.expected_amount == 100.0
+
+
+def test_d16_min_of_max_of():
+    quote = "The credit is the lesser of $500 and the observed shortfall."
+    spec = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "min_of",
+         "operands": [{"constant": "cap"}, {"observation": "shortfall"}]},
+        [{"name": "cap", "value": "$500", "kind": "amount"}],
+        quote)
+    r = _ev(spec, [{"observation_type": "units_purchased",
+                    "period": "2026-06", "value": 1},
+                   {"observation_type": "shortfall", "period": "2026-06",
+                    "value": 700}])
+    assert r.status == "evaluated" and r.expected_amount == 500.0
+    spec_mx = _compile_d16(
+        {"op": "event_exists", "observation": "units_purchased"},
+        {"type": "max_of",
+         "operands": [{"constant": "cap"}, {"observation": "shortfall"}]},
+        [{"name": "cap", "value": "$500", "kind": "amount"}],
+        quote)
+    r = _ev(spec_mx, [{"observation_type": "units_purchased",
+                       "period": "2026-06", "value": 1},
+                      {"observation_type": "shortfall", "period": "2026-06",
+                       "value": 700}])
+    assert r.status == "evaluated" and r.expected_amount == 700.0
+
+
+def test_d16_observed_date_after():
+    quote = "For any invoice paid after 2026-03-31, a $25 late fee applies."
+    spec = _compile_d16(
+        {"op": "observed_date_after", "observation": "payment",
+         "value": {"constant": "deadline"}},
+        {"type": "fixed_amount", "amount": {"constant": "fee"}},
+        [{"name": "deadline", "value": "2026-03-31", "kind": "date"},
+         {"name": "fee", "value": "$25", "kind": "amount"}],
+        quote)
+    late = _ev(spec, [{"observation_type": "units_purchased",
+                       "period": "2026-06", "value": 1},
+                      {"observation_type": "payment", "period": "2026-06",
+                       "value": "2026-04-05"}])
+    assert late.status == "evaluated" and late.expected_amount == 25.0
+    early = _ev(spec, [{"observation_type": "units_purchased",
+                        "period": "2026-06", "value": 1},
+                       {"observation_type": "payment", "period": "2026-06",
+                        "value": "2026-03-20"}])
+    assert early.status == "not_triggered"
+    missing = _ev(spec, [{"observation_type": "units_purchased",
+                          "period": "2026-06", "value": 1}])
+    assert missing.status == "not_evaluable"
+
+
+def test_d16_date_op_requires_date_constant():
+    from recoup_agent.rights_discovery.compiler import (CompileFailure,
+                                                        compile_candidate_right)
+    quote = "Invoices paid after 25 days incur a fee."
+    cand = _candidate_d16(
+        {"op": "observed_date_after", "observation": "payment",
+         "value": {"constant": "days"}},
+        {"type": "fixed_amount", "amount": {"constant": "days"}},
+        [{"name": "days", "value": "25", "kind": "quantity"}],
+        quote)
+    out = compile_candidate_right(cand, quote)
+    assert isinstance(out, CompileFailure)
+    assert any("kind 'date'" in r for r in out.reasons)
+
+
+# ---------------- D-13 / D-20: startup check + readiness ----------------
+
+def test_d20_health_reports_mode(monkeypatch):
+    monkeypatch.setenv("RECOUP_SAMPLE_MODE", "1")
+    client = TestClient(api.app)
+    body = client.get("/api/health").json()
+    assert body["status"] == "ok" and body["mode"] == "sample"
+
+
+def test_d20_ready_sample_mode(monkeypatch):
+    monkeypatch.setenv("RECOUP_SAMPLE_MODE", "1")
+    api._ready_cache.update({"ts": 0, "body": None})
+    client = TestClient(api.app)
+    resp = client.get("/api/ready")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready" and "checks" in body
+
+
+def test_d20_ready_live_missing_project_503(monkeypatch):
+    monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_test_fake")
+    monkeypatch.setenv("RECOUP_CONNECTOR_TEST_STRIPE_API_KEY", "rk_test_fake")
+    api._ready_cache.update({"ts": 0, "body": None})
+    monkeypatch.setattr(api.db, "get_client", lambda: None)
+    monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
+    client = TestClient(api.app)
+    resp = client.get("/api/ready")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "not_ready"
+    assert body["checks"]["project_config"]["ok"] is False
+    # no secret material anywhere in the body
+    text = json.dumps(body)
+    assert "sk_" not in text and "rk_" not in text
+
+
+def test_d13_startup_fails_fast(monkeypatch):
+    monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    with pytest.raises(RuntimeError):
+        api._startup_config_check()
+
+
+def test_d13_startup_skips_sample(monkeypatch):
+    monkeypatch.setenv("RECOUP_SAMPLE_MODE", "1")
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    api._startup_config_check()  # no raise

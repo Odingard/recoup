@@ -100,13 +100,23 @@ def test_malformed_triggers_fail(trigger):
     assert isinstance(out, CompileFailure)
 
 
-def test_deeply_nested_trigger_still_validates():
+def test_deeply_nested_trigger_within_limits_validates():
+    node = {"op": "lt", "observation": "monthly_uptime",
+            "value": {"constant": "sla_threshold"}}
+    for _ in range(6):
+        node = {"op": "and", "children": [node]}
+    out = compile_candidate_right(_cand(trigger_spec=node), QUOTE)
+    assert isinstance(out, CompiledRight)
+
+
+def test_trigger_over_depth_limit_rejected():
     node = {"op": "lt", "observation": "monthly_uptime",
             "value": {"constant": "sla_threshold"}}
     for _ in range(50):
         node = {"op": "and", "children": [node]}
     out = compile_candidate_right(_cand(trigger_spec=node), QUOTE)
-    assert isinstance(out, CompiledRight)
+    assert isinstance(out, CompileFailure)
+    assert out.status == "rejected"
 
 
 @pytest.mark.parametrize("calc", [
