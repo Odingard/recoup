@@ -24,10 +24,13 @@ class CandidateStatus(str, Enum):
 TRIGGER_OPERATORS = {
     "eq", "neq", "gt", "gte", "lt", "lte", "between",
     "date_reached", "date_before", "event_exists", "and", "or",
+    "observed_date_before", "observed_date_on_or_before",
+    "observed_date_after", "observed_date_on_or_after",
 }
 
 CALCULATION_PRIMITIVES = {
     "fixed_amount", "percentage_of", "per_unit", "difference", "tiered", "none",
+    "min_of", "max_of", "volume_tiered", "banded_percentage_of",
 }
 
 
@@ -78,6 +81,11 @@ class CalculationSpec(_Entity):
     subtrahend: dict | None = None
     floor_zero: bool = True
     tiers: list[dict] = field(default_factory=list)
+    cap: dict | None = None
+    floor: dict | None = None
+    operands: list[dict] = field(default_factory=list)
+    band_observation: str | None = None
+    bands: list[dict] = field(default_factory=list)
 
 
 @dataclass

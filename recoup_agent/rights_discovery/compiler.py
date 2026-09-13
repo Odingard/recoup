@@ -6,6 +6,7 @@ in the cited source quote. Anything else fails closed.
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime
 from typing import Any
@@ -16,6 +17,18 @@ from .models import (
     CALCULATION_PRIMITIVES, TRIGGER_OPERATORS, CandidateStatus,
     CompiledRight, CompileFailure, RightSpec,
 )
+
+# ---- spec size limits (D-10) ------------------------------------------------
+
+MAX_CONSTANTS = 64
+MAX_TIERS = 32
+MAX_TRIGGER_DEPTH = 8
+MAX_TRIGGER_NODES = 64
+MAX_QUOTE_CHARS = 20_000
+MAX_EVIDENCE_REFS = 32
+MAX_REQUIRED_OBSERVATIONS = 32
+MAX_NAME_CHARS = 128
+MAX_OPERANDS = 4
 
 LEGACY_FAMILIES = {
     "committed_minimum", "usage_overage", "discount_expiration",
@@ -93,19 +106,55 @@ def _parse_date_str(value: str) -> date | None:
         return None
 
 
+_NUMERIC_LITERAL_RE = re.compile(
+    r"^(-)?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,6})?%?$")
+
+
+def parse_numeric_literal(raw: Any, *, allow_negative: bool) -> float | None:
+    """Strict ASCII numeric grammar. Returns the float value or None.
+
+    Valid: '$15,000', '99.95%', '-250' (only when allow_negative), 1500,
+    0.05. Rejected: expressions, code, non-ASCII digits, underscores,
+    hex, exponents, NaN/inf, > 1e12 magnitudes."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        if not math.isfinite(v) or abs(v) > 1e12:
+            return None
+        if v < 0 and not allow_negative:
+            return None
+        return v
+    s = str(raw or "").strip()
+    if not s or not s.isascii() or len(s) > 32:
+        return None
+    m = _NUMERIC_LITERAL_RE.match(s)
+    if not m:
+        return None
+    negative = bool(m.group(1))
+    if negative and not allow_negative:
+        return None
+    token = s.lstrip("-").lstrip("$").rstrip("%").replace(",", "")
+    try:
+        v = float(token)
+    except ValueError:
+        return None
+    if negative:
+        v = -v
+    if not math.isfinite(v) or abs(v) > 1e12:
+        return None
+    return v
+
+
 def parse_constant_value(raw: Any, kind: str):
     """AI gives constants as written ('$15,000', '99.95%'); normalize to a
     float (percent -> decimal) or a date ISO string."""
-    if isinstance(raw, (int, float)):
-        return float(raw) / 100.0 if kind == "percentage" and raw > 1.5 else float(raw)
-    s = str(raw or "").strip()
     if kind == "date":
-        d = _parse_date_str(s)
+        d = _parse_date_str(str(raw or "").strip())
         return d.isoformat() if d else None
-    m = _NUM_RE.search(s)
-    if not m:
+    val = parse_numeric_literal(raw, allow_negative=kind in ("amount", "threshold"))
+    if val is None:
         return None
-    val = float(m.group(1).replace(",", ""))
     # Percentages-as-rates normalize to decimals; thresholds stay in the units
     # the observation is reported in (e.g. uptime 99.95).
     if kind == "percentage" and val > 1.5:
@@ -158,23 +207,22 @@ def _literal_constant_value(raw: Any, kind: str):
     position where the constant is referenced."""
     if kind == "date":
         return parse_constant_value(raw, "date")
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    m = _NUM_RE.search(str(raw or ""))
-    return float(m.group(1).replace(",", "")) if m else None
+    return parse_numeric_literal(raw, allow_negative=kind in ("amount", "threshold"))
 
 
-def ground_constant(name: str, value: Any, kind: str, quote: str) -> bool:
+def ground_constant(name: str, value: Any, kind: str, quote: str,
+                    quote_numbers: list[float] | None = None) -> bool:
     """A constant is grounded iff its value appears verbatim in the cited
     source quote (numeric equality, abs tol 1e-9; dates compare as dates)."""
+    quote = (quote or "")[:MAX_QUOTE_CHARS]
     if kind == "date":
         target = _parse_date_str(str(value))
         if target is None:
             return False
-        for m in _DATE_ISO_RE.findall(quote or ""):
+        for m in _DATE_ISO_RE.findall(quote):
             if _parse_date_str(m) == target:
                 return True
-        for m in _DATE_LONG_RE.findall(quote or ""):
+        for m in _DATE_LONG_RE.findall(quote):
             if _parse_date_str(m) == target:
                 return True
         return False
@@ -182,7 +230,9 @@ def ground_constant(name: str, value: Any, kind: str, quote: str) -> bool:
         target = float(parse_constant_value(value, kind))
     except (TypeError, ValueError):
         return False
-    return any(abs(n - target) < 1e-9 for n in numbers_in_text(quote or ""))
+    if quote_numbers is None:
+        quote_numbers = numbers_in_text(quote)
+    return any(abs(n - target) < 1e-9 for n in quote_numbers)
 
 
 # ---- schema validation --------------------------------------------------------
@@ -192,8 +242,15 @@ def _is_const_ref(v: Any) -> bool:
         and bool(v["constant"].strip())
 
 
+_OBSERVED_DATE_OPS = {
+    "observed_date_before", "observed_date_on_or_before",
+    "observed_date_after", "observed_date_on_or_after",
+}
+
+
 def _validate_trigger(node: Any, constant_names: set[str],
-                      reasons: list[str], path: str = "trigger") -> None:
+                      reasons: list[str], path: str = "trigger",
+                      constant_kinds: dict[str, str] | None = None) -> None:
     if not isinstance(node, dict) or not isinstance(node.get("op"), str):
         reasons.append(f"{path}: not an object with an 'op'")
         return
@@ -207,7 +264,8 @@ def _validate_trigger(node: Any, constant_names: set[str],
             reasons.append(f"{path}: '{op}' requires non-empty children")
             return
         for i, child in enumerate(children):
-            _validate_trigger(child, constant_names, reasons, f"{path}.children[{i}]")
+            _validate_trigger(child, constant_names, reasons,
+                              f"{path}.children[{i}]", constant_kinds)
         return
     if op == "event_exists":
         obs = node.get("observation")
@@ -231,6 +289,10 @@ def _validate_trigger(node: Any, constant_names: set[str],
         reasons.append(f"{path}.{op}: value must be {{'constant': name}}")
     elif ref["constant"] not in constant_names:
         reasons.append(f"{path}.{op}: constant '{ref['constant']}' is not declared")
+    elif op in _OBSERVED_DATE_OPS and constant_kinds is not None \
+            and constant_kinds.get(ref["constant"]) != "date":
+        reasons.append(f"{path}.{op}: constant '{ref['constant']}' must be "
+                       "of kind 'date'")
 
 
 def _operand_ref(v: Any, constant_names: set[str], reasons: list[str], path: str) -> None:
@@ -286,27 +348,131 @@ def _validate_calculation(calc: Any, constant_names: set[str],
         for key in ("minuend", "subtrahend"):
             _operand_ref(calc.get(key), constant_names, reasons,
                          f"difference.{key}")
-    elif ctype == "tiered":
+    elif ctype in ("tiered", "volume_tiered"):
         if not isinstance(calc.get("quantity_observation"), str) \
                 or not calc["quantity_observation"].strip():
-            reasons.append("tiered requires quantity_observation")
+            reasons.append(f"{ctype} requires quantity_observation")
         tiers = calc.get("tiers")
         if not isinstance(tiers, list) or not tiers:
-            reasons.append("tiered requires a non-empty tiers list")
+            reasons.append(f"{ctype} requires a non-empty tiers list")
+        elif len(tiers) > MAX_TIERS:
+            reasons.append(f"{ctype}.tiers exceeds MAX_TIERS ({MAX_TIERS})")
         else:
             for i, t in enumerate(tiers):
                 if not _is_const_ref(t.get("rate")):
-                    reasons.append(f"tiered.tiers[{i}].rate must be a constant ref")
+                    reasons.append(f"{ctype}.tiers[{i}].rate must be a constant ref")
                 elif t["rate"]["constant"] not in constant_names:
-                    reasons.append(f"tiered.tiers[{i}].rate constant not declared")
+                    reasons.append(f"{ctype}.tiers[{i}].rate constant not declared")
                 if t.get("up_to") is not None:
                     if not _is_const_ref(t["up_to"]):
-                        reasons.append(f"tiered.tiers[{i}].up_to must be a "
+                        reasons.append(f"{ctype}.tiers[{i}].up_to must be a "
                                        "constant ref")
                     elif t["up_to"]["constant"] not in constant_names:
-                        reasons.append(f"tiered.tiers[{i}].up_to constant not declared")
+                        reasons.append(f"{ctype}.tiers[{i}].up_to constant not declared")
         if calc.get("above") is not None and not _is_const_ref(calc["above"]):
-            reasons.append("tiered.above must be a constant ref")
+            reasons.append(f"{ctype}.above must be a constant ref")
+    elif ctype in ("min_of", "max_of"):
+        operands = calc.get("operands")
+        if not isinstance(operands, list) or len(operands) < 2:
+            reasons.append(f"{ctype} requires >= 2 operands")
+        elif len(operands) > MAX_OPERANDS:
+            reasons.append(f"{ctype}.operands exceeds MAX_OPERANDS "
+                           f"({MAX_OPERANDS})")
+        else:
+            for i, ref in enumerate(operands):
+                _operand_ref(ref, constant_names, reasons,
+                             f"{ctype}.operands[{i}]")
+    elif ctype == "banded_percentage_of":
+        if not isinstance(calc.get("base_observation"), str) \
+                or not calc["base_observation"].strip():
+            reasons.append("banded_percentage_of requires base_observation")
+        if not isinstance(calc.get("band_observation"), str) \
+                or not calc["band_observation"].strip():
+            reasons.append("banded_percentage_of requires band_observation")
+        bands = calc.get("bands")
+        if not isinstance(bands, list) or not bands:
+            reasons.append("banded_percentage_of requires a non-empty bands list")
+        elif len(bands) > MAX_TIERS:
+            reasons.append(f"banded_percentage_of.bands exceeds MAX_TIERS "
+                           f"({MAX_TIERS})")
+        else:
+            for i, b in enumerate(bands):
+                if not _is_const_ref(b.get("rate")):
+                    reasons.append(f"bands[{i}].rate must be a constant ref")
+                elif b["rate"]["constant"] not in constant_names:
+                    reasons.append(f"bands[{i}].rate constant not declared")
+                if b.get("up_to") is not None:
+                    if not _is_const_ref(b["up_to"]):
+                        reasons.append(f"bands[{i}].up_to must be a constant ref")
+                    elif b["up_to"]["constant"] not in constant_names:
+                        reasons.append(f"bands[{i}].up_to constant not declared")
+
+    # cap/floor modifiers are allowed on every primitive; constant refs only.
+    for modifier in ("cap", "floor"):
+        ref = calc.get(modifier)
+        if ref is not None:
+            if not _is_const_ref(ref):
+                reasons.append(f"{ctype}.{modifier} must be a constant ref")
+            elif ref["constant"] not in constant_names:
+                reasons.append(f"{ctype}.{modifier} constant not declared")
+
+
+def _check_limits(candidate) -> list[str]:
+    """Bounded scan of candidate size limits; returns violation reasons.
+    Runs FIRST in compile_candidate_right — nothing else executes when a
+    spec exceeds limits."""
+    reasons: list[str] = []
+    raw_constants = (candidate.metadata or {}).get("constants") or []
+    if len(raw_constants) > MAX_CONSTANTS:
+        reasons.append(f"constants: {len(raw_constants)} > MAX_CONSTANTS "
+                       f"({MAX_CONSTANTS})")
+    for c in raw_constants:
+        if len(str(c.get("name") or "")) > MAX_NAME_CHARS:
+            reasons.append("constant name exceeds MAX_NAME_CHARS")
+            break
+    if len(candidate.source_quote or "") > MAX_QUOTE_CHARS:
+        reasons.append(f"source_quote exceeds MAX_QUOTE_CHARS "
+                       f"({MAX_QUOTE_CHARS})")
+    if len(candidate.evidence_refs or []) > MAX_EVIDENCE_REFS:
+        reasons.append(f"evidence_refs exceeds MAX_EVIDENCE_REFS "
+                       f"({MAX_EVIDENCE_REFS})")
+    if len(candidate.required_observations or []) > MAX_REQUIRED_OBSERVATIONS:
+        reasons.append("required_observations exceeds "
+                       f"MAX_REQUIRED_OBSERVATIONS ({MAX_REQUIRED_OBSERVATIONS})")
+    for obs in candidate.required_observations or []:
+        if len(str(obs)) > MAX_NAME_CHARS:
+            reasons.append("observation name exceeds MAX_NAME_CHARS")
+            break
+    if len(candidate.right_name or "") > MAX_NAME_CHARS:
+        reasons.append("right_name exceeds MAX_NAME_CHARS")
+
+    # Trigger: one bounded walk stops at the first depth/node violation.
+    nodes = 0
+    stack = [(candidate.trigger_spec, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        nodes += 1
+        if nodes > MAX_TRIGGER_NODES or depth > MAX_TRIGGER_DEPTH:
+            reasons.append("trigger exceeds MAX_TRIGGER_DEPTH "
+                           f"({MAX_TRIGGER_DEPTH}) or MAX_TRIGGER_NODES "
+                           f"({MAX_TRIGGER_NODES})")
+            break
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                stack.append((child, depth + 1))
+
+    calc = candidate.calculation_spec
+    if isinstance(calc, dict):
+        for key in ("tiers", "bands"):
+            seq = calc.get(key)
+            if isinstance(seq, list) and len(seq) > MAX_TIERS:
+                reasons.append(f"{key}: {len(seq)} > MAX_TIERS ({MAX_TIERS})")
+        ops = calc.get("operands")
+        if isinstance(ops, list) and len(ops) > MAX_OPERANDS:
+            reasons.append(f"operands: {len(ops)} > MAX_OPERANDS ({MAX_OPERANDS})")
+    return reasons
 
 
 def compile_candidate_right(candidate, document_text: str = ""
@@ -314,6 +480,11 @@ def compile_candidate_right(candidate, document_text: str = ""
     """verified candidate + grounded constants -> CompiledRight; else a
     CompileFailure with status needs_review|unsupported|legacy_routed."""
     cid = candidate.candidate_id
+    limit_reasons = _check_limits(candidate)
+    if limit_reasons:
+        return CompileFailure(candidate_id=cid,
+                              status=CandidateStatus.rejected.value,
+                              reasons=limit_reasons)
     if candidate.status != CandidateStatus.verified.value:
         return CompileFailure(candidate_id=cid,
                               status=CandidateStatus.needs_review.value,
@@ -331,10 +502,15 @@ def compile_candidate_right(candidate, document_text: str = ""
         name = (c.get("name") or "").strip()
         if not name:
             continue
+        kind = c.get("kind") or "amount"
+        value = _literal_constant_value(c.get("value"), kind)
+        if value is None and kind != "date":
+            reasons.append(f"constant {name}: value '{c.get('value')}' is not "
+                           "a valid numeric literal")
         constants[name] = {
             "name": name,
-            "value": _literal_constant_value(c.get("value"), c.get("kind") or "amount"),
-            "kind": c.get("kind") or "amount",
+            "value": value,
+            "kind": kind,
             "percent_token": "%" in str(c.get("value") or ""),
             "currency": None,
             "evidence_ref": candidate.evidence_refs[0]
@@ -343,12 +519,14 @@ def compile_candidate_right(candidate, document_text: str = ""
     if not constants:
         reasons.append("no contractual constants declared")
     constant_names = set(constants)
+    constant_kinds = {n: c["kind"] for n, c in constants.items()}
 
     trigger = _normalize_trigger(candidate.trigger_spec)
     if trigger is None:
         reasons.append("no structured trigger")
     else:
-        _validate_trigger(trigger, constant_names, reasons)
+        _validate_trigger(trigger, constant_names, reasons,
+                          constant_kinds=constant_kinds)
 
     calc = candidate.calculation_spec
     if calc is None:
@@ -361,9 +539,10 @@ def compile_candidate_right(candidate, document_text: str = ""
         rate_refs = []
         if isinstance(calc, dict):
             rate_refs.append(calc.get("rate"))
-            for t in calc.get("tiers") or []:
-                if isinstance(t, dict):
-                    rate_refs.append(t.get("rate"))
+            for seq_key in ("tiers", "bands"):
+                for t in calc.get(seq_key) or []:
+                    if isinstance(t, dict):
+                        rate_refs.append(t.get("rate"))
         for ref in rate_refs:
             if _is_const_ref(ref):
                 c = constants.get(ref["constant"])
@@ -371,10 +550,13 @@ def compile_candidate_right(candidate, document_text: str = ""
                         c["value"], float) and c["value"] > 1.5:
                     c["value"] = c["value"] / 100.0
 
-    # constant grounding against the quoted source text
+    # constant grounding against the quoted source text (scanned once)
+    capped_quote = (candidate.source_quote or "")[:MAX_QUOTE_CHARS]
+    quote_numbers = numbers_in_text(capped_quote)
     for name, c in constants.items():
         if c["value"] is None or not ground_constant(
-                name, c["value"], c["kind"], candidate.source_quote):
+                name, c["value"], c["kind"], candidate.source_quote,
+                quote_numbers=quote_numbers):
             reasons.append(f"constant {name}={c['value']} not found in cited source")
 
     if not candidate.required_observations:

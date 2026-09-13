@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from .models import EvaluationResult, RightSpec
 from ..money import quantize, normalize_currency, is_supported
+from .compiler import MAX_CONSTANTS, MAX_TIERS
 
 
 def _parse_date(value) -> date | None:
@@ -118,6 +119,31 @@ def _eval_trigger(node: dict, ctx: _Ctx) -> bool | None:
     if op == "event_exists":
         return node["observation"] in ctx.by_type
 
+    if op.startswith("observed_date_"):
+        obs = ctx.by_type.get(node["observation"])
+        obs_date = None
+        if obs:
+            for key in ("date", "observed_at", "value"):
+                if obs.get(key) is not None:
+                    obs_date = _parse_date(obs[key])
+                    if obs_date is not None:
+                        break
+        target = _parse_date(ctx.const_or_date(node.get("value")))
+        if obs_date is None or target is None:
+            ctx.trace[node["observation"]] = "missing observation"
+            return None
+        result = {
+            "observed_date_before": obs_date < target,
+            "observed_date_on_or_before": obs_date <= target,
+            "observed_date_after": obs_date > target,
+            "observed_date_on_or_after": obs_date >= target,
+        }[op]
+        ctx.trace[node["observation"]] = {
+            "observed": obs_date.isoformat(), "op": op,
+            "threshold": node.get("value"), "result": result,
+        }
+        return result
+
     observed = ctx.obs_amount(node["observation"])
     if observed is None:
         observed = ctx.obs_quantity(node["observation"])
@@ -167,7 +193,76 @@ def _operand(ref, ctx: _Ctx) -> float | None:
     return None
 
 
+def _tier_rate(tiers: list[dict], value: float, ctx: _Ctx) -> float | None:
+    """Resolve the rate of the single band containing `value` (tiers sorted
+    by up_to ascending; a None up_to is the open last band)."""
+    resolved = []
+    for t in tiers:
+        up_to = ctx.const(t.get("up_to")) if t.get("up_to") else None
+        rate = ctx.const(t["rate"])
+        if rate is None:
+            return None
+        resolved.append((up_to, rate))
+    resolved.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0.0))
+    for up_to, rate in resolved:
+        if up_to is None or value <= up_to:
+            return rate
+    return resolved[-1][1] if resolved else None
+
+
+def _apply_modifiers(calc: dict, amount: float | None, ctx: _Ctx) -> float | None:
+    if amount is None:
+        return None
+    cap_ref = calc.get("cap")
+    if cap_ref is not None:
+        cap = ctx.const(cap_ref)
+        if cap is None:
+            return None
+        amount = min(amount, cap)
+    floor_ref = calc.get("floor")
+    if floor_ref is not None:
+        floor = ctx.const(floor_ref)
+        if floor is None:
+            return None
+        amount = max(amount, floor)
+    return amount
+
+
 def _calc_amount(calc: dict, ctx: _Ctx) -> float | None:
+    ctype = calc["type"]
+    if ctype == "min_of" or ctype == "max_of":
+        values = [_operand(ref, ctx) for ref in calc.get("operands") or []]
+        if not values or any(v is None for v in values):
+            return _apply_modifiers(calc, None, ctx)
+        return _apply_modifiers(
+            calc, min(values) if ctype == "min_of" else max(values), ctx)
+    if ctype == "volume_tiered":
+        qty = ctx.obs_quantity(calc["quantity_observation"])
+        if qty is None:
+            return _apply_modifiers(calc, None, ctx)
+        above = ctx.const(calc.get("above")) if calc.get("above") else 0.0
+        if above is None:
+            return _apply_modifiers(calc, None, ctx)
+        effective = max(qty - above, 0.0)
+        rate = _tier_rate(calc.get("tiers") or [], effective, ctx)
+        if rate is None:
+            return _apply_modifiers(calc, None, ctx)
+        return _apply_modifiers(calc, effective * rate, ctx)
+    if ctype == "banded_percentage_of":
+        band_value = ctx.obs_amount(calc["band_observation"])
+        if band_value is None:
+            band_value = ctx.obs_quantity(calc["band_observation"])
+        base = ctx.obs_amount(calc["base_observation"])
+        if band_value is None or base is None:
+            return _apply_modifiers(calc, None, ctx)
+        rate = _tier_rate(calc.get("bands") or [], band_value, ctx)
+        if rate is None:
+            return _apply_modifiers(calc, None, ctx)
+        return _apply_modifiers(calc, rate * base, ctx)
+    return _apply_modifiers(calc, _primitive_amount(calc, ctx), ctx)
+
+
+def _primitive_amount(calc: dict, ctx: _Ctx) -> float | None:
     ctype = calc["type"]
     if ctype == "fixed_amount":
         return ctx.const(calc["amount"])
@@ -224,6 +319,16 @@ def evaluate_right(spec, observations: list[dict], period: str, *,
     if isinstance(spec, dict):
         spec = RightSpec.from_dict(spec)
     now = evaluated_at or datetime.now(timezone.utc).isoformat()
+    calc = spec.calculation or {}
+    limits_hit = (
+        len(spec.contractual_constants or []) > MAX_CONSTANTS
+        or len(calc.get("tiers") or []) > MAX_TIERS
+        or len(calc.get("bands") or []) > MAX_TIERS)
+    if limits_hit:
+        return EvaluationResult(right_id=spec.right_id, period=period,
+                                currency=spec.currency, evaluated_at=now,
+                                status="error",
+                                calculation_trace={"reason": "spec_limits_exceeded"})
     ctx = _Ctx(spec, observations, period)
 
     missing = [o for o in (spec.required_observations or [])
