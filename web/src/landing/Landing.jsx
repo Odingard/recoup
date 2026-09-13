@@ -5,7 +5,7 @@ const PILOT_TO = 'andre.byrd@odingard.com'
 
 const PIPELINE = [
   'Agreement',
-  'AI Rights Discovery',
+  'Rights Discovery',
   'Evidence Verification',
   'Deterministic Calculation',
   'Recovery Case',
@@ -27,9 +27,9 @@ const FINDS = [
 ]
 
 const STEPS = [
-  ['Discover', 'AI reads agreements and discovers financial rights — including rights not hardcoded into a predefined rule list.'],
+  ['Discover', 'Recoup reads agreements and discovers financial rights — including rights not hardcoded into a predefined rule list.'],
   ['Verify', 'Every candidate right must trace to authoritative source language and supporting evidence. No quote, no right.'],
-  ['Calculate', 'Deterministic code calculates money. The LLM does not decide the amount owed.'],
+  ['Calculate', 'Deterministic code calculates money. Discovery never decides the amount owed.'],
   ['Recover', 'Recoup prepares the evidence-backed recovery case and recommended action for human approval.'],
 ]
 
@@ -115,15 +115,12 @@ result   credit         → $15,000.00`}</pre>
 }
 
 function PilotForm() {
-  const [f, setF] = useState({ company: '', name: '', email: '', acv: '', billing: '', contracts: '' })
+  const [f, setF] = useState({ company: '', name: '', email: '' })
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   const body = [
     `Company: ${f.company}`,
     `Name: ${f.name}`,
     `Work email: ${f.email}`,
-    `Approx. annual contract revenue: ${f.acv}`,
-    `Billing system: ${f.billing}`,
-    `Approx. active contracts: ${f.contracts}`,
   ].join('\n')
   const href = `mailto:${PILOT_TO}?subject=${encodeURIComponent('Recoup pilot request — ' + (f.company || 'company'))}&body=${encodeURIComponent(body)}`
   return (
@@ -131,9 +128,6 @@ function PilotForm() {
       <label>Company<input required value={f.company} onChange={set('company')} autoComplete="organization" /></label>
       <label>Name<input required value={f.name} onChange={set('name')} autoComplete="name" /></label>
       <label>Work email<input required type="email" value={f.email} onChange={set('email')} autoComplete="email" /></label>
-      <label>Approx. annual contract revenue<input value={f.acv} onChange={set('acv')} placeholder="$" /></label>
-      <label>Billing system<input value={f.billing} onChange={set('billing')} placeholder="Stripe, QuickBooks, Xero, spreadsheets…" /></label>
-      <label>Approx. active contracts<input value={f.contracts} onChange={set('contracts')} inputMode="numeric" /></label>
       <button type="submit" className="btn">Run a Pilot</button>
       <p className="fine">For CFOs, Controllers, Finance, RevOps, and Billing Operations at contract-heavy B2B companies.</p>
     </form>
@@ -163,16 +157,16 @@ export default function Landing() {
       <main>
         <section className="hero wrap">
           <div className="hero-copy">
-            <div className="kicker">AI-native financial rights recovery</div>
+            <div className="kicker">Financial rights recovery</div>
             <h1>Find the money you're already entitled to.</h1>
-            <p className="lede">Recoup uses AI to discover financial rights hidden across contracts and billing data, verifies each right against source evidence, calculates the value deterministically, and helps your team recover it.</p>
+            <p className="lede">Recoup discovers financial rights hidden across contracts and billing data, verifies each right against source evidence, calculates the value deterministically, and helps your team recover it.</p>
             <p className="drift">Contracts, amendments, usage, and billing systems drift apart. The money that falls between them gets missed — not stolen, just never noticed.</p>
             <div className="hero-cta">
               <a href="#pilot" className="btn">Run a Pilot</a>
               <a href="#how" className="btn ghost">See How Recoup Works</a>
             </div>
             <p className="paynote"><strong>20% of realized recovered value.</strong> No recovery, no success fee.</p>
-            <p className="trustline">AI discovers. Evidence verifies. Deterministic systems calculate. Humans approve.</p>
+            <p className="trustline">Recoup discovers. Evidence verifies. Deterministic systems calculate. Humans approve.</p>
           </div>
           <div className="hero-visual">
             <Pipeline />
@@ -205,7 +199,7 @@ export default function Landing() {
 
         <section className="trust" id="trust">
           <div className="wrap">
-            <div className="h2">The AI never gets to invent the money.</div>
+            <div className="h2">Nobody gets to invent the money.</div>
             <p className="sub">Every recoverable dollar traces end to end. Discovery is open-ended; calculation is closed, deterministic, and reviewable.</p>
             <Pipeline compact />
             <div className="trace">
