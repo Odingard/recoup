@@ -338,20 +338,22 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             )
         elif prorated:
             pass
-        elif period_d and period_end and period_d >= esc_date:
-            steps = (1 + (period_d.year - esc_date.year)
-                     - (1 if (period_d.month, period_d.day) < (esc_date.month, esc_date.day) else 0))
-            if esc_date.day != 1:
-                steps = period_d.year - esc_date.year
-                anniversary = esc_date.replace(year=period_d.year)
-                if anniversary <= period_d:
-                    anniversary = anniversary.replace(year=anniversary.year + 1)
-                if period_d < anniversary <= period_end:
-                    _needs_review(
-                        needs_review, contract, "escalator_effective_date",
-                        f"escalator anniversary {anniversary} falls mid-period {period}; "
-                        "partial-period escalation needs manual confirmation")
-                    steps = None
+        elif period_end and period_end >= esc_date:
+            # Effective date counts as step 1 (same as day-01 semantics);
+            # step count is evaluated against period_end.
+            steps = (1 + (period_end.year - esc_date.year)
+                     - (1 if (period_end.month, period_end.day)
+                        < (esc_date.month, esc_date.day) else 0))
+            try:
+                ann = esc_date.replace(year=esc_date.year + steps - 1)
+            except ValueError:  # Feb 29 anniversaries resolve to Feb 28
+                ann = esc_date.replace(year=esc_date.year + steps - 1, day=28)
+            if ann.day != 1 and period_d < ann <= period_end:
+                _needs_review(
+                    needs_review, contract, "escalator_effective_date",
+                    f"escalator anniversary {ann} falls mid-period {period}; "
+                    "partial-period escalation needs manual confirmation")
+                steps = None
             if steps is not None:
                 expected_base = minimum * (1 + esc) ** steps
                 baseline = max(base, minimum)
