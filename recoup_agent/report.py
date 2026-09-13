@@ -7,6 +7,8 @@ from __future__ import annotations
 import html
 import io
 
+from .money import quantize
+
 FEE_PCT = 0.20
 
 _LEAK_LABELS = {
@@ -45,7 +47,7 @@ def build_report(findings_by_period: dict[str, list[dict]],
 
     customers: dict[str, dict] = {}
     for (cid, ftype), fs in grouped.items():
-        total = round(sum(f["monthly_recoverable"] for f in fs), 2)
+        total = quantize(sum(f["monthly_recoverable"] for f in fs))
         row = {
             "amount": total,
             "leak_type": _LEAK_LABELS.get(ftype, ftype),
@@ -60,7 +62,7 @@ def build_report(findings_by_period: dict[str, list[dict]],
             "total": 0.0,
             "rows": [],
         })
-        entry["total"] = round(entry["total"] + total, 2)
+        entry["total"] = quantize(entry["total"] + total)
         entry["rows"].append(row)
 
     review_items = [{
@@ -83,7 +85,7 @@ def build_report(findings_by_period: dict[str, list[dict]],
 
     ordered = sorted(customers.values(), key=lambda c: c["total"], reverse=True)
     return {
-        "headline_total": round(sum(c["total"] for c in ordered), 2),
+        "headline_total": quantize(sum(c["total"] for c in ordered)),
         "finding_count": sum(len(c["rows"]) for c in ordered),
         "customers": ordered,
         "needs_review": review_items,

@@ -491,11 +491,13 @@ function App() {
       const body = action === 'reject'
         ? { status: 'rejected', reason: 'Reviewed in dashboard' }
         : undefined
-      await apiRequest(`/findings/${findingId}/${endpoint}`, {
+      const result = await apiRequest(`/findings/${findingId}/${endpoint}`, {
         method: 'POST',
         body,
       })
-      setStatusMessage(action === 'approve' ? 'Finding approved.' : 'Finding rejected.')
+      setStatusMessage(result.status !== 'approved' && result.status !== 'rejected'
+        ? (result.message || 'Sample mode is read-only; approval was not recorded.')
+        : (action === 'approve' ? 'Finding approved.' : 'Finding rejected.'))
       await refreshFindings()
     } catch (error) {
       console.error(error)

@@ -7,6 +7,7 @@ import html
 import io
 
 from .report import _LEAK_LABELS
+from .money import quantize
 
 _COLLECTIBLE_STATUSES = {"approved", "invoiced", "disputed"}
 
@@ -29,14 +30,14 @@ def build_trueup(customer_id: str, findings: list[dict], contracts: list[dict],
         rows.append({
             "period": f.get("period", ""),
             "leak_type": _LEAK_LABELS.get(f.get("type"), f.get("type", "")),
-            "amount": round(float(f.get("monthly_recoverable") or 0), 2),
+            "amount": quantize(float(f.get("monthly_recoverable") or 0)),
             "clause_text": f.get("clause_text") or f.get("provenance") or "",
             "math": f.get("math") or f.get("detail", ""),
             "term": f.get("term") or f.get("clause_ref") or "",
             "status": f.get("status", "open"),
             "invoice_ref": (f.get("corrective_invoice") or {}).get("ref") or None,
         })
-    total = round(sum(r["amount"] for r in rows), 2)
+    total = quantize(sum(r["amount"] for r in rows))
     periods = sorted({r["period"] for r in rows if r["period"]})
     periods_str = ", ".join(periods[:-1]) + f" and {periods[-1]}" if len(periods) > 1 else (periods[0] if periods else "the billing periods covered")
 

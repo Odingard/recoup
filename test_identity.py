@@ -48,11 +48,15 @@ def test_resolver_unmatched_returns_none():
 
 def test_resolver_ambiguous_returns_none():
     contracts = _CONTRACTS + [
-        {"customer_id": "sterling_cooper", "customer_name": "Sterling Cooper"},
+        {"customer_id": "sterling_dental_llc", "customer_name": "Sterling Dental LLC"},
     ]
     r = CustomerResolver(contracts)
+    # Suffix-stripped key "sterling_dental" is shared by two contracts.
+    assert r.resolve("Sterling Dental Inc.") is None
+    assert "ambiguous" in r.explain("Sterling Dental Inc.")
+    # No first-token/prefix matching: "sterling" alone never resolves.
     assert r.resolve("sterling") is None
-    assert "ambiguous" in r.explain("sterling")
+    assert "no contract matches" in r.explain("sterling")
 
 
 def test_unmatched_csv_label_lands_in_needs_review(tmp_path):

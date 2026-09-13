@@ -31,3 +31,4 @@ class NormalizedInvoice:
     amount_billed: float
     status: str
     line_items: List[dict]
+    currency: str | None = None

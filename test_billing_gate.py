@@ -234,8 +234,13 @@ def test_sync_recoveries_paid_invoice(monkeypatch):
                         lambda _a: {"stripe_customer_id": "cus_1", "payment_method_id": "pm_1"})
     status_calls = []
     field_calls = []
-    monkeypatch.setattr(api.db, "update_finding_status",
-                        lambda *a, **k: status_calls.append(a[:3]))
+    def _transition(a, fid, new_status, event_name, fields=None):
+        status_calls.append((a, fid, new_status))
+        finding["status"] = new_status
+        if fields:
+            finding.update(fields)
+        return dict(finding)
+    monkeypatch.setattr(api.db, "transition_finding_status", _transition)
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda *a, **k: field_calls.append(a[1:]))
     monkeypatch.setattr(api.db, "get_recovery_events", lambda *a, **k: [])

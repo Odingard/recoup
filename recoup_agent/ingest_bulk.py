@@ -21,6 +21,7 @@ from .normalizer import normalize_contract_entitlements
 CONTRACT_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 MAX_ZIP_FILES = 500
 MAX_ZIP_BYTES = 200 * 1024 * 1024  # 200 MB uncompressed
+MAX_ZIP_MEMBER_BYTES = 25 * 1024 * 1024
 
 
 @dataclass
@@ -49,10 +50,16 @@ def expand_zip(name: str, content: bytes) -> tuple[list[tuple[str, bytes]], str 
         if path.suffix.lower() == ".zip":
             items.append((str(path), b""))  # nested zip: flagged, not expanded
             continue
+        if info.file_size > MAX_ZIP_MEMBER_BYTES:
+            return [], f"member {info.filename} exceeds 25 MB"
         total += info.file_size
         if len(items) >= MAX_ZIP_FILES or total > MAX_ZIP_BYTES:
             return [], f"archive exceeds limits ({MAX_ZIP_FILES} files / 200 MB)"
-        items.append((str(path), zf.read(info)))
+        with zf.open(info) as fh:
+            data = fh.read(MAX_ZIP_MEMBER_BYTES + 1)
+        if len(data) > MAX_ZIP_MEMBER_BYTES:
+            return [], f"member {info.filename} exceeds 25 MB"
+        items.append((str(path), data))
     return items, None
 
 

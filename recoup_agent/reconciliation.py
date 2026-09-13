@@ -14,13 +14,14 @@ Four leakage rules:
 
 Line hygiene: prorated invoices skip rules 1 and 4 entirely; tax lines are
 excluded from base; credits/refunds are kept out of discounts_applied and
-surface as a needs_review note when other findings exist.
+always surface as a needs_review note (never netted into findings).
 """
 from __future__ import annotations
-from datetime import date
+from datetime import date, timedelta
 
 from .book_loader import match_discount
 from .line_roles import SEAT_RE
+from .money import is_supported, normalize_currency, quantize
 
 CONFIDENCE_THRESHOLD = 0.85
 
@@ -105,14 +106,15 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             _needs_review(
                 needs_review, contract, term or clause_ref,
                 f"{title}: computed ${amount:,.2f}/mo but no contract clause quote could be cited to ground it",
-                extra={"amount": round(amount, 2)},
+                extra={"amount": quantize(amount)},
             )
             return
         finding = {
             "finding_id": f"F-{cid.upper()}-{seq:03d}",
             "customer_id": cid, "customer_name": cname,
             "type": ftype, "title": title,
-            "monthly_recoverable": round(float(amount), 2),
+            "monthly_recoverable": quantize(amount),
+            "currency": "USD",
             "clause_ref": clause_ref, "detail": detail,
             "math": math, "clause_text": clause_text, "provenance": clause_text,
             "period": period, "confidence_score": round(confidence, 4),
@@ -126,7 +128,50 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         seq += 1
 
     period_d = _parse(period + "-01")
-    findings_before = len(findings)
+    period_end = (date(period_d.year + (period_d.month == 12),
+                       1 if period_d.month == 12 else period_d.month + 1, 1)
+                  if period_d else None)
+    period_end = (period_end.replace(day=1) - timedelta(days=1)
+                  if period_end else None)
+
+    def _surface_credits() -> None:
+        credits = invoice.get("credits_applied") or []
+        if not credits:
+            return
+        total = sum(float(c.get("amount", 0)) for c in credits)
+        descriptions = "; ".join(c.get("description", "") for c in credits)
+        _needs_review(
+            needs_review, contract, "credits_applied",
+            f"${total:,.2f} in credits/refunds this period ({descriptions}); "
+            "confirm whether they offset a finding or are an unlinked credit/refund",
+            extra={"amount": quantize(total)},
+        )
+
+    inv_ccy = normalize_currency(invoice.get("currency"))
+    con_ccy = normalize_currency(contract.get("currency"))
+    if (invoice.get("currency_mixed")
+            or (invoice.get("currency") and not inv_ccy)
+            or (contract.get("currency") and not con_ccy)
+            or (inv_ccy and not is_supported(inv_ccy))
+            or (con_ccy and not is_supported(con_ccy))
+            or (inv_ccy and con_ccy and inv_ccy != con_ccy)):
+        _needs_review(needs_review, contract, "currency",
+                      "invoice and contract currencies are missing, unsupported, mixed, or disagree")
+        _surface_credits()
+        return findings
+    eff = _parse(contract.get("effective_date") or contract.get("term_start"))
+    term_end = _parse(contract.get("term_end"))
+    if eff and period_end and period_end < eff:
+        _needs_review(needs_review, contract, "effective_date",
+                      f"period {period} precedes contract effective date {eff}")
+        _surface_credits()
+        return findings
+    if term_end and period_d and period_d > term_end and not contract.get("auto_renew_months"):
+        _needs_review(needs_review, contract, "term_end",
+                      f"contract term ended {contract['term_end']}; invoices continue with no "
+                      "auto-renewal clause — confirm renewal terms/rates")
+        _surface_credits()
+        return findings
 
     # Prorated/partial-period invoices: minimum and escalator checks are
     # meaningless for a partial month — record a review note and skip them.
@@ -181,7 +226,11 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     else:
         rate_conf = _confidence(contract, "overage_rate")
         rate_term = "overage_rate"
-    if included is None or (rate is None and not tiers) or used is None or billed_overage is None or min(included_conf, rate_conf) < CONFIDENCE_THRESHOLD:
+    if included is not None and included < 0:
+        _needs_review(needs_review, contract, "included_units", "negative usage quantity")
+    elif used is not None and used < 0:
+        _needs_review(needs_review, contract, "included_units/overage", "negative usage quantity")
+    elif included is None or (rate is None and not tiers) or used is None or billed_overage is None or min(included_conf, rate_conf) < CONFIDENCE_THRESHOLD:
         _needs_review(
             needs_review,
             contract,
@@ -289,12 +338,28 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             )
         elif prorated:
             pass
-        elif period_d and period_d >= esc_date:
-            steps = (1 + (period_d.year - esc_date.year)
-                     - (1 if (period_d.month, period_d.day) < (esc_date.month, esc_date.day) else 0))
-            expected_base = minimum * (1 + esc) ** steps
-            baseline = max(base, minimum)
-            amount = expected_base - baseline
+        elif period_end and period_end >= esc_date:
+            # Effective date counts as step 1 (same as day-01 semantics);
+            # step count is evaluated against period_end.
+            steps = (1 + (period_end.year - esc_date.year)
+                     - (1 if (period_end.month, period_end.day)
+                        < (esc_date.month, esc_date.day) else 0))
+            try:
+                ann = esc_date.replace(year=esc_date.year + steps - 1)
+            except ValueError:  # Feb 29 anniversaries resolve to Feb 28
+                ann = esc_date.replace(year=esc_date.year + steps - 1, day=28)
+            if ann.day != 1 and period_d < ann <= period_end:
+                _needs_review(
+                    needs_review, contract, "escalator_effective_date",
+                    f"escalator anniversary {ann} falls mid-period {period}; "
+                    "partial-period escalation needs manual confirmation")
+                steps = None
+            if steps is not None:
+                expected_base = minimum * (1 + esc) ** steps
+                baseline = max(base, minimum)
+                amount = expected_base - baseline
+            else:
+                amount = 0
             if amount > 0.01:
                 if steps == 1:
                     math = (f"${minimum:,.0f}/mo × (1 + {esc:.0%}) = ${expected_base:,.0f}/mo "
@@ -317,13 +382,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     # Rule 5 - post-term billing (review only, no dollars)
     term_end = _parse(contract.get("term_end"))
     if term_end and period_d and period_d > term_end:
-        if not contract.get("auto_renew_months"):
-            _needs_review(
-                needs_review, contract, "term_end",
-                f"contract term ended {contract['term_end']}; invoices continue with no "
-                "auto-renewal clause — confirm renewal terms/rates",
-            )
-        elif esc and esc_date_raw is None:
+        if contract.get("auto_renew_months") and esc and esc_date_raw is None:
             _needs_review(
                 needs_review, contract, "term_end",
                 f"contract term ended {contract['term_end']} and auto-renews; escalator has no "
@@ -347,6 +406,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     # Rule 7 - seats underbilled
     committed_seats = contract.get("committed_seats")
     seat_price = contract.get("seat_price")
+    if committed_seats is not None and committed_seats < 0:
+        _needs_review(needs_review, contract, "committed_seats", "negative seat quantity")
+        committed_seats = None
     if committed_seats and seat_price:
         billed_seats = invoice.get("seat_units")
         usage_metric = (usage.get("metric") or "").lower()
@@ -361,8 +423,14 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 "line found on invoice",
             )
         else:
-            expected_seats = max(committed_seats, actual_seats or 0)
-            if expected_seats - billed_seats >= 1:
+            if billed_seats < 0:
+                _needs_review(needs_review, contract, "seat_units", "negative seat quantity")
+                billed_seats = None
+            if billed_seats is None:
+                expected_seats = 0
+            else:
+                expected_seats = max(committed_seats, actual_seats or 0)
+            if billed_seats is not None and expected_seats - billed_seats >= 1:
                 short = expected_seats - billed_seats
                 amount = short * seat_price
                 detail_bits = f"committed {committed_seats:g}" + (
@@ -381,17 +449,6 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     # Credits/refunds never offset base or discounts_applied; if this customer
     # produced findings this period, flag the credits for a human to confirm
     # they don't already cover them.
-    credits = invoice.get("credits_applied") or []
-    if credits and len(findings) > findings_before:
-        total = sum(float(c.get("amount", 0)) for c in credits)
-        descriptions = "; ".join(c.get("description", "") for c in credits)
-        _needs_review(
-            needs_review,
-            contract,
-            "credits_applied",
-            f"${total:,.2f} in credits/refunds this period ({descriptions}); "
-            "confirm they do not already offset the findings above",
-            extra={"amount": round(total, 2)},
-        )
+    _surface_credits()
 
     return findings

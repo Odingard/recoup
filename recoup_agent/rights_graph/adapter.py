@@ -14,6 +14,7 @@ from typing import Protocol
 from ..book_loader import match_discount
 from ..reconciliation import CONFIDENCE_THRESHOLD, minimum_for_period, reconcile
 from .ids import stable_id
+from ..money import quantize
 from .models import (
     AuthoritySource, Discrepancy, EvaluationMode, EvidenceReference,
     ExpectedState, FinancialRight, Observation, RecoveryAction,
@@ -88,7 +89,7 @@ def _proj_committed_minimum(finding, contract, invoice, period, obs):
 def _proj_unbilled_overage(finding, contract, invoice, period, obs):
     """Engine identity: amount = expected_overage - billed_overage."""
     actual = invoice.get("overage_charge") or 0.0
-    expected = round(actual + finding["monthly_recoverable"], 2)
+    expected = quantize(actual + finding["monthly_recoverable"])
     return expected, actual, {
         "relation": "expected_overage = billed_overage + recoverable (engine identity)"}
 

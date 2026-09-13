@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..rights_graph.ids import stable_id
+from ..money import quantize
 from .recoup_billing import SUCCESS_FEE_PCT
 
 RECOVERY_BASES = [
@@ -95,14 +96,14 @@ def new_realization(account_id, finding: dict, *, recovery_basis: str,
         discrepancy_id=discrepancy_id or finding.get("discrepancy_id"),
         event_type="realization",
         recovery_basis=recovery_basis,
-        realized_value=round(value, 2),
+        realized_value=quantize(value),
         currency=currency or "USD",
         realized_at=realized_at,
         external_reference=external_reference,
         evidence=evidence or {},
-        feeable_value=round(value, 2),
+        feeable_value=quantize(value),
         fee_percentage=SUCCESS_FEE_PCT,
-        fee_amount=round(value * SUCCESS_FEE_PCT, 2),
+        fee_amount=quantize(value * SUCCESS_FEE_PCT),
         fee_status="unbilled",
         reversal_amount=0.0,
         created_at=_now(),
@@ -122,7 +123,7 @@ def new_reversal(account_id, original: RecoveryRealizationEvent, *,
         (e.reversal_amount or 0)
         for e in (existing_events or [])
         if getattr(e, "reverses_event_id", None) == original.recovery_event_id)
-    if amount > round(original.realized_value - already_reversed, 2) + 1e-9:
+    if amount > quantize(original.realized_value - already_reversed) + 1e-9:
         raise ValueError("reversal_amount exceeds remaining realized value")
     reversed_at = reversed_at or _now()
     event_id = stable_id(
@@ -143,11 +144,11 @@ def new_reversal(account_id, original: RecoveryRealizationEvent, *,
         realized_at=reversed_at,
         external_reference=reversal_reference,
         evidence={"reason": reason} if reason else {},
-        feeable_value=-round(amount, 2),
+        feeable_value=-quantize(amount),
         fee_percentage=SUCCESS_FEE_PCT,
-        fee_amount=-round(amount * SUCCESS_FEE_PCT, 2),
+        fee_amount=-quantize(amount * SUCCESS_FEE_PCT),
         fee_status=fee_status,
-        reversal_amount=round(amount, 2),
+        reversal_amount=quantize(amount),
         reversal_reference=reversal_reference,
         reverses_event_id=original.recovery_event_id,
         created_at=_now(),
@@ -183,7 +184,7 @@ def net_realized(events: list) -> float:
             total -= get("reversal_amount") or 0
         else:
             total += get("realized_value") or 0
-    return round(total, 2)
+    return quantize(total)
 
 
 def net_fee(events: list) -> float:
@@ -191,4 +192,4 @@ def net_fee(events: list) -> float:
     for e in events or []:
         get = e.get if isinstance(e, dict) else lambda k, d=None: getattr(e, k, d)
         total += get("fee_amount") or 0
-    return round(total, 2)
+    return quantize(total)

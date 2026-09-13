@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timezone
 
 from .. import db as _db
+from ..money import quantize, to_cents
 
 RECOUP_BILLING_KEY_ENV = "RECOUP_BILLING_STRIPE_API_KEY"
 SUCCESS_FEE_PCT = 0.20
@@ -69,7 +70,7 @@ def create_success_fee_invoice(
             if customer_email
             else stripe.Customer.create(api_key=key)
         )
-        amount_cents = int(round(amount_dollars * 100))
+        amount_cents = to_cents(amount_dollars)
         invoice = stripe.Invoice.create(
             customer=customer.id,
             collection_method="send_invoice",
@@ -90,7 +91,7 @@ def create_success_fee_invoice(
             "status": "success",
             "invoice_id": invoice.id,
             "hosted_invoice_url": getattr(invoice, "hosted_invoice_url", None),
-            "amount": round(amount_dollars, 2),
+            "amount": quantize(amount_dollars),
             "current_month": current_month,
         }
     except Exception as exc:  # never bubble a 500 to the operator
@@ -190,7 +191,7 @@ def billing_status(account_id: str) -> dict:
 def charge_success_fee_for_finding(account_id: str, finding: dict, paid_amount: float) -> dict:
     """Legacy: charge 20% of a lump recovered amount. Kept for compatibility;
     the API now charges per realization event (charge_success_fee_for_event)."""
-    fee = round(paid_amount * SUCCESS_FEE_PCT, 2)
+    fee = quantize(paid_amount * SUCCESS_FEE_PCT)
     finding_id = finding.get("finding_id", "unknown")
     key = _billing_key()
     if key is None:
@@ -214,7 +215,7 @@ def charge_success_fee_for_finding(account_id: str, finding: dict, paid_amount: 
         stripe.InvoiceItem.create(
             customer=cust_id,
             invoice=invoice.id,
-            amount=int(round(fee * 100)),
+            amount=to_cents(fee),
             currency="usd",
             description=(f"Recoup success fee ({SUCCESS_FEE_PCT:.0%} of "
                          f"${paid_amount:,.2f} recovered — {finding.get('customer_name', '')})"),
@@ -236,7 +237,7 @@ def charge_success_fee_for_finding(account_id: str, finding: dict, paid_amount: 
 def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
     """Charge the stored card the fee on one realization event
     (event.fee_amount). Idempotent per (account, finding, event). Never raises."""
-    fee = round(event.fee_amount or 0, 2)
+    fee = quantize(event.fee_amount or 0)
     finding_id = finding.get("finding_id", "unknown")
     key = _billing_key()
     if key is None:
@@ -263,7 +264,7 @@ def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
         stripe.InvoiceItem.create(
             customer=cust_id,
             invoice=invoice.id,
-            amount=int(round(fee * 100)),
+            amount=to_cents(fee),
             currency="usd",
             description=(f"Recoup success fee ({SUCCESS_FEE_PCT:.0%} of "
                          f"${event.realized_value:,.2f} recovered "
@@ -303,7 +304,7 @@ def adjust_success_fee_for_reversal(account_id: str, original_event,
         import stripe
         note = stripe.CreditNote.create(
             invoice=invoice_id,
-            amount=int(round(fee_credit * 100)),
+            amount=to_cents(fee_credit),
             reason="order_change",
             memo=(f"Reversal of recovered value ({reversal_event.recovery_basis}) "
                   f"on finding {original_event.finding_id}: "
@@ -313,6 +314,6 @@ def adjust_success_fee_for_reversal(account_id: str, original_event,
             api_key=key,
         )
         return {"status": "adjusted", "credit_note_id": note.id,
-                "amount": round(fee_credit, 2)}
+                "amount": quantize(fee_credit)}
     except Exception as exc:
         return {"status": "error", "message": f"Fee adjustment failed: {exc}"}

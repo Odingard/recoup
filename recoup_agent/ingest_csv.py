@@ -14,6 +14,7 @@ from pathlib import Path
 from .book_loader import match_discount
 from .line_roles import SEAT_RE, classify_line
 from .identity import CustomerResolver
+from .money import normalize_currency
 
 
 class IngestError(ValueError):
@@ -37,6 +38,7 @@ COLUMN_ALIASES = {
                     "invoicenumber", "num", "invoice_number_", "doc_number"],
     "metric":      ["metric", "meter", "usage_type", "unit"],
     "status":      ["status", "state"],
+    "currency":    ["currency", "currency_code", "ccy"],
 }
 
 DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%b %d %Y", "%B %d %Y", "%b %d, %Y",
@@ -116,12 +118,16 @@ def _unresolved_review(resolver: CustomerResolver, label: str) -> dict:
 
 
 def _read_rows(path, *, where: str) -> tuple[list[str], list[dict]]:
-    with open(path, newline="") as fh:
-        reader = csv.DictReader(fh)
-        rows = [r for r in reader if any((v or "").strip() for v in r.values())]
-    if not reader.fieldnames or not rows:
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = reader.fieldnames
+            rows = [r for r in reader if any((v or "").strip() for v in r.values())]
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise IngestError(f"{where}: unable to read CSV: {exc}") from exc
+    if not fieldnames or not rows:
         raise IngestError(f"{where}: no data rows")
-    return list(reader.fieldnames), rows
+    return list(fieldnames), rows
 
 
 def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[dict]]:
@@ -129,7 +135,7 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
     where = str(path)
     header, rows = _read_rows(path, where=where)
     cols = resolve_columns(header, required=["customer", "amount"],
-                           optional=["period", "period_start", "description", "invoice_id", "status", "units"],
+                           optional=["period", "period_start", "description", "invoice_id", "status", "units", "currency"],
                            where=where)
     if "period" not in cols and "period_start" not in cols:
         raise IngestError(
@@ -170,6 +176,14 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             "tax_excluded": 0.0, "credits_applied": [],
             "prorated": False, "proration_amount": 0.0,
         })
+        if "currency" in cols and row.get(cols["currency"]):
+            ccy = normalize_currency(row.get(cols["currency"]))
+            if ccy:
+                prior = inv.get("currency")
+                if prior and prior != ccy:
+                    inv["currency_mixed"] = True
+                else:
+                    inv["currency"] = ccy
         if "invoice_id" in cols and row.get(cols["invoice_id"]) and "invoice_id" not in inv:
             inv["invoice_id"] = row[cols["invoice_id"]]
         inv["amount_billed"] += amount
@@ -191,8 +205,13 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             inv["base_charge"] += amount
         if "units" in cols and SEAT_RE.search(description):
             try:
-                inv["seat_units"] = inv.get("seat_units", 0.0) + float(
-                    (row.get(cols["units"]) or "0").replace(",", "").strip() or 0)
+                seat_units = float((row.get(cols["units"]) or "0").replace(",", "").strip() or 0)
+                if seat_units < 0:
+                    needs_review.append({"customer_id": cid, "customer_name": label,
+                                         "term": "seat_units",
+                                         "reason": f"negative seat quantity {seat_units:g} in row {idx}"})
+                else:
+                    inv["seat_units"] = inv.get("seat_units", 0.0) + seat_units
             except ValueError:
                 pass
 
@@ -229,6 +248,11 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
             units = float((row.get(cols["units"]) or "").replace(",", "").strip())
         except ValueError:
             raise IngestError(f"{where}: row {idx}: unparseable units '{row.get(cols['units'])}'")
+        if units < 0:
+            needs_review.append({"customer_id": cid, "customer_name": label,
+                                 "term": "usage_units",
+                                 "reason": f"negative usage quantity {units:g} in row {idx}"})
+            continue
         metric = (row.get(cols["metric"], "") if "metric" in cols else "") or ""
         if metric:
             per_customer_metrics.setdefault(cid, set()).add(metric)

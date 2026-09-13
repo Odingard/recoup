@@ -38,6 +38,7 @@ STRATEGIES = [
 
 _CALC_TYPES = Literal[
     "fixed_amount", "percentage_of", "per_unit", "difference", "tiered",
+    "volume_tiered", "banded_percentage_of", "min_of", "max_of",
     "none", "unsupported",
 ]
 
@@ -64,7 +65,9 @@ class DiscoveredRight(BaseModel):
             "{\"op\": \"lt\", \"observation\": \"<observation_type>\", "
             "\"value\": {\"constant\": \"<constant_name>\"}}. Allowed op "
             "values: eq, neq, gt, gte, lt, lte, between, and, or, "
-            "event_exists, date_reached, date_before. 'between' uses "
+            "event_exists, date_reached, date_before, "
+            "observed_date_before, observed_date_on_or_before, "
+            "observed_date_after, observed_date_on_or_after. 'between' uses "
             "\"low\"/\"high\" constant refs; 'and'/'or' use a \"children\" "
             "list of the same shape. The numeric operand is ALWAYS "
             "{\"constant\": name} referencing a declared constant — never an "
@@ -81,7 +84,17 @@ class DiscoveredRight(BaseModel):
             "{\"type\":\"difference\",\"minuend\":{\"constant\":n},"
             "\"subtrahend\":{\"observation\":\"<obs>\"}} | "
             "{\"type\":\"tiered\",\"quantity_observation\":\"<obs>\","
-            "\"tiers\":[{\"rate\":{\"constant\":n},\"up_to\":{\"constant\":n}}]}."))
+            "\"tiers\":[{\"rate\":{\"constant\":n},\"up_to\":{\"constant\":n}}]} | "
+            "{\"type\":\"volume_tiered\",\"quantity_observation\":\"<obs>\","
+            "\"tiers\":[{\"rate\":{\"constant\":n},\"up_to\":{\"constant\":n}}]} | "
+            "{\"type\":\"banded_percentage_of\",\"base_observation\":\"<obs>\","
+            "\"band_observation\":\"<obs>\",\"bands\":[{\"rate\":{"
+            "\"constant\":n},\"up_to\":{\"constant\":n}}]} | "
+            "{\"type\":\"min_of\",\"operands\":[{\"constant\":n},"
+            "{\"observation\":\"<obs>\"}]} | "
+            "{\"type\":\"max_of\",\"operands\":[...]}. Any calculation may "
+            "add \"cap\":{\"constant\":n} and/or \"floor\":{\"constant\":n}."
+            ))
     constants: List[DiscoveredConstant] = Field(default_factory=list)
     required_observations: List[str] = Field(default_factory=list)
     actual_observation: Optional[str] = Field(

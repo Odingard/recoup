@@ -105,6 +105,10 @@ def _wire(monkeypatch, store, *, billing_card=True, paid_status="paid",
         if fields:
             store.findings[(a, fid)].update(fields)
     monkeypatch.setattr(api.db, "update_finding_status", update_status)
+    monkeypatch.setattr(api.db, "transition_finding_status",
+                        lambda a, fid, status, ev, fields=None:
+                        update_status(a, fid, status, ev, fields) or
+                        dict(store.findings[(a, fid)]))
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda a, fid, fields, _ev:
                         store.findings[(a, fid)].update(fields))
