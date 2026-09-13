@@ -51,15 +51,28 @@ def is_verified(f: dict) -> bool:
             and bool(f.get("clause_text")) and bool(f.get("math")))
 
 
-def next_step(f: dict, realization_events: list[dict] | None) -> str:
+def next_step(f: dict, realization_events: list[dict] | None,
+              actions: list[dict] | None = None) -> str:
     status = f.get("status") or "open"
     if status == "open":
         return "Approve for recovery" if is_verified(f) else "Review evidence / confirm term"
-    if status == "approved":
-        return "Issue true-up / corrective invoice"
-    if status == "invoiced":
-        return "Follow up on payment"
-    if status == "disputed":
+    if status in {"approved", "invoiced", "disputed"}:
+        open_statuses = {a.get("status") for a in (actions or [])
+                         if a.get("status") in
+                         {"draft", "pending_approval", "approved", "sent",
+                          "awaiting_response"}}
+        if open_statuses & {"sent", "awaiting_response"}:
+            return "Await counterparty response"
+        if "approved" in open_statuses:
+            return "Execute approved action"
+        if "pending_approval" in open_statuses:
+            return "Approve recovery action"
+        if "draft" in open_statuses:
+            return "Submit for approval"
+        if status == "approved":
+            return "Prepare recovery action"
+        if status == "invoiced":
+            return "Follow up on payment"
         return "Resolve dispute"
     if status == "recovered":
         return ("Closed — verified realized" if realization_events
@@ -92,12 +105,16 @@ def _approval_state(status: str) -> str:
 def build_command_center(findings: list[dict], recovery_events: list[dict],
                          audit_log: list[dict], contracts: list[dict],
                          *, now: datetime | None = None,
-                         assurance_status: dict | None = None) -> dict:
+                         assurance_status: dict | None = None,
+                         recovery_actions: list[dict] | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
 
     events_by_finding: dict[str, list[dict]] = {}
     for e in recovery_events or []:
         events_by_finding.setdefault(e.get("finding_id"), []).append(e)
+    actions_by_finding: dict[str, list[dict]] = {}
+    for a in recovery_actions or []:
+        actions_by_finding.setdefault(a.get("finding_id"), []).append(a)
     audit_by_finding: dict[str, list[dict]] = {}
     for a in audit_log or []:
         audit_by_finding.setdefault(a.get("finding_id"), []).append(a)
@@ -175,6 +192,7 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
         sw = _STATUS_WEIGHT.get(f.get("status") or "open", 1.0)
         rank = rank_score(f, now, ev, sw)
         f_events = events_by_finding.get(f.get("finding_id"), [])
+        f_actions = actions_by_finding.get(f.get("finding_id"), [])
         f_audit = sorted(audit_by_finding.get(f.get("finding_id"), []),
                          key=lambda a: a.get("ts") or "")
         approval = {"state": _approval_state(f.get("status") or "open")}
@@ -210,7 +228,16 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
             "confidence": f.get("confidence_score"),
             "status": f.get("status") or "open",
             "verified": is_verified(f),
-            "recommended_next_step": next_step(f, f_events),
+            "recommended_next_step": next_step(f, f_events, f_actions),
+            "recovery_actions": [
+                {"id": a.get("recovery_action_id"),
+                 "action_type": a.get("action_type"),
+                 "status": a.get("status"),
+                 "requested_value": a.get("requested_value"),
+                 "channel": a.get("channel"),
+                 "executed_at": a.get("executed_at")}
+                for a in sorted(f_actions,
+                                key=lambda x: x.get("created_at") or "")],
             "approval": approval,
             "recovery_history": [
                 {"ts": a.get("ts"), "event": a.get("event"),

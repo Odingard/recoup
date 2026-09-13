@@ -21,11 +21,12 @@ import {
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 import { auth } from './firebase'
 import CommandCenter from './CommandCenter'
+import RecoveryActions from './RecoveryActions'
 import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter]
+void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter, RecoveryActions]
 
 const STEPS = [
   { id: 1, title: 'Upload contracts', icon: Upload },
@@ -1685,6 +1686,13 @@ function App() {
                       </button>
                     </div>
                     {renderRecoveryForm(selectedFinding)}
+                    {['approved', 'invoiced', 'disputed'].includes(selectedFinding.status) && (
+                      <RecoveryActions
+                        finding={selectedFinding}
+                        apiRequest={apiRequest}
+                        onChanged={refreshFindings}
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="glass-panel empty-detail">
@@ -1698,6 +1706,8 @@ function App() {
           {activeStep === 7 && (
             <CommandCenter
               data={commandCenter}
+              apiRequest={apiRequest}
+              onChanged={() => { void loadCommandCenter(); void refreshFindings() }}
               onOpenInReview={(findingId) => {
                 const target = allFindings.find((f) => f.finding_id === findingId)
                 if (target) setSelectedFinding(target)
