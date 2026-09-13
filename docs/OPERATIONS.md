@@ -177,9 +177,8 @@ keep going. Low-confidence or unmappable data becomes `needs_review`.
 
 Items that must be resolved before the first real customer onboarding:
 
-- **Terms jurisdiction placeholders.** `web/public/terms.html` still contains
-  `[STATE]` and `[COUNTY, STATE]` placeholders (governing law, venue). These must be
-  confirmed by Andre and filled in before the Terms are shown to a real customer.
+- **Terms jurisdiction.** Governing law is Texas, USA; venue is Travis County,
+  Texas (`web/public/terms.html`).
 - **Real-card billing verification.** The success-fee flow (card on file →
   20% charge on realized value → credit note on reversal) has been verified
   against mocked and test-mode Stripe only. Run one end-to-end charge and
