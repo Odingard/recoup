@@ -25,6 +25,17 @@ from .money import is_supported, normalize_currency, quantize
 
 CONFIDENCE_THRESHOLD = 0.85
 
+# finding_id type codes: F-{CID}-{period}-{CODE}[-{n}] is stable across
+# re-evaluations and unique across periods (Firestore upserts depend on it).
+TYPECODE = {
+    "unenforced_minimum": "MIN",
+    "unbilled_overage": "OVR",
+    "expired_discount": "DISC",
+    "missed_escalator": "ESC",
+    "missing_base_charge": "BASE",
+    "underbilled_seats": "SEATS",
+}
+
 
 def _parse(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
@@ -96,12 +107,11 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     """Compare one customer's contract entitlements against what was billed."""
     findings: list[dict] = []
     cid, cname = contract["customer_id"], contract["customer_name"]
-    seq = 1
+    type_counts: dict[str, int] = {}
 
     def add(ftype: str, title: str, amount: float, clause_ref: str, detail: str,
             math: str = "", clause_text: str = "", assumption: str | None = None,
             confidence: float = 1.0, term: str = "", extra: dict | None = None) -> None:
-        nonlocal seq
         if not (clause_text or "").strip():
             _needs_review(
                 needs_review, contract, term or clause_ref,
@@ -109,8 +119,11 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                 extra={"amount": quantize(amount)},
             )
             return
+        n = type_counts.get(ftype, 0) + 1
+        type_counts[ftype] = n
         finding = {
-            "finding_id": f"F-{cid.upper()}-{seq:03d}",
+            "finding_id": f"F-{cid.upper()}-{period.replace('-', '')}-{TYPECODE[ftype]}"
+                          + (f"-{n}" if n > 1 else ""),
             "customer_id": cid, "customer_name": cname,
             "type": ftype, "title": title,
             "monthly_recoverable": quantize(amount),
@@ -125,7 +138,6 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         if extra:
             finding.update(extra)
         findings.append(finding)
-        seq += 1
 
     period_d = _parse(period + "-01")
     period_end = (date(period_d.year + (period_d.month == 12),
