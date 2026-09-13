@@ -147,7 +147,7 @@ def _authed_client(monkeypatch, billing_record):
     monkeypatch.setenv("RECOUP_BILLING_STRIPE_API_KEY", "sk_test_billing")
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(firebase_auth, "verify_id_token",
-                        lambda token: {"uid": "acct1", "email": "a@b.c"})
+                        lambda token, **kw: {"uid": "acct1", "email": "a@b.c"})
     monkeypatch.setattr(api.db, "get_account_billing", lambda _a: billing_record)
     finding = {
         "finding_id": "f1", "customer_id": "acme", "customer_name": "Acme",
@@ -217,7 +217,7 @@ def test_sync_recoveries_paid_invoice(monkeypatch):
     fake, _state = _install_fake_stripe(monkeypatch)
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(firebase_auth, "verify_id_token",
-                        lambda token: {"uid": "acct1", "email": "a@b.c"})
+                        lambda token, **kw: {"uid": "acct1", "email": "a@b.c"})
     monkeypatch.setattr(api, "resolve_connector_key", lambda _a: "sk_tenant_read")
     monkeypatch.setattr(recoup_billing._db, "get_account_billing",
                         lambda _a: {"stripe_customer_id": "cus_1", "payment_method_id": "pm_1"})
@@ -274,7 +274,7 @@ def test_sync_recoveries_needs_connector(monkeypatch):
     monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(firebase_auth, "verify_id_token",
-                        lambda token: {"uid": "acct1", "email": "a@b.c"})
+                        lambda token, **kw: {"uid": "acct1", "email": "a@b.c"})
     monkeypatch.setattr(api, "resolve_connector_key", lambda _a: None)
     client = TestClient(api.app)
     resp = client.post("/api/billing/sync-recoveries",

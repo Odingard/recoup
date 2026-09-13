@@ -13,7 +13,7 @@ def _auth_client(monkeypatch, account_id="acct-1"):
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(
         firebase_auth, "verify_id_token",
-        lambda token: {"uid": "uid-1", "email": "u@example.com", "account_id": account_id},
+        lambda token, **kw: {"uid": "uid-1", "email": "u@example.com", "account_id": account_id},
     )
     return TestClient(api.app)
 

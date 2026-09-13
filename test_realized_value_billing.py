@@ -83,7 +83,7 @@ def _wire(monkeypatch, store, *, billing_card=True, paid_status="paid",
                                         fail=stripe_fail)
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
     monkeypatch.setattr(firebase_auth, "verify_id_token",
-                        lambda token: {"uid": token, "email": f"{token}@b.c"})
+                        lambda token, **kw: {"uid": token, "email": f"{token}@b.c"})
 
     billing = ({"stripe_customer_id": "cus_1", "payment_method_id": "pm_1"}
                if billing_card else None)
