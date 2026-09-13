@@ -59,6 +59,12 @@ function formatCurrency(value) {
   return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
 
+function formatRate(value) {
+  const n = Number(value || 0)
+  const digits = n !== 0 && Math.abs(n) < 0.01 ? 6 : 2
+  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })}`
+}
+
 function failureMessage(prefix, error) {
   const detail = error instanceof Error ? error.message.trim() : ''
   if (!detail || detail.startsWith('<')) return `${prefix}.`
@@ -1219,7 +1225,7 @@ function App() {
                         {[
                           ['Committed minimum', formatCurrency(contract.committed_minimum_monthly), contract.term_meta?.committed_minimum_monthly],
                           ['Included units', Number(contract.included_units || 0).toLocaleString(), contract.term_meta?.included_units],
-                          ['Overage rate', formatCurrency(contract.overage_rate), contract.term_meta?.overage_rate],
+                          ['Overage rate', formatRate(contract.overage_rate), contract.term_meta?.overage_rate],
                           ['Annual escalator', `${Number(contract.annual_escalator_pct || 0) * 100}%`, contract.term_meta?.annual_escalator_pct],
                           ['Escalator effective date', contract.escalator_effective_date || '—', contract.term_meta?.escalator_effective_date],
                         ].map(([label, value, meta]) => (
