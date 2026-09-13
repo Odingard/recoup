@@ -190,7 +190,7 @@ html,body{margin:0;padding:0;background:#0B0F14;min-height:100%}
 
 /* pilot */
 .pilot{display:grid;grid-template-columns:1fr 1fr;gap:48px;padding:80px 28px;border-top:1px solid var(--line)}
-.pilot-form{display:grid;grid-template-columns:1fr 1fr;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
+.pilot-form{display:grid;grid-template-columns:1fr;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
 .pilot-form label{display:flex;flex-direction:column;justify-content:flex-end;gap:6px;font-size:13px;color:var(--ink2)}
 .pilot-form input{font:inherit;font-size:15px;color:var(--ink);background:var(--bg);border:1px solid var(--line2);border-radius:8px;padding:10px 12px}
 .pilot-form input:focus{outline:2px solid var(--green);outline-offset:0;border-color:transparent}

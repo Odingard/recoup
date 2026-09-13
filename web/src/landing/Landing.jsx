@@ -130,15 +130,12 @@ function Tangible() {
 }
 
 function PilotForm() {
-  const [f, setF] = useState({ company: '', name: '', email: '', acv: '', billing: '', contracts: '' })
+  const [f, setF] = useState({ company: '', name: '', email: '' })
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   const body = [
     `Company: ${f.company}`,
     `Name: ${f.name}`,
     `Work email: ${f.email}`,
-    `Approx. annual contract revenue: ${f.acv}`,
-    `Billing system: ${f.billing}`,
-    `Approx. active contracts: ${f.contracts}`,
   ].join('\n')
   const href = `mailto:${PILOT_TO}?subject=${encodeURIComponent('Recoup pilot request — ' + (f.company || 'company'))}&body=${encodeURIComponent(body)}`
   return (
@@ -146,9 +143,6 @@ function PilotForm() {
       <label>Company<input required value={f.company} onChange={set('company')} autoComplete="organization" /></label>
       <label>Name<input required value={f.name} onChange={set('name')} autoComplete="name" /></label>
       <label>Work email<input required type="email" value={f.email} onChange={set('email')} autoComplete="email" /></label>
-      <label>Approximate annual contract revenue<input value={f.acv} onChange={set('acv')} placeholder="$" /></label>
-      <label>Billing system<input value={f.billing} onChange={set('billing')} placeholder="Stripe, QuickBooks, Xero…" /></label>
-      <label>Approximate number of active contracts<input value={f.contracts} onChange={set('contracts')} inputMode="numeric" /></label>
       <button type="submit" className="btn">Run a Recoup Pilot</button>
       <p className="fine">For CFOs, Controllers, Finance, RevOps and Billing Operations at contract-heavy B2B companies.</p>
     </form>
@@ -309,7 +303,7 @@ export default function Landing() {
         <section className="pilot wrap" id="pilot">
           <div className="pilot-copy">
             <div className="h2">See what your agreements say you're leaving behind.</div>
-            <p className="sub">Let Recoup review where your contracts and billing diverge.</p>
+            <p className="sub">Let Recoup review where your contracts and billing diverge. Upload your documents and watch Recoup work — no integrations required to start.</p>
           </div>
           <PilotForm />
         </section>
