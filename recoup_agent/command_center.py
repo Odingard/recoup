@@ -16,8 +16,6 @@ _STATUS_WEIGHT = {
     "recovered": 0.2, "rejected": 0.0, "written_off": 0.0,
 }
 
-_EXCLUDED_FROM_CASES = set()  # all statuses appear as cases; rejected are only cases
-
 
 def _dt(ts: str | None) -> datetime | None:
     if not ts:
@@ -219,9 +217,7 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
                  "decision": a.get("decision"), "details": a.get("details")}
                 for a in f_audit],
             "realization_history": f_events,
-            "net_realized": round(sum(
-                -(e.get("reversal_amount") or 0) if e.get("event_type") == "reversal"
-                else (e.get("realized_value") or 0) for e in f_events), 2),
+            "net_realized": recovered_dollars(f, events_by_finding) if f_events else 0.0,
             "rank": rank,
             "age_days": rank["age_days"],
             "created_at": f.get("created_at"),
