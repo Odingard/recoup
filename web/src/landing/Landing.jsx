@@ -3,29 +3,45 @@ import './landing.css'
 
 const PILOT_TO = 'andre.byrd@odingard.com'
 
-const INSIGHT = [
-  ['Agreement', 'What should have happened', 'agr'],
-  ['Usage / Operations', 'What actually happened', 'ops'],
-  ['Billing', 'What was charged', 'bill'],
-  ['Recoup', 'What is missing', 'rec'],
-]
+const ENTITLEMENTS = ['Minimum commitments', 'Usage charges', 'Price increases', 'Credits', 'Rebates', 'Refund rights', 'Service-level remedies', 'Reimbursements', 'Contractual adjustments']
 
-const STEPS = [
-  ['Discover', 'Recoup identifies the financial obligations and entitlements contained in your agreements.'],
-  ['Compare', 'Recoup compares those terms against billing, usage and supporting records.'],
-  ['Prove', 'Every discrepancy is tied back to the source clause, supporting evidence and calculation.'],
-  ['Recover', 'Your team receives an evidence-backed recovery case and decides what action to take.'],
+const LOOP = [
+  ['Watch', 'Continuously monitor agreements, amendments, billing, usage and recovery evidence.'],
+  ['Detect', 'Identify when financial reality diverges from what the agreement required.'],
+  ['Prove', 'Tie the discrepancy to the source term, evidence, actual activity and calculation.'],
+  ['Prioritize', 'Rank recovery opportunities by value, confidence, age and status.'],
+  ['Act', 'Prepare the appropriate recovery action.'],
+  ['Approve', 'Your team retains authority over consequential recovery actions.'],
+  ['Recover', 'Move the approved case through the recovery workflow.'],
+  ['Verify', 'Confirm whether value was actually realized.'],
 ]
 
 const FINDS = [
-  ['Billing gaps', ['Missed minimum commitments', 'Unbilled usage', 'Underbilled seats', 'Expired discounts', 'Missed price increases']],
-  ['Contractual value', ['Service credits', 'Rebates', 'Reimbursements', 'Contractual adjustments', 'Offsets']],
-  ['Commercial drift', ['Amendments not reflected in billing', 'Terms applied after expiration', 'Pricing changes not implemented', 'Agreement and invoice discrepancies']],
+  ['Revenue gaps', ['Missed minimum commitments', 'Unbilled usage', 'Underbilled seats', 'Missed price increases', 'Expired discounts']],
+  ['Contractual value', ['Service credits', 'Rebates', 'Refunds', 'Reimbursements', 'Contractual offsets', 'Commercial adjustments']],
+  ['Commercial drift', ['Amendments not reflected downstream', 'Incorrect terms continuing after expiration', 'Billing not updated after pricing changes', 'Agreement-to-invoice discrepancies']],
 ]
 
-const PROOF = ['Agreement', 'Source clause', 'Financial term', 'Actual activity', 'Discrepancy', 'Calculation', 'Recovery']
+const METRICS = [
+  ['Potential recoverable value', '$427,380', 'pot'],
+  ['Verified', '$184,200', 'ver'],
+  ['Approved', '$92,700', 'apr'],
+  ['In recovery', '$61,400', 'rec'],
+  ['Realized', '$38,900', 'rlz'],
+]
 
-const BASES = ['Payments', 'Credits', 'Refunds', 'Rebates', 'Reimbursements', 'Settlements', 'Verified offsets']
+const CASES = [
+  ['Northwind Logistics', 'Missed minimum commitment', '$48,600', 'High', 'MSA §4.1 · INV-2041', 'Approved', 'Issue true-up invoice'],
+  ['Meridian Health', 'SLA service credit', '$15,000', 'High', 'MSA §7.2 · Uptime report', 'Verified', 'Send for approval'],
+  ['Cascade Analytics', 'Expired discount still applied', '$12,000', 'High', 'Order form §2 · 6 invoices', 'In recovery', 'Await counterparty'],
+  ['Harbor Freight Systems', 'Missed price increase', '$9,840', 'Medium', 'Amendment 2 · §3.3', 'Verified', 'Confirm effective date'],
+  ['Sterling Manufacturing', 'Unbilled usage', '$7,215', 'Medium', 'Usage export · 3 periods', 'Detected', 'Review evidence'],
+  ['Volt Energy', 'Rebate not applied', '$4,300', 'Low', 'Rebate schedule · Q2', 'Needs review', 'Ambiguous term'],
+]
+
+const PROOF = ['Agreement', 'Source term', 'Actual activity', 'Discrepancy', 'Calculation', 'Recovery case', 'Realized value']
+
+const BASES = ['Cash recovery', 'Refund', 'Rebate', 'Reimbursement', 'Contractual credit', 'Settlement', 'Verified offset']
 
 function Brand({ small }) {
   return (
@@ -36,7 +52,6 @@ function Brand({ small }) {
   )
 }
 
-/* Hero visual: the agreement → discrepancy → recovery story as a product surface */
 function HeroCase() {
   return (
     <div className="hcase" aria-label="Illustrative recovery case">
@@ -48,10 +63,10 @@ function HeroCase() {
         <div className="hrow">
           <span className="hk">Agreement</span>
           <span className="hv">Committed minimum <b>$12,000</b>/mo · MSA §4.1</span>
-          <span className="hs">should</span>
+          <span className="hs">entitled</span>
         </div>
         <div className="hrow">
-          <span className="hk">Usage</span>
+          <span className="hk">Activity</span>
           <span className="hv">June consumption <b>$9,340</b></span>
           <span className="hs">actual</span>
         </div>
@@ -61,7 +76,7 @@ function HeroCase() {
           <span className="hs bad">billed</span>
         </div>
         <div className="hrow miss">
-          <span className="hk">Missing</span>
+          <span className="hk">Missed</span>
           <span className="hv">$12,000 − $9,340 = <b>$2,660</b></span>
           <span className="hs miss">shortfall</span>
         </div>
@@ -80,13 +95,26 @@ function HeroCase() {
 function ProblemVisual() {
   return (
     <div className="problem-vis" aria-hidden="true">
-      <div className="src"><span className="src-k">Contracts</span><p>Minimums · escalators · discounts · credits · rebates</p></div>
+      <div className="src"><span className="src-k">Agreement</span><p>What should have happened</p></div>
       <div className="vs">vs.</div>
-      <div className="src"><span className="src-k">Usage / Operations</span><p>Seats · consumption · uptime · deliveries</p></div>
-      <div className="vs">vs.</div>
-      <div className="src"><span className="src-k">Billing</span><p>Invoices · line items · credits issued</p></div>
-      <div className="resolve"><span className="glyph">R</span>Recoup resolves the mismatch</div>
+      <div className="src"><span className="src-k">Billing / Operations</span><p>What actually happened</p></div>
+      <div className="vs">=</div>
+      <div className="resolve miss"><span className="glyph">R</span>Missed value</div>
     </div>
+  )
+}
+
+function Loop() {
+  return (
+    <ol className="loop" aria-label="Always-on recovery loop">
+      {LOOP.map(([h, p], i) => (
+        <li key={h} className="loop-step" style={{ '--i': i }}>
+          <div className="loop-n">{String(i + 1).padStart(2, '0')}</div>
+          <div className="loop-body"><h3>{h}</h3><p>{p}</p></div>
+          {i < LOOP.length - 1 && <span className="loop-arrow" aria-hidden="true">→</span>}
+        </li>
+      ))}
+    </ol>
   )
 }
 
@@ -115,7 +143,7 @@ function Tangible() {
       <div className="tang-main">
         <div className="tang-h"><span className="pill example">Illustrative example</span><span className="tang-t">Recoup</span></div>
         <ul className="checks">
-          {['Clause identified', 'Requirement verified', 'Observed performance matched', 'Recovery amount calculated', 'Evidence package prepared'].map((t, i) => (
+          {['Clause identified', 'Requirement verified', 'Observed result matched', 'Recovery amount calculated', 'Evidence assembled', 'Recovery case prepared'].map((t, i) => (
             <li key={t} style={{ '--i': i }}><i>✓</i>{t}</li>
           ))}
         </ul>
@@ -124,6 +152,45 @@ function Tangible() {
           <span className="n">$15,000</span>
           <span className="d">potential contractual recovery</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function CommandCenter() {
+  return (
+    <div className="cc" role="group" aria-label="Recovery command center, sample data">
+      <div className="cc-top">
+        <span className="cc-title">Recovery command center</span>
+        <span className="pill example">Sample data</span>
+      </div>
+      <div className="metrics">
+        {METRICS.map(([l, v, cls], i) => (
+          <div key={l} className={'metric ' + cls} style={{ '--i': i }}>
+            <span className="ml">{l}</span>
+            <span className="mv">{v}</span>
+          </div>
+        ))}
+      </div>
+      <div className="cases-wrap">
+        <table className="cases">
+          <thead>
+            <tr>{['Counterparty', 'Recovery type', 'Potential value', 'Confidence', 'Evidence', 'Status', 'Next action'].map((h) => <th key={h}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {CASES.map(([c, t, v, conf, ev, st, next]) => (
+              <tr key={c}>
+                <td className="cp">{c}</td>
+                <td>{t}</td>
+                <td className="num">{v}</td>
+                <td><span className={'conf ' + conf.toLowerCase()}>{conf}</span></td>
+                <td className="ev">{ev}</td>
+                <td><span className={'st ' + st.toLowerCase().replace(/\s+/g, '-')}>{st}</span></td>
+                <td className="next">{next}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
@@ -144,7 +211,7 @@ function PilotForm() {
       <label>Name<input required value={f.name} onChange={set('name')} autoComplete="name" /></label>
       <label>Work email<input required type="email" value={f.email} onChange={set('email')} autoComplete="email" /></label>
       <button type="submit" className="btn">Run a Recoup Pilot</button>
-      <p className="fine">For CFOs, Controllers, Finance, RevOps and Billing Operations at contract-heavy B2B companies.</p>
+      <p className="fine">For CFOs, Controllers, Finance, Revenue Operations and Billing Operations at contract-heavy B2B companies.</p>
     </form>
   )
 }
@@ -152,7 +219,9 @@ function PilotForm() {
 void Brand
 void HeroCase
 void ProblemVisual
+void Loop
 void Tangible
+void CommandCenter
 void PilotForm
 
 export default function Landing() {
@@ -175,13 +244,14 @@ export default function Landing() {
         {/* 1 — Hero */}
         <section className="hero wrap">
           <div className="hero-copy">
+            <div className="kicker">Revenue recovery</div>
             <h1>Find the revenue you're already owed.</h1>
-            <p className="lede">Contracts, pricing terms, usage and billing don't always agree. Recoup finds the difference, shows you exactly why money was missed, and gives your team what it needs to recover it.</p>
+            <p className="lede">Recoup continuously checks what your agreements say you should receive against what was actually billed, paid, credited, or delivered — then shows your team what was missed and what can be recovered.</p>
             <div className="hero-cta">
               <a href="#pilot" className="btn">Run a Pilot</a>
-              <a href="#how" className="btn ghost">See How It Works</a>
+              <a href="#how" className="btn ghost">See How Recoup Works</a>
             </div>
-            <p className="paynote">No upfront audit fee. We only get paid when value is recovered.</p>
+            <p className="paynote">No upfront audit fee. 20% of realized recovered value.</p>
             <p className="brandline">Recoup — an Odingard Security application</p>
           </div>
           <div className="hero-visual"><HeroCase /></div>
@@ -191,11 +261,11 @@ export default function Landing() {
         <section className="problem wrap" id="problem">
           <div className="two">
             <div>
-              <div className="h2">Your contracts and your billing system don't speak the same language.</div>
-              <p className="body">Commercial agreements contain minimum commitments, pricing changes, discounts, credits, rebates, usage terms and other financial obligations.</p>
-              <p className="body">Billing systems record transactions.</p>
-              <p className="body">They do not continuously prove whether those transactions match what the agreement actually required.</p>
-              <p className="closing">That gap becomes missed revenue.</p>
+              <div className="h2">Companies track what they billed.<br />Few continuously track what they were entitled to.</div>
+              <p className="body">Commercial agreements create financial obligations and entitlements:</p>
+              <ul className="ents">{ENTITLEMENTS.map((e) => <li key={e}>{e}</li>)}</ul>
+              <p className="body">But the systems that record invoices and payments do not continuously determine whether every financial right in the agreement was actually realized.</p>
+              <p className="closing">The difference becomes missed revenue.</p>
             </div>
             <ProblemVisual />
           </div>
@@ -204,42 +274,34 @@ export default function Landing() {
         {/* 3 — Insight */}
         <section className="insight" id="insight">
           <div className="wrap">
-            <div className="h2 center">The source of truth isn't the invoice. It's the agreement.</div>
-            <ol className="flow" aria-label="Agreement to Recoup flow">
-              {INSIGHT.map(([h, s, cls], i) => (
-                <li key={h} className={cls} style={{ '--i': i }}>
-                  <div className="flow-card"><span className="fh">{h}</span><span className="fs">{s}</span></div>
-                  {i < INSIGHT.length - 1 && <span className="down" aria-hidden="true">↓</span>}
-                </li>
-              ))}
-            </ol>
-            <p className="sub center">Recoup compares the financial terms of the agreement against what actually happened and what was actually billed.</p>
+            <div className="h2 center">Your systems know what you charged.<br />Recoup finds what you should have realized.</div>
+            <div className="stack" aria-hidden="true">
+              <div className="layer rec"><span className="glyph">R</span>Recoup — the recovery layer</div>
+              <div className="layer-row">
+                {['Billing', 'Usage', 'Payments', 'Credits', 'Operational evidence'].map((s) => <div key={s} className="layer">{s}</div>)}
+              </div>
+              <div className="layer base">Agreements &amp; amendments</div>
+            </div>
+            <p className="sub center">Recoup sits on top of the systems you already use. It continuously compares agreement terms against billing, usage, payments, credits and supporting operational evidence to identify financial value that was missed.</p>
           </div>
         </section>
 
-        {/* 4 — What Recoup does */}
+        {/* 4 — Loop */}
         <section className="how wrap" id="how">
-          <div className="h2">Recoup turns agreements into recoverable financial truth.</div>
-          <div className="steps">
-            {STEPS.map(([h, p], i) => (
-              <div className="step" key={h}>
-                <div className="s">0{i + 1}</div>
-                <h3>{h}</h3>
-                <p>{p}</p>
-              </div>
-            ))}
-          </div>
+          <div className="h2">From agreement to realized recovery.</div>
+          <p className="sub">An always-on loop, not a one-time audit.</p>
+          <Loop />
         </section>
 
         {/* 5 — Tangible */}
         <section className="tangible" id="example">
           <div className="wrap">
-            <div className="h2">From contract clause to recovered value.</div>
+            <div className="h2">A contract clause becomes a recovery case.</div>
             <Tangible />
           </div>
         </section>
 
-        {/* 6 — What Recoup can find */}
+        {/* 6 — What Recoup recovers */}
         <section className="finds wrap" id="finds">
           <div className="h2">Revenue doesn't only leak from invoices.</div>
           <div className="find-cols">
@@ -252,7 +314,16 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* 7 — Trust */}
+        {/* 7 — Command center */}
+        <section className="command" id="command">
+          <div className="wrap">
+            <div className="h2">Know exactly where recoverable value stands.</div>
+            <p className="sub">Recoup is an operating function, not a report generator. Every opportunity carries its value, confidence, evidence, status and next action.</p>
+            <CommandCenter />
+          </div>
+        </section>
+
+        {/* 8 — Trust */}
         <section className="trust" id="trust">
           <div className="wrap">
             <div className="h2 center">Every dollar has to be proven.</div>
@@ -267,31 +338,31 @@ export default function Landing() {
             <div className="rules">
               <div><b>No source evidence?</b> No recovery claim.</div>
               <div><b>Ambiguous term?</b> Flagged for review.</div>
-              <div><b>Your team</b> approves every recovery action.</div>
+              <div><b>No authorized action?</b> Nothing moves forward.</div>
             </div>
+            <p className="control">Your team stays in control.</p>
           </div>
         </section>
 
-        {/* 8 — Vision */}
+        {/* 9 — Why Recoup exists */}
         <section className="vision wrap">
           <div className="vision-inner">
-            <div className="h2">Billing reconciliation is only the beginning.</div>
+            <div className="h2">Billing reconciliation is only part of the problem.</div>
             <p className="body">Businesses operate through agreements.</p>
-            <p className="body">Those agreements create financial obligations and entitlements.</p>
-            <p className="body">But today's systems are built around transactions — not continuously determining whether every financial right in an agreement was actually realized.</p>
-            <p className="closing">Recoup closes that gap.</p>
+            <p className="body">Those agreements continuously create financial rights and obligations.</p>
+            <p className="body">But today's financial systems are designed primarily to record transactions — not continuously determine whether every contractual entitlement was actually realized.</p>
+            <p className="closing">Recoup becomes the recovery layer between what the agreement promised and what the business actually received.</p>
           </div>
         </section>
 
-        {/* 9 — Business model */}
+        {/* 10 — Business model */}
         <section className="pricing" id="pricing">
           <div className="wrap">
-            <div className="h2">Aligned with the recovery.</div>
+            <div className="h2">We win when you recover value.</div>
             <div className="price-card">
               <div className="big">20%<span> of realized recovered value</span></div>
-              <p className="no-upfront">No upfront audit fee. Recoup earns only when the customer actually realizes value.</p>
+              <p className="no-upfront">No upfront audit fee. Recoup earns when value is actually realized through outcomes such as:</p>
               <div className="bases">
-                <div className="bl">Realized value includes</div>
                 <ul>{BASES.map((b) => <li key={b}>{b}</li>)}</ul>
               </div>
               <p className="closing">No realized value. No success fee.</p>
@@ -299,19 +370,19 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* 10 — Pilot */}
+        {/* 11 — Pilot */}
         <section className="pilot wrap" id="pilot">
           <div className="pilot-copy">
-            <div className="h2">See what your agreements say you're leaving behind.</div>
-            <p className="sub">Let Recoup review where your contracts and billing diverge. Upload your documents and watch Recoup work — no integrations required to start.</p>
+            <div className="h2">Find out what your agreements say you're leaving behind.</div>
+            <p className="sub">Give Recoup your agreements and billing data and let us identify where financial value may have been missed. Upload your documents and watch Recoup work — no integrations required to start.</p>
           </div>
           <PilotForm />
         </section>
 
-        {/* 11 — Close */}
+        {/* 12 — Close */}
         <section className="close wrap">
           <h2>You already earned it.</h2>
-          <p className="close-sub">Recoup helps you find it.</p>
+          <p className="close-sub">Recoup helps you recover it.</p>
           <a href="#pilot" className="btn">Run a Pilot</a>
         </section>
       </main>
