@@ -31,6 +31,17 @@ def _period_end(period: str) -> date | None:
     return date(start.year, start.month + 1, 1) - timedelta(days=1)
 
 
+def _first_present(o: dict, keys: tuple) -> object:
+    for key in keys:
+        if o.get(key) is not None:
+            return o[key]
+    return None
+
+
+_AMOUNT_KEYS = ("amount", "value", "quantity")
+_QUANTITY_KEYS = ("quantity", "value", "amount")
+
+
 class _Ctx:
     """Evaluation context: constants, and the period's observations by type."""
 
@@ -60,8 +71,13 @@ class _Ctx:
                         or normalize_currency(o.get("currency")) != normalize_currency(spec.currency)):
                     self.currency_mismatch = True
                 name = o.get("type") or o.get("observation_type")
-                if name in quantity_names and (o.get("value") or 0) < 0:
-                    self.negative_quantity = True
+                if name in quantity_names:
+                    try:
+                        qv = _first_present(o, _QUANTITY_KEYS)
+                        if qv is not None and float(qv) < 0:
+                            self.negative_quantity = True
+                    except (TypeError, ValueError):
+                        pass
                 self.by_type.setdefault(name, o)
         self.period = period
         self.trace: dict = {}
@@ -84,19 +100,15 @@ class _Ctx:
         o = self.by_type.get(obs_type)
         if o is None:
             return None
-        for key in ("amount", "value", "quantity"):
-            if o.get(key) is not None:
-                return float(o[key])
-        return None
+        v = _first_present(o, _AMOUNT_KEYS)
+        return float(v) if v is not None else None
 
     def obs_quantity(self, obs_type: str) -> float | None:
         o = self.by_type.get(obs_type)
         if o is None:
             return None
-        for key in ("quantity", "value", "amount"):
-            if o.get(key) is not None:
-                return float(o[key])
-        return None
+        v = _first_present(o, _QUANTITY_KEYS)
+        return float(v) if v is not None else None
 
 
 def _eval_trigger(node: dict, ctx: _Ctx) -> bool | None:
