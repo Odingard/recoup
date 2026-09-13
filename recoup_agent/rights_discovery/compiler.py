@@ -474,9 +474,12 @@ def _spec_key_reasons(candidate) -> list[str]:
 
     if isinstance(calc, dict):
         _unknown_keys(calc, _CALC_NODE_KEYS, "calculation", reasons)
-        for key in ("amount", "rate", "above", "minuend", "subtrahend",
-                    "cap", "floor"):
+        for key in ("amount", "rate", "above", "cap", "floor"):
             _unknown_keys(calc.get(key), _CONST_REF_KEYS,
+                          f"calculation.{key}", reasons)
+        # minuend/subtrahend accept constant or observation refs.
+        for key in ("minuend", "subtrahend"):
+            _unknown_keys(calc.get(key), _OPERAND_REF_KEYS,
                           f"calculation.{key}", reasons)
         for seq_key in ("tiers", "bands"):
             for i, b in enumerate(calc.get(seq_key) or []):
