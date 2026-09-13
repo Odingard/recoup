@@ -39,6 +39,7 @@ from .billing.stripe_oauth import (
     oauth_redirect_uri,
     oauth_web_base_url,
     oauth_client_id,
+    oauth_client_secret,
     _state_secret,
     parse_oauth_state,
 )
@@ -1483,7 +1484,7 @@ def start_stripe_oauth(user: dict = Depends(verify_token)):
 
     needs_config = {"status": "needs_config",
                     "message": "Stripe OAuth is not configured for this deployment."}
-    if not oauth_client_id() or not _state_secret():
+    if not oauth_client_id() or not oauth_client_secret() or not _state_secret():
         return JSONResponse(status_code=503, content=needs_config)
     try:
         state = build_oauth_state(account_id, user.get("uid") or account_id,
