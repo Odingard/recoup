@@ -384,6 +384,8 @@ def compile_candidate_right(candidate, document_text: str = ""
             reasons.append(f"date '{dfld}' not parseable")
 
     currency = "USD" if "$" in (candidate.source_quote or "") else None
+    if re.search(r"€|£|\b(?:EUR|GBP|CAD|AUD|JPY)\b", candidate.source_quote or "", re.IGNORECASE):
+        reasons.append("unsupported currency in source quote")
     # Only monetary constants need a grounded currency; rights whose constants
     # are all non-monetary (percentages, quantities, thresholds) stay
     # currency-neutral and record USD as the reporting unit.

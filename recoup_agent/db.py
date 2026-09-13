@@ -4,6 +4,16 @@ from google.cloud import firestore
 
 _client = None
 
+
+class FindingNotFound(Exception):
+    pass
+
+
+class IllegalTransition(Exception):
+    def __init__(self, current: str, new: str):
+        self.current, self.new = current, new
+        super().__init__(f"Illegal transition: {current} -> {new}")
+
 def get_client():
     global _client
     if _client is None:
@@ -31,8 +41,12 @@ def save_findings(account_id: str, findings: list[dict]):
     for f in findings:
         doc_ref = _collection(db, account_id, "findings").document(f.get('finding_id'))
         existing = doc_ref.get()
-        status = f.get("status") if f.get("status") is not None else (existing.to_dict().get("status") if existing.exists else "open")
-        
+        existing_data = existing.to_dict() if existing.exists else {}
+        status = (f.get("status") or "open") if not existing.exists \
+            else existing_data.get("status", "open")
+
+        created_at = (existing_data.get("created_at", now) if existing.exists
+                      else f.get('created_at', now))
         data = {
             "customer_id": f.get('customer_id'),
             "customer_name": f.get('customer_name'),
@@ -50,9 +64,10 @@ def save_findings(account_id: str, findings: list[dict]):
             "discrepancy_id": f.get('discrepancy_id'),
             "confidence_score": f.get('confidence_score', 1.0),
             "provenance": f.get('provenance', ''),
-            "status": status,
-            "created_at": f.get('created_at', now)
+            "created_at": created_at
         }
+        if not existing.exists:
+            data["status"] = status
         batch.set(doc_ref, data, merge=True)
     
     batch.commit()
@@ -79,6 +94,41 @@ def get_finding(account_id: str, finding_id: str) -> dict | None:
     if not doc.exists:
         return None
     return {"finding_id": doc.id, **doc.to_dict()}
+
+
+def transition_finding_status(account_id: str, finding_id: str, new_status: str,
+                              event_name: str, fields: dict | None = None):
+    """Atomically assert and apply a finding lifecycle transition."""
+    from .recovery import assert_transition
+    db = get_client()
+    doc_ref = _collection(db, account_id, "findings").document(finding_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _run(txn):
+        snap = doc_ref.get(transaction=txn)
+        if not snap.exists:
+            raise FindingNotFound(finding_id)
+        current = (snap.to_dict() or {}).get("status", "open")
+        try:
+            assert_transition(current, new_status)
+        except ValueError as exc:
+            raise IllegalTransition(current, new_status) from exc
+        now = datetime.now(timezone.utc).isoformat()
+        update_fields = {"status": new_status}
+        if new_status == "recovered":
+            update_fields["recovered_at"] = now
+        if fields:
+            update_fields.update(fields)
+        txn.update(doc_ref, update_fields)
+        entry = {"finding_id": finding_id, "event": event_name,
+                 "decision": new_status, "ts": now}
+        if fields:
+            entry["details"] = fields
+        txn.set(_collection(db, account_id, "audit_log").document(), entry)
+        return {"finding_id": finding_id, **(snap.to_dict() or {}), **update_fields}
+
+    return _run(transaction)
 
 
 def update_finding_status(account_id: str, finding_id: str, status: str, event_name: str,

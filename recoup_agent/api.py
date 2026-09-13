@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, Uplo
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from . import db
@@ -36,13 +36,14 @@ from .billing.stripe_oauth import (
     exchange_authorization_code,
     oauth_redirect_uri,
     oauth_web_base_url,
+    oauth_client_id,
+    _state_secret,
     parse_oauth_state,
 )
 from .ingest_bulk import ingest_files
 from .ingestion_doc import ContractEntitlements, extract_entitlements
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
-from .recovery import assert_transition
 from .rights_graph import RightsGraphService
 from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
@@ -228,14 +229,14 @@ class DisputeNote(BaseModel):
 class UsagePayload(BaseModel):
     customer_id: str
     period: str
-    units: int
+    units: int = Field(ge=0)
 
 
 class InvoicePayload(BaseModel):
     customer_id: str
     period: str
-    base_charge: float
-    overage_charge: float = 0
+    base_charge: float = Field(ge=0)
+    overage_charge: float = Field(default=0, ge=0)
     discounts_applied: list = []
 
 
@@ -529,27 +530,50 @@ def trigger_reconciliation(period: str = DEFAULT_PERIOD, user: dict = Depends(ve
 @app.post("/api/findings/{finding_id}/approve")
 def approve_finding(finding_id: str, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
-    if account_id is not None:
-        db.update_finding_status(account_id, finding_id, "approved", f"ui_approval_by_{user.get('email', 'unknown')}")
+    if account_id is None:
+        if finding_id not in {f["finding_id"] for f in _offline_findings()}:
+            raise HTTPException(status_code=404, detail="Finding not found.")
+        return {"status": "not_persisted", "mode": "sample", "finding_id": finding_id,
+                "message": "Sample mode is read-only; approvals are not recorded."}
+    try:
+        db.transition_finding_status(account_id, finding_id, "approved",
+                                     f"ui_approval_by_{user.get('email', 'unknown')}")
+    except db.FindingNotFound:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    except db.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"status": "approved", "finding_id": finding_id}
 
 
 @app.post("/api/findings/{finding_id}/reject")
 def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
-    if account_id is not None:
-        db.update_finding_status(account_id, finding_id, "rejected", f"ui_rejection_by_{user.get('email', 'unknown')}_{update.reason}")
+    if account_id is None:
+        if finding_id not in {f["finding_id"] for f in _offline_findings()}:
+            raise HTTPException(status_code=404, detail="Finding not found.")
+        return {"status": "not_persisted", "mode": "sample", "finding_id": finding_id,
+                "message": "Sample mode is read-only; approvals are not recorded."}
+    try:
+        db.transition_finding_status(account_id, finding_id, "rejected",
+                                     f"ui_rejection_by_{user.get('email', 'unknown')}_{update.reason}")
+    except db.FindingNotFound:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    except db.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"status": "rejected", "finding_id": finding_id}
 
 
-def _transition_fields(account_id: str | None, finding_id: str, new_status: str) -> None:
-    """Enforce the finding lifecycle when a persistent account is attached."""
-    finding = db.get_finding(account_id, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+def _transition_fields(account_id: str | None, finding_id: str, new_status: str,
+                      event_name: str = "status_transition", fields: dict | None = None) -> dict:
+    """Apply an account-scoped atomic lifecycle transition."""
+    if account_id is None:
+        return {}
     try:
-        assert_transition(finding.get("status", "open"), new_status)
-    except ValueError as exc:
+        return db.transition_finding_status(account_id, finding_id, new_status,
+                                            event_name, fields=fields)
+    except db.FindingNotFound:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    except db.IllegalTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
 
@@ -570,9 +594,8 @@ def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: di
         }
     }
     if account_id is not None:
-        _transition_fields(account_id, finding_id, "invoiced")
-        db.update_finding_status(account_id, finding_id, "invoiced",
-                                 f"ui_invoiced_by_{user.get('email', 'unknown')}", fields=fields)
+        _transition_fields(account_id, finding_id, "invoiced",
+                           f"ui_invoiced_by_{user.get('email', 'unknown')}", fields=fields)
     return {"status": "invoiced", "finding_id": finding_id, **fields}
 
 
@@ -614,10 +637,8 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
             [e for e in all_events if e.get("event_type") == "realization"]),
     }
     if finding.get("status") != "recovered":
-        _transition_fields(account_id, finding["finding_id"], "recovered")
-        db.update_finding_status(account_id, finding["finding_id"], "recovered",
-                                 f"recovery_realized_{recovery_basis}",
-                                 fields=finding_fields)
+        _transition_fields(account_id, finding["finding_id"], "recovered",
+                           f"recovery_realized_{recovery_basis}", fields=finding_fields)
     else:
         db.update_finding_fields(account_id, finding["finding_id"],
                                  finding_fields, "recovery_realized")
@@ -816,9 +837,8 @@ def mark_finding_disputed(finding_id: str, note: DisputeNote, user: dict = Depen
     account_id = _account_id(user)
     fields = {"dispute": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
     if account_id is not None:
-        _transition_fields(account_id, finding_id, "disputed")
-        db.update_finding_status(account_id, finding_id, "disputed",
-                                 f"ui_disputed_by_{user.get('email', 'unknown')}", fields=fields)
+        _transition_fields(account_id, finding_id, "disputed",
+                           f"ui_disputed_by_{user.get('email', 'unknown')}", fields=fields)
     return {"status": "disputed", "finding_id": finding_id, **fields}
 
 
@@ -828,9 +848,8 @@ def mark_finding_written_off(finding_id: str, note: DisputeNote, user: dict = De
     account_id = _account_id(user)
     fields = {"write_off": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
     if account_id is not None:
-        _transition_fields(account_id, finding_id, "written_off")
-        db.update_finding_status(account_id, finding_id, "written_off",
-                                 f"ui_written_off_by_{user.get('email', 'unknown')}", fields=fields)
+        _transition_fields(account_id, finding_id, "written_off",
+                           f"ui_written_off_by_{user.get('email', 'unknown')}", fields=fields)
     return {"status": "written_off", "finding_id": finding_id, **fields}
 
 
@@ -1415,11 +1434,16 @@ def start_stripe_oauth(user: dict = Depends(verify_token)):
     if account_id is None:
         return _needs_review_payload("Sample mode does not connect to Stripe.")
 
-    state = build_oauth_state(account_id, user.get("uid") or account_id, email=user.get("email"))
+    needs_config = {"status": "needs_config",
+                    "message": "Stripe OAuth is not configured for this deployment."}
+    if not oauth_client_id() or not _state_secret():
+        return JSONResponse(status_code=503, content=needs_config)
     try:
+        state = build_oauth_state(account_id, user.get("uid") or account_id,
+                                  email=user.get("email"))
         install_url = build_oauth_install_url(state=state)
-    except Exception as exc:
-        return _needs_review_payload(f"Could not build Stripe install link. Details: {exc}")
+    except RuntimeError:
+        return JSONResponse(status_code=503, content=needs_config)
     return {"status": "success", "install_url": install_url, "redirect_uri": oauth_redirect_uri()}
 
 

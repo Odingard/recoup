@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from .models import EvaluationResult, RightSpec
+from ..money import quantize, normalize_currency, is_supported
 
 
 def _parse_date(value) -> date | None:
@@ -33,13 +34,34 @@ class _Ctx:
     """Evaluation context: constants, and the period's observations by type."""
 
     def __init__(self, spec: RightSpec, observations: list[dict], period: str):
+        self.currency_mismatch = False
+        self.negative_quantity = False
         self.constants = {c["name"]: c["value"]
                           for c in spec.contractual_constants or []}
         self.by_type: dict[str, dict] = {}
+        quantity_names: set[str] = set()
+        pending = [spec.calculation.model_dump() if hasattr(spec.calculation, "model_dump")
+                   else spec.calculation]
+        while pending:
+            node = pending.pop()
+            if not isinstance(node, dict):
+                continue
+            for key, value in node.items():
+                if key == "quantity_observation" and isinstance(value, str):
+                    quantity_names.add(value)
+                elif isinstance(value, dict):
+                    pending.append(value)
+                elif isinstance(value, list):
+                    pending.extend(value)
         for o in observations:
             if str(o.get("period", "")).startswith(period):
-                self.by_type.setdefault(
-                    o.get("type") or o.get("observation_type"), o)
+                if o.get("currency") and (not is_supported(o.get("currency"))
+                        or normalize_currency(o.get("currency")) != normalize_currency(spec.currency)):
+                    self.currency_mismatch = True
+                name = o.get("type") or o.get("observation_type")
+                if name in quantity_names and (o.get("value") or 0) < 0:
+                    self.negative_quantity = True
+                self.by_type.setdefault(name, o)
         self.period = period
         self.trace: dict = {}
 
@@ -208,6 +230,14 @@ def evaluate_right(spec, observations: list[dict], period: str, *,
                if o not in ctx.by_type]
     result = EvaluationResult(right_id=spec.right_id, period=period,
                               currency=spec.currency, evaluated_at=now)
+    if ctx.currency_mismatch:
+        result.status = "not_evaluable"
+        result.calculation_trace = {"reason": "currency_mismatch"}
+        return result
+    if ctx.negative_quantity:
+        result.status = "not_evaluable"
+        result.calculation_trace = {"reason": "negative_quantity"}
+        return result
     result.input_observation_ids = [
         o.get("observation_id") for o in ctx.by_type.values()
         if o.get("observation_id")]
@@ -240,7 +270,7 @@ def evaluate_right(spec, observations: list[dict], period: str, *,
         result.calculation_trace = {"trigger": ctx.trace,
                                     "calculation": "could not resolve operands"}
         return result
-    expected = round(expected, 2)
+    expected = quantize(expected, spec.currency)
 
     actual = 0.0
     if spec.actual_observation:
@@ -256,8 +286,8 @@ def evaluate_right(spec, observations: list[dict], period: str, *,
                 return result
     result.status = "evaluated"
     result.expected_amount = expected
-    result.actual_amount = round(actual, 2)
-    result.recoverable_amount = round(max(expected - actual, 0.0), 2)
+    result.actual_amount = quantize(actual, spec.currency)
+    result.recoverable_amount = quantize(max(expected - actual, 0.0), spec.currency)
     result.calculation_trace = {
         "trigger": ctx.trace,
         "calculation": {"type": spec.calculation.get("type"),
