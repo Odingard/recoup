@@ -47,10 +47,8 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
                 "amount": ent.value,
                 "effective_date": ent.effective_date,
                 "provenance": ent.provenance,
+                "confidence": float(ent.confidence_score),
             })
-            normalized["term_meta"].setdefault("committed_minimum_monthly", meta)
-            if ent.confidence_score < normalized["term_meta"]["committed_minimum_monthly"]["confidence"]:
-                normalized["term_meta"]["committed_minimum_monthly"] = meta
         elif ent.term_type == "included_units":
             normalized["included_units"] = int(ent.value)
             normalized["term_meta"]["included_units"] = meta
@@ -109,6 +107,12 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         latest = max(normalized["minimum_schedule"],
                      key=lambda e: (e.get("effective_date") is not None, e.get("effective_date") or ""))
         normalized["committed_minimum_monthly"] = latest["amount"]
+        normalized["term_meta"]["committed_minimum_monthly"] = {
+            "confidence": min(e["confidence"] for e in normalized["minimum_schedule"]),
+            "provenance": latest["provenance"],
+        }
+        for e in normalized["minimum_schedule"]:
+            e.pop("confidence", None)
 
     tiers = normalized.pop("_overage_tiers", [])
     if tiers:
