@@ -328,3 +328,44 @@ def get_recovery_events(account_id: str, finding_id: str | None = None) -> list[
     if finding_id is not None:
         docs = [d for d in docs if d.get("finding_id") == finding_id]
     return docs
+
+
+# --- CONTINUOUS ASSURANCE (change events + per-account status) ---
+
+def save_assurance_event(account_id: str, event: dict):
+    """Upsert by event_id — identical replays converge to one doc."""
+    db = get_client()
+    _collection(db, account_id, "assurance_events").document(
+        event["event_id"]).set(event, merge=True)
+
+
+def assurance_event_exists(account_id: str, event_id: str) -> bool:
+    db = get_client()
+    return _collection(db, account_id, "assurance_events").document(event_id).get().exists
+
+
+def get_assurance_events(account_id: str, limit: int = 50) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "assurance_events").stream()]
+    docs.sort(key=lambda e: e.get("received_at") or "", reverse=True)
+    return docs[:limit]
+
+
+def append_assurance_audit(account_id: str, entry: dict):
+    db = get_client()
+    _collection(db, account_id, "audit_log").document().set(
+        {"ts": datetime.now(timezone.utc).isoformat(), **entry})
+
+
+def get_assurance_status(account_id: str) -> dict | None:
+    db = get_client()
+    doc = _account_root(db, account_id).get()
+    if not doc.exists:
+        return None
+    return (doc.to_dict() or {}).get("assurance")
+
+
+def set_assurance_status(account_id: str, status: dict) -> None:
+    db = get_client()
+    _account_root(db, account_id).set({"assurance": status}, merge=True)

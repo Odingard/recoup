@@ -154,6 +154,7 @@ function App() {
   const [billing, setBilling] = useState(null)
   const [syncingRecoveries, setSyncingRecoveries] = useState(false)
   const [reviewQueue, setReviewQueue] = useState([])
+  const [assurance, setAssurance] = useState(null)
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
@@ -220,6 +221,16 @@ function App() {
     }
   }, [apiReady, apiRequest])
 
+  const loadAssurance = useCallback(async () => {
+    if (!apiReady) return
+    try {
+      const result = await apiRequest('/assurance/status')
+      setAssurance(result)
+    } catch (error) {
+      console.error(error)
+    }
+  }, [apiReady, apiRequest])
+
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
     const [pending, all] = await Promise.all([
@@ -227,6 +238,7 @@ function App() {
       apiRequest('/findings'),
     ])
     void loadMetrics()
+    void loadAssurance()
     setFindings(Array.isArray(pending) ? pending : [])
     setAllFindings(Array.isArray(all) ? all : [])
     setSelectedFinding((current) => {
@@ -235,7 +247,7 @@ function App() {
       }
       return (pending && pending[0]) || all[0] || null
     })
-  }, [apiReady, apiRequest, loadMetrics])
+  }, [apiReady, apiRequest, loadMetrics, loadAssurance])
 
   useEffect(() => {
     if (!apiReady) return
@@ -981,6 +993,45 @@ function App() {
               )
             })}
           </div>
+
+          {assurance && (
+            <div className="assurance-panel" style={{ marginTop: '1rem' }}>
+              <p className="eyebrow">Continuous Assurance</p>
+              <dl className="assurance-rows" style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
+                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <dt className="muted-copy">Last evaluated</dt>
+                  <dd>{assurance.last_evaluated_at ? new Date(assurance.last_evaluated_at).toLocaleString() : '—'}</dd>
+                </div>
+                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <dt className="muted-copy">Next evaluation</dt>
+                  <dd>On next billing, usage or agreement event</dd>
+                </div>
+                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <dt className="muted-copy">Open discrepancies</dt>
+                  <dd>{assurance.open_discrepancies ?? 0}</dd>
+                </div>
+                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <dt className="muted-copy">Needs review</dt>
+                  <dd>{assurance.needs_review ?? 0}</dd>
+                </div>
+              </dl>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                {(assurance.sources_monitored || []).map((src) => (
+                  <span key={src} className="file-chip">{src}</span>
+                ))}
+              </div>
+              {(assurance.recent_events || []).length > 0 && (
+                <ul className="upload-history" style={{ marginTop: '0.5rem' }}>
+                  {assurance.recent_events.slice(0, 5).map((ev) => (
+                    <li key={ev.event_id} className="upload-history-item">
+                      <span>{ev.trigger}{ev.customer_id ? ` · ${ev.customer_id}` : ''}{ev.period ? ` · ${ev.period}` : ''}</span>
+                      <span className="muted-copy">{ev.status}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </aside>
 
         <main className="step-content">

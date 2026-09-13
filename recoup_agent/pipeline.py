@@ -48,6 +48,7 @@ def compute_findings_and_review(
     account_id: str | None = None,
     billing_provider=None,
     book: tuple[list[dict], list[dict], list[dict]] | None = None,
+    customer_ids: set[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     provider = _selected_billing_provider(account_id, billing_provider) if account_id is not None else None
     if book is not None:
@@ -60,6 +61,8 @@ def compute_findings_and_review(
 
     findings: list[dict] = []
     needs_review: list[dict] = []
+    if customer_ids is not None:
+        contracts = [c for c in contracts if c["customer_id"] in customer_ids]
     for c in contracts:
         key = (c["customer_id"], period)
         if key in usage and key in invoices:

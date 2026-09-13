@@ -332,9 +332,39 @@ def _offline_findings():
     return compute_findings_and_review(account_id=None)[0]
 
 
-def _save_contract_if_needed(account_id: str | None, normalized: dict) -> None:
-    if account_id is not None:
-        db.save_contract(account_id, normalized)
+def _assure(account_id: str | None, source: str, triggers, customer_id: str | None,
+            period: str | None, payload) -> list[dict]:
+    """Continuous assurance: build ChangeEvent(s) for an ingest action and
+    re-evaluate the impacted scope. Never raises — ingest always succeeds."""
+    if account_id is None:
+        return []
+    from . import assurance
+    summaries = []
+    for trigger in ([triggers] if isinstance(triggers, str) else list(triggers)):
+        try:
+            event = assurance.make_event(account_id, trigger, customer_id,
+                                         period, source, payload)
+            summaries.append(assurance.evaluate_event(account_id, event))
+        except Exception:
+            logger.warning("assurance evaluation failed for %s", trigger,
+                           exc_info=True)
+    return summaries
+
+
+def _assurance_block(summaries: list[dict]) -> dict:
+    return {"assurance": {"events": summaries}}
+
+
+def _save_contract_if_needed(account_id: str | None, normalized: dict) -> list[dict]:
+    if account_id is None:
+        return []
+    from .assurance import classify_contract_event
+    existing = next((c for c in db.get_all_contracts(account_id)
+                     if c.get("customer_id") == normalized.get("customer_id")), None)
+    trigger = classify_contract_event(existing, normalized)
+    db.save_contract(account_id, normalized)
+    return _assure(account_id, "ingest/contract/document", trigger,
+                   normalized.get("customer_id"), None, normalized)
 
 
 def _document_text_for_discovery(path: str, suffix: str) -> str | None:
@@ -1256,25 +1286,6 @@ class EvaluateRightsPayload(BaseModel):
     period: str
 
 
-def _finding_math_from_trace(trace: dict) -> str:
-    parts = []
-    for name, t in (trace.get("trigger") or {}).items():
-        if isinstance(t, dict):
-            parts.append(
-                f"{name} {t.get('op')} {t.get('threshold')} "
-                f"(observed {t.get('observed')})")
-        else:
-            parts.append(f"{name}: {t}")
-    calc = trace.get("calculation")
-    if isinstance(calc, dict):
-        parts.append(
-            f"{calc.get('type')}: expected {calc.get('expected')} "
-            f"− actual {calc.get('actual')} = {calc.get('recoverable')}")
-    elif calc is not None:
-        parts.append(str(calc))
-    return " | ".join(parts)
-
-
 @app.post("/api/rights/evaluate")
 def evaluate_rights(payload: EvaluateRightsPayload, user: dict = Depends(verify_token)):
     """Evaluate compiled novel rights against recorded observations for one
@@ -1287,74 +1298,20 @@ def evaluate_rights(payload: EvaluateRightsPayload, user: dict = Depends(verify_
         raise HTTPException(status_code=400,
                             detail="customer_id and period are required.")
 
-    from .rights_discovery import evaluate_right
-    from .rights_discovery.models import RightSpec
-    from .rights_graph.adapter import project_novel_rights
+    from .assurance import build_novel_findings
 
-    compiled = [c for c in db.get_compiled_rights(account_id)
-                if c.get("customer_id") == payload.customer_id]
-    observations = db.get_observations(
-        account_id, payload.customer_id, payload.period)
-
-    evaluations = []
-    for cr in compiled:
-        try:
-            spec = RightSpec.from_dict(cr["spec"])
-        except Exception:
-            continue
-        evaluations.append(evaluate_right(spec, observations, payload.period))
-
-    graph = project_novel_rights(compiled, observations, evaluations, account_id)
-
-    existing = db.get_all_findings(account_id)
-    existing_dsc = {f.get("discrepancy_id") for f in existing}
-    discrepancies = sorted(
-        (d for d in graph.discrepancies if d.discrepancy_id not in existing_dsc),
-        key=lambda d: d.discrepancy_id)
-    sequence = sum(1 for f in existing
-                   if str(f.get("finding_id", "")).startswith(
-                       f"F-{payload.customer_id.upper()}-N"))
-    findings = []
-    for disc in discrepancies:
-        sequence += 1
-        evaluation = next((e for e in evaluations
-                           if e.right_id == disc.right_id), None)
-        trace = (evaluation.calculation_trace if evaluation else {}) or {}
-        finding = {
-            "finding_id": f"F-{payload.customer_id.upper()}-N{sequence:03d}",
-            "customer_id": payload.customer_id,
-            "customer": payload.customer_id,
-            "type": f"novel:{disc.discrepancy_type}",
-            "title": f"Novel right: {disc.discrepancy_type}",
-            "severity": "needs_review",
-            "confidence_score": disc.confidence or 0.0,
-            "monthly_recoverable": round(disc.recoverable_amount or 0.0, 2),
-            "period": payload.period,
-            "math": _finding_math_from_trace(trace),
-            "clause_text": next(
-                (e.quoted_text for e in graph.evidence
-                 if e.evidence_id in (next(
-                     (r.evidence_refs for r in graph.rights
-                      if r.right_id == disc.right_id), []))),
-                None),
-            "status": "open",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "discrepancy_id": disc.discrepancy_id,
-            "right_id": disc.right_id,
-            "expected_state_id": disc.expected_state_id,
-        }
-        findings.append(finding)
-    if findings:
-        db.save_findings(account_id, findings)
+    result = build_novel_findings(account_id, payload.customer_id, payload.period)
+    if result.findings:
+        db.save_findings(account_id, result.findings)
 
     return {
         "status": "success",
         "customer_id": payload.customer_id,
         "period": payload.period,
-        "evaluations": [e.to_dict() for e in evaluations],
-        "discrepancies": [d.to_dict() for d in graph.discrepancies],
-        "not_evaluable": graph.not_evaluable,
-        "findings_created": len(findings),
+        "evaluations": [e.to_dict() for e in result.evaluations],
+        "discrepancies": [d.to_dict() for d in result.discrepancies],
+        "not_evaluable": result.not_evaluable,
+        "findings_created": len(result.findings),
     }
 
 
@@ -1449,25 +1406,56 @@ def shared_report(account_id: str, token: str):
 @app.post("/api/ingest/usage")
 def ingest_usage(payload: UsagePayload, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    events: list[dict] = []
     if account_id is not None:
-        db.save_usage(account_id, payload.model_dump())
-    return {"status": "success", "message": "Usage ingested successfully"}
+        rec = payload.model_dump()
+        seen_period = any(
+            r.get("customer_id") == payload.customer_id
+            and r.get("period") == payload.period
+            for r in db.get_all_usage(account_id) + db.get_all_invoices(account_id))
+        db.save_usage(account_id, rec)
+        triggers = ["new_usage"] + ([] if seen_period else ["new_billing_period"])
+        events = _assure(account_id, "ingest/usage", triggers,
+                         payload.customer_id, payload.period, rec)
+    return {"status": "success", "message": "Usage ingested successfully",
+            **_assurance_block(events)}
 
 
 @app.post("/api/ingest/invoice")
 def ingest_invoice(payload: InvoicePayload, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    events: list[dict] = []
     if account_id is not None:
-        db.save_invoice(account_id, payload.model_dump())
-    return {"status": "success", "message": "Invoice ingested successfully"}
+        rec = payload.model_dump()
+        existing = next(
+            (i for i in db.get_all_invoices(account_id)
+             if i.get("customer_id") == payload.customer_id
+             and i.get("period") == payload.period), None)
+        db.save_invoice(account_id, rec)
+        from .assurance import classify_invoice_event
+        events = _assure(account_id, "ingest/invoice",
+                         classify_invoice_event(existing, rec),
+                         payload.customer_id, payload.period, rec)
+    return {"status": "success", "message": "Invoice ingested successfully",
+            **_assurance_block(events)}
 
 
 @app.post("/api/ingest/contract")
 def ingest_contract(payload: ContractPayload, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    events: list[dict] = []
     if account_id is not None:
-        db.save_contract(account_id, payload.model_dump())
-    return {"status": "success", "message": "Contract ingested successfully"}
+        rec = payload.model_dump()
+        existing = next(
+            (c for c in db.get_all_contracts(account_id)
+             if c.get("customer_id") == payload.customer_id), None)
+        db.save_contract(account_id, rec)
+        from .assurance import classify_contract_event
+        events = _assure(account_id, "ingest/contract",
+                         classify_contract_event(existing, rec),
+                         payload.customer_id, None, rec)
+    return {"status": "success", "message": "Contract ingested successfully",
+            **_assurance_block(events)}
 
 
 @app.get("/api/connector/stripe/status")
@@ -1565,13 +1553,13 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
             return _needs_review_payload(error_message or "Could not extract terms; please confirm manually.")
 
         saved = account_id is not None
-        if saved:
-            _save_contract_if_needed(account_id, normalized)
+        assurance_events = _save_contract_if_needed(account_id, normalized)
 
         message = ("Contract extracted from scanned PDF (OCR); verify amounts against the original"
                    if ocr else "Contract extracted successfully")
         payload = _contract_preview(normalized, saved=saved, needs_review=needs_review,
                                     message=message, ocr=ocr)
+        payload.update(_assurance_block(assurance_events))
         novel = _run_novel_discovery(
             account_id,
             _document_text_for_discovery(temp_path, suffix),
@@ -1680,13 +1668,45 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
                        "limit is 25 MB. Compress or split it.")
         items.append((f.filename or "upload", content))
 
-    result = ingest_files(items, db.get_all_contracts(account_id), extract_entitlements)
+    prior_contracts = db.get_all_contracts(account_id)
+    prior_invoices = db.get_all_invoices(account_id)
+    prior_usage = db.get_all_usage(account_id)
+    result = ingest_files(items, prior_contracts, extract_entitlements)
+
+    from .assurance import classify_contract_event, classify_invoice_event
+    assurance_events: list[dict] = []
+    prior_contract_by_cid = {c.get("customer_id"): c for c in prior_contracts}
+    prior_invoice_keys = {(i.get("customer_id"), i.get("period")) for i in prior_invoices}
+    seen_periods = {(r.get("customer_id"), r.get("period"))
+                    for r in prior_invoices + prior_usage}
     for contract in result.contracts:
         db.save_contract(account_id, contract)
+        trigger = classify_contract_event(
+            prior_contract_by_cid.get(contract.get("customer_id")), contract)
+        assurance_events += _assure(account_id, "ingest/bulk", trigger,
+                                    contract.get("customer_id"), None, contract)
     for invoice in result.invoices:
         db.save_invoice(account_id, invoice)
+        key = (invoice.get("customer_id"), invoice.get("period"))
+        triggers = classify_invoice_event(
+            next((i for i in prior_invoices
+                  if (i.get("customer_id"), i.get("period")) == key), None),
+            invoice)
+        if key in prior_invoice_keys or key in seen_periods:
+            triggers = [t for t in triggers if t != "new_billing_period"]
+        assurance_events += _assure(account_id, "ingest/bulk", triggers,
+                                    invoice.get("customer_id"),
+                                    invoice.get("period"), invoice)
+        seen_periods.add(key)
     for usage_rec in result.usage:
         db.save_usage(account_id, usage_rec)
+        key = (usage_rec.get("customer_id"), usage_rec.get("period"))
+        triggers = ["new_usage"] + ([] if key in seen_periods
+                                    else ["new_billing_period"])
+        assurance_events += _assure(account_id, "ingest/bulk", triggers,
+                                    usage_rec.get("customer_id"),
+                                    usage_rec.get("period"), usage_rec)
+        seen_periods.add(key)
 
     periods = sorted({r.get("period") for r in result.invoices + result.usage if r.get("period")})
     payload = {
@@ -1735,7 +1755,60 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
                 novel_counts[k] += novel.get(k, 0)
     if novel_counts["discovered"]:
         payload["novel_rights"] = novel_counts
+    payload.update(_assurance_block(assurance_events))
+    try:
+        db.set_assurance_status(account_id, {
+            "last_ingest_needs_review": len(result.needs_review)})
+    except Exception:
+        logger.warning("could not record ingest needs_review on assurance status",
+                       exc_info=True)
     return payload
+
+
+class AssuranceEvaluatePayload(BaseModel):
+    customer_id: str
+    period: str | None = None
+
+
+@app.get("/api/assurance/status")
+def get_assurance_status(user: dict = Depends(verify_token)):
+    """Continuous-assurance status for the authenticated tenant."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"mode": "sample", "last_evaluated_at": None, "last_trigger": None,
+                "next_evaluation": "on next event",
+                "sources_monitored": ["contracts", "invoices", "usage"],
+                "open_discrepancies": 0, "needs_review": 0,
+                "events_total": 0, "events_needs_review": 0,
+                "recent_events": []}
+    from .assurance import account_status
+    return account_status(account_id)
+
+
+@app.get("/api/assurance/events")
+def get_assurance_events(limit: int = 50, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"mode": "sample", "events": []}
+    return {"events": db.get_assurance_events(account_id, min(max(limit, 1), 200))}
+
+
+@app.post("/api/assurance/evaluate")
+def post_assurance_evaluate(payload: AssuranceEvaluatePayload,
+                            user: dict = Depends(verify_token)):
+    """Manual assurance re-trigger. payload_hash buckets to the minute so
+    repeats within the same minute dedupe by event_id."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return _needs_review_payload("Sample mode has no continuous assurance to evaluate.")
+    from . import assurance
+    minute = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    event = assurance.make_event(
+        account_id, "agreement_amendment", payload.customer_id,
+        payload.period, "manual",
+        {"customer_id": payload.customer_id, "period": payload.period,
+         "minute": minute})
+    return assurance.evaluate_event(account_id, event)
 
 
 @app.get("/api/contracts")
