@@ -64,6 +64,8 @@ def save_findings(account_id: str, findings: list[dict]):
             "discrepancy_id": f.get('discrepancy_id'),
             "confidence_score": f.get('confidence_score', 1.0),
             "provenance": f.get('provenance', ''),
+            "expected_value": f.get('expected_value'),
+            "actual_value": f.get('actual_value'),
             "created_at": created_at
         }
         if not existing.exists:
@@ -319,6 +321,16 @@ def update_recovery_event_fields(account_id: str, event_id: str, fields: dict,
         "ts": datetime.now(timezone.utc).isoformat(),
         "details": fields,
     })
+
+
+def get_audit_log(account_id: str, finding_id: str | None = None) -> list[dict]:
+    db = get_client()
+    docs = [doc.to_dict() for doc in
+            _collection(db, account_id, "audit_log").stream()]
+    if finding_id is not None:
+        docs = [d for d in docs if d.get("finding_id") == finding_id]
+    docs.sort(key=lambda e: e.get("ts") or "")
+    return docs
 
 
 def get_recovery_events(account_id: str, finding_id: str | None = None) -> list[dict]:

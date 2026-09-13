@@ -945,6 +945,43 @@ def get_metrics(user: dict = Depends(verify_token)):
     return compute_metrics(_findings_for(account_id), events=events)
 
 
+def _command_center_payload(user: dict) -> dict:
+    from .command_center import build_command_center
+    account_id = _account_id(user)
+    contracts = (db.get_all_contracts(account_id) if account_id is not None
+                 else _load_book(None)[0])
+    result = build_command_center(
+        _findings_for(account_id),
+        db.get_recovery_events(account_id) if account_id else [],
+        db.get_audit_log(account_id) if account_id else [],
+        contracts,
+        assurance_status=(db.get_assurance_status(account_id)
+                          if account_id else None))
+    if not _proof_unlocked(user):
+        for case in result["cases"]:
+            for key in ("clause_text", "math", "provenance"):
+                case["evidence"][key] = None
+            case["locked"] = True
+    if account_id is None:
+        result["mode"] = "sample"
+    return result
+
+
+@app.get("/api/command-center")
+def get_command_center(user: dict = Depends(verify_token)):
+    """Ranked recovery cases + pipeline metrics, all derived server-side."""
+    return _command_center_payload(user)
+
+
+@app.get("/api/command-center/cases/{finding_id}")
+def get_command_center_case(finding_id: str, user: dict = Depends(verify_token)):
+    case = next((c for c in _command_center_payload(user)["cases"]
+                 if c["finding_id"] == finding_id), None)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    return case
+
+
 @app.get("/api/billing/status")
 def get_billing_status(user: dict = Depends(verify_token)):
     account_id = _account_id(user)
