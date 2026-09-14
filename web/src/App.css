@@ -73,6 +73,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .info-label { color: var(--text); font-size: 0.86rem; font-weight: 700; }
 .detail-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
 .detail-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.detail-counterparty { color: var(--text); font-size: 1rem; font-weight: 700; margin-top: 4px; }
 .discrepancy-hero { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
 .discrepancy-amount { font-size: clamp(2rem, 4vw, 3.2rem); font-weight: 800; line-height: 1.1; }
 .manual-entry { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; padding: 12px 14px; }

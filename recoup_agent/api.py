@@ -44,7 +44,12 @@ from .billing.stripe_oauth import (
     parse_oauth_state,
 )
 from .ingest_bulk import ingest_files
-from .ingestion_doc import ContractEntitlements, extract_entitlements
+from .ingestion_doc import (
+    ContractEntitlements,
+    UNREADABLE_DOCUMENT_MESSAGE,
+    UnreadableDocumentError,
+    extract_entitlements,
+)
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .rights_graph import RightsGraphService
@@ -338,6 +343,10 @@ def _account_id(user: dict) -> str | None:
     return user.get("account_id")
 
 
+def _actor(user: dict) -> str:
+    return user.get("email") or user.get("uid") or "unknown"
+
+
 def _is_valid_period(period: str) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}", period))
 
@@ -358,6 +367,16 @@ def _offline_findings():
     return compute_findings_and_review(account_id=None)[0]
 
 
+def _get_finding_or_404(account_id: str | None, finding_id: str) -> dict:
+    finding = (next((f for f in _offline_findings()
+                     if f.get("finding_id") == finding_id), None)
+               if account_id is None
+               else db.get_finding(account_id, finding_id))
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    return finding
+
+
 def _assure(account_id: str | None, source: str, triggers, customer_id: str | None,
             period: str | None, payload) -> list[dict]:
     """Continuous assurance: build ChangeEvent(s) for an ingest action and
@@ -367,6 +386,8 @@ def _assure(account_id: str | None, source: str, triggers, customer_id: str | No
     from . import assurance
     summaries = []
     for trigger in ([triggers] if isinstance(triggers, str) else list(triggers)):
+        if not trigger:
+            continue
         try:
             event = assurance.make_event(account_id, trigger, customer_id,
                                          period, source, payload)
@@ -641,7 +662,7 @@ def approve_finding(finding_id: str, user: dict = Depends(verify_token)):
                 "message": "Sample mode is read-only; approvals are not recorded."}
     try:
         db.transition_finding_status(account_id, finding_id, "approved",
-                                     f"ui_approval_by_{user.get('email', 'unknown')}")
+                                     f"ui_approval_by_{_actor(user)}")
     except db.FindingNotFound:
         raise HTTPException(status_code=404, detail="Finding not found.")
     except db.IllegalTransition as exc:
@@ -659,7 +680,7 @@ def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(v
                 "message": "Sample mode is read-only; approvals are not recorded."}
     try:
         db.transition_finding_status(account_id, finding_id, "rejected",
-                                     f"ui_rejection_by_{user.get('email', 'unknown')}_{update.reason}")
+                                     f"ui_rejection_by_{_actor(user)}_{update.reason}")
     except db.FindingNotFound:
         raise HTTPException(status_code=404, detail="Finding not found.")
     except db.IllegalTransition as exc:
@@ -688,6 +709,7 @@ def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: di
     if not evidence.invoice_ref.strip():
         raise HTTPException(status_code=422, detail="invoice_ref is required.")
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     fields = {
         "corrective_invoice": {
             "ref": evidence.invoice_ref,
@@ -695,12 +717,12 @@ def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: di
             "date": evidence.invoice_date,
             "url": evidence.invoice_url,
             "note": evidence.note,
-            "recorded_by": user.get("email", "unknown"),
+            "recorded_by": _actor(user),
         }
     }
     if account_id is not None:
         _transition_fields(account_id, finding_id, "invoiced",
-                           f"ui_invoiced_by_{user.get('email', 'unknown')}", fields=fields)
+                           f"ui_invoiced_by_{_actor(user)}", fields=fields)
     return {"status": "invoiced", "finding_id": finding_id, **fields}
 
 
@@ -743,9 +765,16 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
         "recovery_events_count": len(
             [e for e in all_events if e.get("event_type") == "realization"]),
     }
-    if finding.get("status") != "recovered":
-        _transition_fields(account_id, finding["finding_id"], "recovered",
-                           f"recovery_realized_{recovery_basis}", fields=finding_fields)
+    requested = rv.quantize(finding.get("monthly_recoverable") or 0)
+    closes_case = recovery_basis == "settlement" or net >= requested
+    if finding.get("status") == "recovered":
+        db.update_finding_fields(account_id, finding["finding_id"],
+                                 finding_fields, "recovery_realized")
+    elif closes_case:
+        _transition_fields(
+            account_id, finding["finding_id"], "recovered",
+            f"recovery_realized_{recovery_basis}",
+            fields={**finding_fields, "recovered_at": event.realized_at})
     else:
         db.update_finding_fields(account_id, finding["finding_id"],
                                  finding_fields, "recovery_realized")
@@ -812,11 +841,10 @@ def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
     Billing eligibility is deterministic; the 20% fee applies only to value
     actually realized."""
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     if account_id is None:
         return _needs_review_payload("Sample mode is read-only; sign in to use real data.")
-    finding = db.get_finding(account_id, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    finding = _get_finding_or_404(account_id, finding_id)
     from .billing import realized_value as rv
     if payload.recovery_basis not in rv.RECOVERY_BASES:
         raise HTTPException(
@@ -843,7 +871,7 @@ def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
         realized_at=payload.realized_at,
         external_reference=payload.external_reference,
         evidence={"note": payload.note},
-        recorded_by=user.get("email", "unknown"),
+        recorded_by=_actor(user),
         recovery_action_id=payload.recovery_action_id)
     if payload.recovery_action_id:
         action = db.get_recovery_action(account_id, payload.recovery_action_id)
@@ -853,7 +881,7 @@ def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "event": "realization_linked",
                 "from": action.get("status"), "to": action.get("status"),
-                "actor": user.get("email", "unknown"),
+                "actor": _actor(user),
                 "details": {"recovery_event_id": event["recovery_event_id"]}})
             db.update_recovery_action(account_id, action,
                                       "realization_linked")
@@ -874,11 +902,10 @@ def reverse_recovery_event(finding_id: str, event_id: str,
     """Reverse (part of) a realization. The original event is never mutated;
     the fee is credited back via a Stripe credit note when it was paid."""
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     if account_id is None:
         return _needs_review_payload("Sample mode is read-only; sign in to use real data.")
-    finding = db.get_finding(account_id, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail=f"Finding {finding_id} not found.")
+    finding = _get_finding_or_404(account_id, finding_id)
     from .billing import realized_value as rv
     events = db.get_recovery_events(account_id, finding_id)
     original_dict = next(
@@ -938,6 +965,7 @@ def reverse_recovery_event(finding_id: str, event_id: str,
 @app.get("/api/findings/{finding_id}/recovery-events")
 def list_recovery_events(finding_id: str, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     if account_id is None:
         return {"events": []}
     return {"events": db.get_recovery_events(account_id, finding_id)}
@@ -951,19 +979,18 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
     if evidence.paid_amount <= 0:
         raise HTTPException(status_code=422, detail="paid_amount must be greater than zero.")
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     payment = {
         "ref": evidence.payment_ref,
         "date": evidence.paid_date,
         "note": evidence.note,
-        "recorded_by": user.get("email", "unknown"),
+        "recorded_by": _actor(user),
     }
     fee_charge = None
     recovered_amount = evidence.paid_amount
+    result_status = "recovered"
     if account_id is not None:
-        finding = db.get_finding(account_id, finding_id)
-        if finding is None:
-            raise HTTPException(status_code=404,
-                                detail=f"Finding {finding_id} not found.")
+        finding = _get_finding_or_404(account_id, finding_id)
         if finding.get("status", "open") == "open":
             raise HTTPException(
                 status_code=409,
@@ -983,7 +1010,7 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
             realized_at=evidence.paid_date,
             external_reference=evidence.payment_ref,
             evidence={"note": evidence.note},
-            recorded_by=user.get("email", "unknown"),
+            recorded_by=_actor(user),
             recovery_action_id=evidence.recovery_action_id)
         if evidence.recovery_action_id:
             action = db.get_recovery_action(account_id,
@@ -996,13 +1023,15 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
                     "event": "realization_linked",
                     "from": action.get("status"),
                     "to": action.get("status"),
-                    "actor": user.get("email", "unknown"),
+                    "actor": _actor(user),
                     "details": {"recovery_event_id":
                                 _event["recovery_event_id"]}})
                 db.update_recovery_action(account_id, action,
                                           "realization_linked")
         recovered_amount = net
-    return {"status": "recovered", "finding_id": finding_id,
+        updated = db.get_finding(account_id, finding_id) or {}
+        result_status = updated.get("status") or result_status
+    return {"status": result_status, "finding_id": finding_id,
             "fee_charge": fee_charge, "recovered_amount": recovered_amount,
             "payment": payment}
 
@@ -1011,10 +1040,11 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
 def mark_finding_disputed(finding_id: str, note: DisputeNote, user: dict = Depends(verify_token)):
     """Flag an invoiced finding as disputed by the customer."""
     account_id = _account_id(user)
-    fields = {"dispute": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
+    _get_finding_or_404(account_id, finding_id)
+    fields = {"dispute": {"reason": note.reason, "recorded_by": _actor(user)}}
     if account_id is not None:
         _transition_fields(account_id, finding_id, "disputed",
-                           f"ui_disputed_by_{user.get('email', 'unknown')}", fields=fields)
+                           f"ui_disputed_by_{_actor(user)}", fields=fields)
         _record_outcome(account_id, finding_id)
     return {"status": "disputed", "finding_id": finding_id, **fields}
 
@@ -1023,10 +1053,11 @@ def mark_finding_disputed(finding_id: str, note: DisputeNote, user: dict = Depen
 def mark_finding_written_off(finding_id: str, note: DisputeNote, user: dict = Depends(verify_token)):
     """Write off an approved/invoiced/disputed finding as uncollectible."""
     account_id = _account_id(user)
-    fields = {"write_off": {"reason": note.reason, "recorded_by": user.get("email", "unknown")}}
+    _get_finding_or_404(account_id, finding_id)
+    fields = {"write_off": {"reason": note.reason, "recorded_by": _actor(user)}}
     if account_id is not None:
         _transition_fields(account_id, finding_id, "written_off",
-                           f"ui_written_off_by_{user.get('email', 'unknown')}", fields=fields)
+                           f"ui_written_off_by_{_actor(user)}", fields=fields)
         _record_outcome(account_id, finding_id)
     return {"status": "written_off", "finding_id": finding_id, **fields}
 
@@ -1104,9 +1135,7 @@ def create_recovery_action(finding_id: str, body: RecoveryActionCreate,
             raise HTTPException(status_code=404, detail="Finding not found.")
         return {"status": "not_persisted", "mode": "sample",
                 "message": "Sample mode is read-only; recovery actions are not recorded."}
-    finding = db.get_finding(account_id, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="Finding not found.")
+    finding = _get_finding_or_404(account_id, finding_id)
     if (finding.get("status") or "open") not in models.ACTIONABLE_FINDING_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -1125,7 +1154,7 @@ def create_recovery_action(finding_id: str, body: RecoveryActionCreate,
     try:
         action = models.new_action(
             account_id, finding, body.action_type,
-            created_by=user.get("email", "unknown"),
+            created_by=_actor(user),
             seq=len(existing) + 1, draft=draft_text, draft_source=draft_source)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -1138,6 +1167,7 @@ def create_recovery_action(finding_id: str, body: RecoveryActionCreate,
 def list_finding_recovery_actions(finding_id: str,
                                   user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     if account_id is None:
         return []
     return db.get_recovery_actions(account_id, finding_id=finding_id)
@@ -1181,7 +1211,7 @@ def update_recovery_action_draft(action_id: str, body: RecoveryActionDraftUpdate
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": "draft_edited", "from": action.get("status"),
         "to": action.get("status"),
-        "actor": user.get("email", "unknown"), "details": {}})
+        "actor": _actor(user), "details": {}})
     db.update_recovery_action(account_id, action, "draft_edited")
     return action
 
@@ -1193,7 +1223,7 @@ def _action_transition(account_id: str, action_id: str, user: dict,
     finding = db.get_finding(account_id, action.get("finding_id")) or {}
     try:
         action = service.transition(
-            action, new_status, actor=user.get("email", "unknown"),
+            action, new_status, actor=_actor(user),
             details=details, finding=finding)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -1264,7 +1294,7 @@ def execute_recovery_action(action_id: str, body: RecoveryActionExecute,
     finding = db.get_finding(account_id, action.get("finding_id")) or {}
     try:
         action, result = service.execute(
-            action, finding, adapter, user.get("email", "unknown"),
+            action, finding, adapter, _actor(user),
             external_reference=body.external_reference)
     except ra_models.NotAuthorized as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -1286,7 +1316,7 @@ def record_recovery_action_outcome(action_id: str, body: RecoveryActionOutcome,
     try:
         action = service.record_outcome(
             action, body.result, body.note, body.response_reference,
-            user.get("email", "unknown"))
+            _actor(user))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     db.update_recovery_action(account_id, action, "outcome_recorded")
@@ -1312,15 +1342,9 @@ def record_recovery_action_outcome(action_id: str, body: RecoveryActionOutcome,
 def get_recovery_case_ledger(finding_id: str, user: dict = Depends(verify_token)):
     from .realization_ledger import case_ledger
     account_id = _account_id(user)
+    finding = _get_finding_or_404(account_id, finding_id)
     if account_id is None:
-        finding = next((f for f in _offline_findings()
-                        if f["finding_id"] == finding_id), None)
-        if finding is None:
-            raise HTTPException(status_code=404, detail="Finding not found.")
         return case_ledger(finding, [], [])
-    finding = db.get_finding(account_id, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="Finding not found.")
     return case_ledger(finding,
                        db.get_recovery_events(account_id, finding_id),
                        db.get_recovery_actions(account_id, finding_id=finding_id),
@@ -1331,6 +1355,7 @@ def get_recovery_case_ledger(finding_id: str, user: dict = Depends(verify_token)
 def get_recovery_case_outcome(finding_id: str,
                               user: dict = Depends(verify_token)):
     account_id = _account_id(user)
+    _get_finding_or_404(account_id, finding_id)
     if account_id is None:
         return {"status": "not_persisted", "mode": "sample"}
     record = db.get_outcome_record(account_id, finding_id)
@@ -1427,7 +1452,9 @@ def sync_recoveries(user: dict = Depends(verify_token)):
                 continue
             if fee:
                 fee_charges.append(fee)
-            recovered.append(f["finding_id"])
+            updated = db.get_finding(account_id, f["finding_id"]) or {}
+            if updated.get("status") == "recovered":
+                recovered.append(f["finding_id"])
         except Exception as exc:
             errors.append({"finding_id": f.get("finding_id"), "error": str(exc)})
     return {"status": "success", "checked": checked, "recovered": recovered,
@@ -1436,11 +1463,16 @@ def sync_recoveries(user: dict = Depends(verify_token)):
 
 @app.post("/api/billing/charge-success-fee")
 def charge_success_fee(user: dict = Depends(verify_token)):
-    """Collect Recoup's 20% success fee on recovered dollars. Charges the card
-    on file per finding; falls back to a mailed invoice when no card exists."""
+    """Collect Recoup's 20% success fee on recovered dollars using the card
+    on file."""
     account_id = _account_id(user)
     if _is_header_sample(user):
         return _needs_review_payload("Sample mode does not bill a success fee.")
+    billing = (db.get_account_billing(account_id) or {}) if account_id else {}
+    if account_id is not None and not billing.get("payment_method_id"):
+        raise HTTPException(
+            status_code=402,
+            detail="Add a payment method in Settings before billing the success fee.")
     from .billing import realized_value as rv
     findings = _findings_for(account_id)
     metrics = compute_metrics(
@@ -1451,11 +1483,13 @@ def charge_success_fee(user: dict = Depends(verify_token)):
     # event model existed get a single synthesized legacy event (billed once).
     billable_events = []
     for f in findings:
-        if f.get("status") != "recovered":
+        if f.get("status") not in rv.BILLABLE_FINDING_STATUSES:
             continue
         events = db.get_recovery_events(account_id, f["finding_id"]) \
             if account_id else []
         if not events:
+            if f.get("status") != "recovered":
+                continue
             amount = f.get("recovered_amount") or f.get("monthly_recoverable") or 0
             if (f.get("fee_charge") or {}).get("status") in {"paid", "pending"} \
                     or amount <= 0:
@@ -1474,7 +1508,6 @@ def charge_success_fee(user: dict = Depends(verify_token)):
             if rv.billing_eligibility(ev, f, events)[0]:
                 billable_events.append((f, ev))
 
-    billing = (db.get_account_billing(account_id) or {}) if account_id else {}
     if billing.get("payment_method_id"):
         charged = []
         for f, ev in billable_events:
@@ -1953,6 +1986,8 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
         try:
             normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
+        except UnreadableDocumentError:
+            raise HTTPException(status_code=422, detail=UNREADABLE_DOCUMENT_MESSAGE)
         except Exception:
             return _needs_review_payload("Could not extract terms; please confirm manually.")
 
@@ -2225,7 +2260,7 @@ def confirm_contract(customer_id: str, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
     if account_id is None:
         return {"mode": "sample", "status": "not_persisted", "customer_id": customer_id}
-    contract = db.confirm_contract(account_id, customer_id, user.get("email"))
+    contract = db.confirm_contract(account_id, customer_id, _actor(user))
     if contract is None:
         raise HTTPException(status_code=404, detail="Contract not found")
     return {"status": "confirmed", "contract": contract}

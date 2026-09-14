@@ -55,6 +55,9 @@ const EMPTY_FILTERS = {
   maxAge: '', minConfidence: '', agreement: '', period: '',
 }
 
+const ACTIONABLE_REALIZATION_STATUSES = ['approved', 'invoiced', 'disputed']
+const REVERSIBLE_FINDING_STATUSES = ['approved', 'invoiced', 'disputed', 'recovered']
+
 const LEGAL_NEXT_ACTIONS = {
   open: ['approve', 'reject'],
   approved: ['invoice', 'payment', 'writeoff', 'reject'],
@@ -84,14 +87,34 @@ const emptyContractDraft = {
   },
 }
 
+function apiErrorMessage(text) {
+  let detail = text
+  try {
+    const parsed = JSON.parse(text)
+    detail = parsed?.detail ?? parsed?.message ?? text
+  } catch { /* keep raw text */ }
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.detail ||
+      (detail.status === 'duplicate'
+        ? 'This external reference was already recorded for this case.'
+        : JSON.stringify(detail))
+  }
+  return String(detail || 'Request failed')
+}
+
+const MONEY_FORMATTER = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 function formatCurrency(value) {
-  return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+  return MONEY_FORMATTER.format(Number(value || 0))
 }
 
 function formatRate(value) {
-  const n = Number(value || 0)
-  const digits = n !== 0 && Math.abs(n) < 0.01 ? 6 : 2
-  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })}`
+  return formatCurrency(value)
 }
 
 function formatDate(value) {
@@ -178,6 +201,7 @@ function App() {
   const [billingPeriod, setBillingPeriod] = useState(DEFAULT_PERIOD)
   const [, setFindings] = useState([])
   const [allFindings, setAllFindings] = useState([])
+  const [findingsLoaded, setFindingsLoaded] = useState(false)
   const [running, setRunning] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [uploadedContracts, setUploadedContracts] = useState([])
@@ -199,6 +223,7 @@ function App() {
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [rights, setRights] = useState({})
   const [events, setEvents] = useState({})
+  const [eventsLoading, setEventsLoading] = useState({})
   const [realizationForm, setRealizationForm] = useState(null)
   const [realizationFields, setRealizationFields] = useState({ basis: 'cash_payment', amount: '', date: '', reference: '', actionId: '', note: '' })
   const [reverseForm, setReverseForm] = useState(null)
@@ -253,12 +278,16 @@ function App() {
     }
     const res = await fetch(`${API_BASE}${path}`, { ...options, headers, body })
     if (!res.ok) {
-      let detail = await res.text()
-      try { detail = JSON.parse(detail)?.detail || detail } catch { /* keep raw text */ }
-      throw new Error(detail)
+      throw new Error(apiErrorMessage(await res.text()))
     }
     const text = await res.text()
-    return text ? JSON.parse(text) : null
+    const parsed = text ? JSON.parse(text) : null
+    const method = (options.method || 'GET').toUpperCase()
+    if (method !== 'GET' && parsed?.status === 'needs_review' && Array.isArray(parsed.fields)) {
+      const fieldMessages = parsed.fields.map((field) => field?.message || field?.field).filter(Boolean).join('; ')
+      throw new Error([parsed.message, fieldMessages].filter(Boolean).join(' '))
+    }
+    return parsed
   }, [firebaseUser, isSampleMode])
 
   const authenticatedFetch = useCallback(async (path, options = {}) => {
@@ -297,10 +326,14 @@ function App() {
 
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
-    const [pending, all] = await Promise.all([apiRequest('/findings/pending'), apiRequest('/findings')])
-    void loadMetrics(); void loadAssurance(); void loadCommandCenter()
-    setFindings(Array.isArray(pending) ? pending : [])
-    setAllFindings(Array.isArray(all) ? all : [])
+    try {
+      const [pending, all] = await Promise.all([apiRequest('/findings/pending'), apiRequest('/findings')])
+      setFindings(Array.isArray(pending) ? pending : [])
+      setAllFindings(Array.isArray(all) ? all : [])
+    } finally {
+      setFindingsLoaded(true)
+      void loadMetrics(); void loadAssurance(); void loadCommandCenter()
+    }
   }, [apiReady, apiRequest, loadMetrics, loadAssurance, loadCommandCenter])
 
   const loadContracts = useCallback(async () => {
@@ -312,24 +345,30 @@ function App() {
     } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
-  useEffect(() => {
+  const loadRenewals = useCallback(async () => {
     if (!apiReady) return
-    const handle = window.setTimeout(() => {
-      void refreshFindings(); void loadConnectorStatus(); void loadContracts()
-      apiRequest('/renewals').then((rows) => setRenewals(Array.isArray(rows) ? rows : [])).catch(() => setRenewals([]))
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, refreshFindings, loadConnectorStatus, loadContracts, apiRequest])
+    try {
+      const rows = await apiRequest('/renewals')
+      setRenewals(Array.isArray(rows) ? rows : [])
+    } catch (error) {
+      console.error(error)
+      setRenewals([])
+    }
+  }, [apiReady, apiRequest])
 
-  useEffect(() => {
-    if (!apiReady || !route.id || screen !== 'opportunities') return
-    const handle = window.setTimeout(() => {
-      apiRequest(`/findings/${route.id}/recovery-events`)
-        .then((rows) => setEvents((current) => ({ ...current, [route.id]: Array.isArray(rows) ? rows : (rows?.events || []) })))
-        .catch(() => setEvents((current) => ({ ...current, [route.id]: [] })))
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, apiRequest, route.id, screen])
+  const loadRecoveryEvents = useCallback(async (findingId) => {
+    if (!apiReady || !findingId) return
+    setEventsLoading((current) => ({ ...current, [findingId]: true }))
+    try {
+      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
+      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
+    } catch (error) {
+      console.error(error)
+      setEvents((current) => ({ ...current, [findingId]: [] }))
+    } finally {
+      setEventsLoading((current) => ({ ...current, [findingId]: false }))
+    }
+  }, [apiReady, apiRequest])
 
   useEffect(() => {
     if (!apiReady || screen !== 'agreements') return
@@ -349,6 +388,23 @@ function App() {
     if (!apiReady) return
     try { setBilling(await apiRequest('/billing/status')) } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
+
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([
+      refreshFindings(),
+      loadContracts(),
+      loadRenewals(),
+      loadBillingStatus(),
+    ])
+  }, [refreshFindings, loadContracts, loadRenewals, loadBillingStatus])
+
+  useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => {
+      void refreshAll(); void loadConnectorStatus()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, refreshAll, loadConnectorStatus])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -431,7 +487,8 @@ function App() {
     try { await signOut(auth) } finally {
       setSessionMode(null)
       setFirebaseUser(null)
-      setFindings([]); setAllFindings([])
+      setFindings([]); setAllFindings([]); setFindingsLoaded(false)
+      setEvents({}); setEventsLoading({})
       setStatusMessage('')
       setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
     }
@@ -453,6 +510,7 @@ function App() {
       setContractDraft(emptyContractDraft)
       setSelectedFileName('')
       setStatusMessage(`Uploaded structured contract for ${payload.customer_name}.`)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Contract upload failed', error))
@@ -481,6 +539,7 @@ function App() {
       setStatusMessage(result?.status === 'needs_review'
         ? (result.message || 'Bulk upload needs review.')
         : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` + (nr ? ` ${nr} item(s) need review.` : ''))
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
@@ -494,6 +553,7 @@ function App() {
       if (result?.status === 'confirmed' || result?.contract?.confirmed) {
         setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, confirmed: true, confirmed_by: result.contract?.confirmed_by, confirmed_at: result.contract?.confirmed_at } : item))
         setStatusMessage('Contract terms confirmed.')
+        await refreshAll()
       } else {
         setStatusMessage(result?.message || 'Sample mode did not persist confirmation.')
       }
@@ -513,7 +573,7 @@ function App() {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
       setReviewQueue(result?.needs_review || [])
       setStatusMessage(`Evaluation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review.` : ''))
-      await refreshFindings()
+      await refreshAll()
       navigate('opportunities')
     } catch (error) {
       console.error(error)
@@ -530,7 +590,7 @@ function App() {
     try {
       const result = await apiRequest('/assurance/evaluate', { method: 'POST', body: { customer_id: customerId, period: billingPeriod } })
       setStatusMessage(result?.status === 'needs_review' ? result.message : 'Assurance evaluation recorded.')
-      await loadAssurance()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Assurance evaluation failed', error))
@@ -545,7 +605,7 @@ function App() {
       setStatusMessage(result.status !== 'approved' && result.status !== 'rejected'
         ? (result.message || 'Sample mode is read-only; approval was not recorded.')
         : (action === 'approve' ? 'Finding approved.' : 'Finding rejected.'))
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not update the finding.')
@@ -573,9 +633,8 @@ function App() {
       })
       setStatusMessage('Realized value recorded.')
       setRealizationForm(null)
-      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
-      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
-      await refreshFindings()
+      await loadRecoveryEvents(findingId)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Could not record realized value', error))
@@ -589,7 +648,7 @@ function App() {
     try {
       await apiRequest(`/findings/${finding.finding_id}/invoiced`, { method: 'POST', body: { invoice_ref, invoice_amount, invoice_url: null, note: '' } })
       setStatusMessage('Corrective invoice recorded.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not record corrective invoice.')
@@ -601,7 +660,7 @@ function App() {
     try {
       await apiRequest(`/findings/${findingId}/disputed`, { method: 'POST', body: { reason } })
       setStatusMessage('Finding marked disputed.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not mark the finding disputed.')
@@ -613,7 +672,7 @@ function App() {
     try {
       await apiRequest(`/findings/${findingId}/written-off`, { method: 'POST', body: { reason } })
       setStatusMessage('Finding written off.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not write off the finding.')
@@ -632,9 +691,8 @@ function App() {
       })
       setStatusMessage('Realization reversed.')
       setReverseForm(null)
-      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
-      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
-      await refreshFindings()
+      await loadRecoveryEvents(findingId)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Reversal failed', error))
@@ -644,7 +702,7 @@ function App() {
   const exportFindings = async () => {
     try {
       const res = await authenticatedFetch('/findings/export')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = 'recoup_findings.csv'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
@@ -665,7 +723,7 @@ function App() {
   const downloadReportPdf = async () => {
     try {
       const res = await authenticatedFetch('/report.pdf')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = 'recoup_report.pdf'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
@@ -691,7 +749,7 @@ function App() {
       else {
         const n = result?.recovered?.length || 0
         setStatusMessage(`Checked ${result?.checked ?? 0} invoices — ${n} newly recovered.`)
-        await refreshFindings()
+        await refreshAll()
       }
     } catch (error) {
       console.error(error); setStatusMessage(failureMessage('Stripe sync failed', error))
@@ -703,7 +761,7 @@ function App() {
       const result = await apiRequest('/billing/charge-success-fee', { method: 'POST' })
       const billing = result?.billing || {}
       setStatusMessage(billing.message || `Success fee status: ${billing.status}`)
-      await loadMetrics()
+      await refreshAll()
     } catch (error) {
       console.error(error); setStatusMessage('Could not charge the success fee.')
     }
@@ -714,7 +772,7 @@ function App() {
     try {
       const params = trueupSender ? `?sender=${encodeURIComponent(trueupSender)}` : ''
       const res = await authenticatedFetch(`/trueup/${customerId}.pdf${params}`)
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = `trueup_${customerId}.pdf`; link.click(); URL.revokeObjectURL(url)
       setStatusMessage(`True-up pack for ${customerName || customerId} downloaded.`)
@@ -731,7 +789,7 @@ function App() {
     }
     try {
       const result = await apiRequest('/account/data', { method: 'DELETE', body: { confirm } })
-      setFindings([]); setAllFindings([]); setUploadedContracts([]); setMetrics(null)
+      setFindings([]); setAllFindings([]); setFindingsLoaded(false); setUploadedContracts([]); setMetrics(null)
       setStatusMessage(result?.status === 'deleted' ? 'All account data deleted.' : (result?.message || 'Deletion did not complete.'))
     } catch (error) {
       console.error(error); setStatusMessage(failureMessage('Account data deletion failed', error))
@@ -763,6 +821,20 @@ function App() {
   }, [screen, route.id, commandCenter, allFindings])
 
   const recoveryCases = useMemo(() => allFindings.filter((finding) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(finding.status || 'open')), [allFindings])
+  const eventCaseIds = useMemo(() => {
+    const ids = new Set(recoveryCases.map((finding) => finding.finding_id).filter(Boolean))
+    if (selectedCase?.finding_id) ids.add(selectedCase.finding_id)
+    return Array.from(ids)
+  }, [recoveryCases, selectedCase])
+
+  useEffect(() => {
+    eventCaseIds.forEach((findingId) => {
+      if (events[findingId] === undefined && !eventsLoading[findingId]) {
+        void loadRecoveryEvents(findingId)
+      }
+    })
+  }, [eventCaseIds, events, eventsLoading, loadRecoveryEvents])
+
   const trueupCustomers = useMemo(() => {
     const statuses = ['approved', 'invoiced', 'disputed']
     const map = {}
@@ -839,13 +911,15 @@ function App() {
   const renderEvents = (finding) => (
     <div className="info-group">
       <div className="info-label">Realization events</div>
-      {(events[finding.finding_id] || []).length === 0 ? <p className="muted-copy">No realization events recorded.</p> : (
+      {events[finding.finding_id] === undefined || eventsLoading[finding.finding_id] ? (
+        <p className="muted-copy">Loading realization events…</p>
+      ) : events[finding.finding_id].length === 0 ? <p className="muted-copy">No realization events recorded.</p> : (
         <ul className="upload-history">
           {(events[finding.finding_id] || []).map((event) => (
             <li key={event.recovery_event_id} className="upload-history-item event-row">
               <span>{event.event_type?.replace(/_/g, ' ') || 'event'} · {event.recovery_basis?.replace(/_/g, ' ')} · {formatCurrency(event.event_type === 'reversal' ? event.reversal_amount : event.realized_value)}</span>
               <span className="muted-copy">{event.external_reference || event.reversal_reference || '—'} · {formatDate(event.realized_at || event.created_at)}</span>
-              {event.event_type === 'realization' && (
+              {event.event_type === 'realization' && REVERSIBLE_FINDING_STATUSES.includes(finding.status) && (
                 <button className="btn-secondary" onClick={() => { setReverseForm({ finding_id: finding.finding_id, event_id: event.recovery_event_id }); setReverseFields({ amount: '', reference: '', reason: '' }) }}>Reverse</button>
               )}
             </li>
@@ -880,7 +954,7 @@ function App() {
     return (
       <section className="panel-card opportunity-detail">
         <div className="panel-heading">
-          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2></div>
+          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2><div className="detail-counterparty">{finding.counterparty?.customer_name || finding.customer_name || 'Unknown counterparty'} · {finding.counterparty?.customer_id || finding.customer_id || '—'}</div></div>
           <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
         </div>
         <div className="detail-grid detail-grid-two">
@@ -914,7 +988,7 @@ function App() {
           {renderRealizationForm(detailFinding)}
         </div>
         {['approved', 'invoiced', 'disputed'].includes(finding.status) && (
-          <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshFindings} />
+          <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshAll} />
         )}
         {ledger && (
           <div className="info-group"><div className="info-label">7. Realization ledger</div>
@@ -971,7 +1045,18 @@ function App() {
 
   const renderOpportunities = () => {
     const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
-    if (route.id && selectedCase) return renderOpportunityDetail(selectedCase)
+    if (route.id) {
+      if (selectedCase) return renderOpportunityDetail(selectedCase)
+      if (findingsLoaded) {
+        return (
+          <section className="panel-card opportunity-detail">
+            <div className="panel-heading"><div><p className="eyebrow">Opportunity detail</p><h2>Opportunity not found</h2></div><button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button></div>
+            <p className="muted-copy">No opportunity exists for this link in the current account.</p>
+          </section>
+        )
+      }
+      return <section className="panel-card"><p className="muted-copy">Loading selected opportunity…</p></section>
+    }
     return (
       <section className="panel-card">
         <div className="panel-heading"><div><p className="eyebrow">Opportunities</p><h2>Working queue</h2></div><span className="hint-pill">{cases.length} cases</span></div>
@@ -992,7 +1077,7 @@ function App() {
           {cases.length === 0 && <tr><td colSpan="8" className="muted-copy">No cases match the current filters.</td></tr>}
         </tbody></table></div>
         <div className="panel-section"><div className="info-label">Needs review</div>
-          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason}</span><span className="muted-copy">{item.reason || item.suggested_action}</span></li>)}</ul>}
+          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason || 'Needs review'}</span><span className="muted-copy">{[item.reason, item.suggested_action, item.next_step].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')}</span></li>)}</ul>}
         </div>
         {route.id && <p className="muted-copy">Loading selected opportunity…</p>}
       </section>
@@ -1060,13 +1145,18 @@ function App() {
         {[['recovered_to_date', 'Recovered to date'], ['recovered_this_month', 'Recovered this month'], ['success_fee_to_date', 'Success fee to date'], ['success_fee_this_month', 'Success fee this month'], ['invoiced_awaiting_payment', 'Invoiced awaiting payment'], ['written_off', 'Written off'], ['potential_monthly_recoverable', 'Potential monthly recoverable']].map(([key, label]) => <div key={key} className="metric-card"><span className="metric-label">{label}</span><strong className="metric-value money">{formatCurrency(metrics?.[key])}</strong></div>)}
       </div>
       <div className="panel-section"><div className="info-label">Recovery cases</div>
-        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
-          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Net realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name || c.customer_name || '—'}{c.counterparty?.customer_id || c.customer_id ? ` · ${c.counterparty?.customer_id || c.customer_id}` : ''}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.net_realized)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
           {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).length === 0 && <tr><td colSpan="5" className="muted-copy">No recovery cases yet — approve an opportunity first.</td></tr>}
         </tbody></table></div>
       </div>
       <div className="panel-section"><div className="info-label">Record realized value</div>
-        {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div><button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>{renderRealizationForm(finding)}{renderEvents(finding)}</div>)}
+        {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div>{ACTIONABLE_REALIZATION_STATUSES.includes(finding.status) && (
+            <>
+              <button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>
+              {renderRealizationForm(finding)}
+            </>
+          )}{renderEvents(finding)}</div>)}
       </div>
       <div className="panel-section"><div className="info-label">True-up letters</div>
         <label className="styled-field">Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>
@@ -1076,7 +1166,12 @@ function App() {
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={exportFindings}><Download size={15} /> Export findings CSV</button>
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={openAuditReport}><FileText size={15} /> Audit report</button>
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={downloadReportPdf}><Download size={15} /> PDF report</button>
-        <button className="btn-primary" onClick={chargeSuccessFee}>Bill success fee this month</button>
+        <button
+          className="btn-primary"
+          onClick={chargeSuccessFee}
+          disabled={billing?.card_on_file === false}
+          title={billing?.card_on_file === false ? 'Add a payment method in Settings before billing the success fee.' : undefined}
+        >Bill success fee this month</button>
       </div>
     </section>
   )

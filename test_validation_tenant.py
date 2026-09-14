@@ -89,7 +89,8 @@ def test_cross_tenant_recovery_events(monkeypatch):
     mine = client.get("/api/findings/f1/recovery-events", headers=_A)
     assert len(mine.json()["events"]) == 1
     other = client.get("/api/findings/f1/recovery-events", headers=_B)
-    assert other.json()["events"] == []
+    assert other.status_code == 404
+    assert other.json() == {"detail": "Finding not found."}
     r = client.post("/api/findings/f1/recovery-events", headers=_B,
                     json={"recovery_basis": "cash_payment",
                           "realized_value": 10.0})
