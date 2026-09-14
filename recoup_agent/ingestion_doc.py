@@ -4,6 +4,7 @@ import os
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -55,13 +56,16 @@ class Entitlement(BaseModel):
     tier_up_to: Optional[float] = Field(None, description="For overage_tier terms only: the upper bound of this tier in overage units above the included quantity; null for the final, unbounded tier.")
     confidence_score: float = Field(description="Confidence score of this extraction between 0.0 and 1.0")
     provenance: str = Field(description="The exact clause quote and page number indicating where this was found.")
+    page: Optional[int] = None
+    section_ref: Optional[str] = None
+    verification: Optional[dict] = None
 
 class ContractEntitlements(BaseModel):
     customer_name: str = Field(description="The name of the customer the contract is with.")
     entitlements: List[Entitlement]
 
-def extract_entitlements(file_path: str) -> ContractEntitlements:
-    """Extracts structured billing entitlements from a document of any format."""
+def _extract_single_shot(file_path: str) -> ContractEntitlements:
+    """Legacy single-shot extractor retained for controlled rollback."""
     try:
         suffix = os.path.splitext(file_path)[1].lower()
         mime_type, _ = mimetypes.guess_type(file_path)
@@ -118,6 +122,37 @@ def extract_entitlements(file_path: str) -> ContractEntitlements:
             return ContractEntitlements(customer_name="Unknown", entitlements=[])
 
         return ContractEntitlements.model_validate_json(response.text)
+    except Exception as exc:
+        logger.exception("document extraction failed for %s", file_path)
+        raise UnreadableDocumentError() from exc
+
+
+def extract_entitlements(file_path: str, *, client=None, model: str | None = None) -> ContractEntitlements:
+    """Extract, page-anchor, and verify document entitlements."""
+    if os.getenv("RECOUP_EXTRACTION_LEGACY") == "1":
+        return _extract_single_shot(file_path)
+    try:
+        from .extraction.extractor import extract_pages
+        from .extraction.pages import MAX_SCANNED_PDF_PAGES, DocumentTooLargeError, load_pages
+        from .extraction.verifier import verify
+        from .extraction.ocr import get_ocr_adapter
+
+        pages, source_kind = load_pages(file_path)
+        if source_kind == "scanned" and len(pages) > MAX_SCANNED_PDF_PAGES:
+            raise UnreadableDocumentError()
+        if source_kind in {"scanned", "image"}:
+            suffix = os.path.splitext(file_path)[1].lower()
+            mime_type = _MIME_OVERRIDES.get(suffix, "application/pdf" if suffix == ".pdf" else "image/jpeg")
+            with open(file_path, "rb") as fh:
+                pages = get_ocr_adapter(client=client).page_texts(fh.read(), mime_type)
+        result = extract_pages(pages, source_kind, client=client, model=model)
+        verified = verify(result, pages, client=client, model=model)
+        entitlements = [Entitlement(**item.model_dump()) for item in verified]
+        return ContractEntitlements(customer_name=result.customer_name, entitlements=entitlements)
+    except DocumentTooLargeError:
+        raise
+    except UnreadableDocumentError:
+        raise
     except Exception as exc:
         logger.exception("document extraction failed for %s", file_path)
         raise UnreadableDocumentError() from exc

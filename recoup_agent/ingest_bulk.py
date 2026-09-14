@@ -16,6 +16,7 @@ from typing import Callable
 from .identity import CustomerResolver
 from .ingest_csv import IngestError, classify_csv, load_invoices_csv, load_usage_csv
 from .ingestion_doc import ContractEntitlements
+from .extraction.pages import DocumentTooLargeError
 from .normalizer import normalize_contract_entitlements
 
 CONTRACT_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
@@ -107,6 +108,16 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 temp.write(content)
                 temp.close()
                 extracted = extract(temp.name)
+            except DocumentTooLargeError as exc:
+                result.files.append({"name": name, "kind": "contract", "status": "error",
+                                     "message": str(exc)})
+                result.needs_review.append({
+                    "customer_id": None, "customer_name": name,
+                    "term": "document_size",
+                    "reason": str(exc),
+                    "suggested_action": "Agreement exceeds 600 pages; split it by section and re-upload",
+                })
+                continue
             except Exception as exc:
                 result.files.append({"name": name, "kind": "contract", "status": "error",
                                      "message": str(exc)})

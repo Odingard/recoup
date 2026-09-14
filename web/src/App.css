@@ -207,6 +207,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .agreement-card > button { margin-top: 10px; }
 .term-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .term-chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-family: var(--mono); font-size: 0.68rem; padding: 4px 7px; }
+.quote-chip { border: 1px solid rgba(47, 191, 131, 0.45); border-radius: 999px; color: var(--green); font-size: 0.62rem; margin-left: 6px; padding: 2px 5px; }
+.muted-chip { border-color: var(--border); color: var(--text-muted); }
 .term-chip.review, .status-review { border-color: rgba(228, 176, 74, 0.5); color: var(--amber); }
 .status-read { color: var(--green); }
 .source-line, .review-note { display: block; font-size: 0.76rem; margin-top: 8px; }

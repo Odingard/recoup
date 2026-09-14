@@ -1258,6 +1258,11 @@ function App() {
     const fileName = contract?.file_name
     const clauseRef = evidence.clause_ref || joined.clause_ref
     const clauseLabel = CLAUSE_REF_LABELS[clauseRef] || clauseRef
+    const clauseField = ({ committed_minimum: 'committed_minimum_monthly', overage: 'overage_rate', discount: 'discounts', escalator: 'annual_escalator_pct' })[clauseRef] || clauseRef
+    const clauseMeta = contract?.term_meta?.[clauseField] || {}
+    const clauseSection = clauseMeta.section_ref || joined.section_ref
+    const clausePage = clauseMeta.page || joined.page
+    const verifiedQuote = clauseMeta.verification?.quote_found && clauseMeta.verification?.model_check === 'supports'
     const gated = joined.locked || proofLocked
     return (
       <section className="panel-card opportunity-detail">
@@ -1274,7 +1279,7 @@ function App() {
             <>
               <p className="story-paragraph">
                 {joined.detail || joined.financial_right?.title || joined.title || joined.finding_id}{' '}
-                Recoup read this in {fileName ? `“${fileName}”` : 'the agreement'}{clauseLabel ? `, clause ${clauseLabel}` : ''}, and checked it against the {joined.period || '—'} billing period.
+                Recoup read this in {fileName ? `“${fileName}”` : 'the agreement'}{clauseSection ? `, ${clauseSection}` : clauseLabel ? `, ${clauseLabel}` : ''}{clausePage ? `, page ${clausePage}` : ''}, and checked it against the {joined.period || '—'} billing period.
               </p>
               {joined.assumption && <p className="muted-copy">Assumption: {joined.assumption}</p>}
             </>
@@ -1293,7 +1298,7 @@ function App() {
           {gated ? renderGate() : (
             <div className="detail-grid detail-grid-two">
               <div><div className="info-label">Agreement clause</div>
-                <div className="provenance-box">{clauseLabel || '—'}<br />{evidence.clause_text || joined.clause_text || 'No clause text on file.'}</div>
+                <div className="provenance-box">{clauseSection || clauseLabel || '—'}{clausePage ? ` · p. ${clausePage}` : ''}<br />{evidence.clause_text || joined.clause_text || 'No clause text on file.'}{verifiedQuote ? <span className="file-chip">Verified quote</span> : <span className="file-chip muted-chip">Quote not found</span>}</div>
               </div>
               <div><div className="info-label">Calculation</div>
                 <div className="detail-copy math-copy">{evidence.math || joined.math || '—'}</div>
@@ -1589,7 +1594,7 @@ function App() {
           <div key={contract.customer_id} className="agreement-card">
             <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : needsReview ? 'status-review' : 'status-read'}`}>{contract.confirmed ? `Confirmed by ${shortActor(contract.confirmed_by)}` : needsReview ? 'Needs your review' : 'Read by Recoup'}</span></div>
             <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
-            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%</span>)}</div>}
+            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && meta.verification?.model_check === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
             {provenances.length === 1 && <div className="muted-copy source-line">Source: {provenances[0]}</div>}
             {needsReview && !contract.confirmed && <><button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm as read'}</button><span className="muted-copy review-note">Recoup wasn't sure about the amber terms — confirm or re-upload a clearer copy.</span></>}
             <details><summary>Financial rights</summary>

@@ -44,6 +44,7 @@ from .billing.stripe_oauth import (
     parse_oauth_state,
 )
 from .ingest_bulk import ingest_files
+from .extraction.pages import MAX_SCANNED_PDF_PAGES, DocumentTooLargeError
 from .ingestion_doc import (
     ContractEntitlements,
     UNREADABLE_DOCUMENT_MESSAGE,
@@ -376,7 +377,6 @@ class ContractPayload(BaseModel):
 
 VALID_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
-MAX_SCANNED_PDF_PAGES = 25
 MAX_BULK_FILES = 50
 MAX_BULK_FILE_BYTES = 25 * 1024 * 1024  # 25 MB per uploaded file
 DEFAULT_PERIOD = "2026-06"
@@ -2173,6 +2173,8 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
         try:
             normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
+        except DocumentTooLargeError as exc:
+            return _needs_review_payload(str(exc))
         except UnreadableDocumentError:
             raise HTTPException(status_code=422, detail=UNREADABLE_DOCUMENT_MESSAGE)
         except Exception:
