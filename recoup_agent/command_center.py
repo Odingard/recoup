@@ -102,6 +102,12 @@ def _approval_state(status: str) -> str:
     return "approved"
 
 
+def _case_ledger(f: dict, events: list, actions: list, audit: list,
+                 now: datetime) -> dict:
+    from .realization_ledger import case_ledger
+    return case_ledger(f, events, actions, audit, now=now)
+
+
 def build_command_center(findings: list[dict], recovery_events: list[dict],
                          audit_log: list[dict], contracts: list[dict],
                          *, now: datetime | None = None,
@@ -193,6 +199,7 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
         rank = rank_score(f, now, ev, sw)
         f_events = events_by_finding.get(f.get("finding_id"), [])
         f_actions = actions_by_finding.get(f.get("finding_id"), [])
+        f_audit_all = audit_by_finding.get(f.get("finding_id"), [])
         f_audit = sorted(audit_by_finding.get(f.get("finding_id"), []),
                          key=lambda a: a.get("ts") or "")
         approval = {"state": _approval_state(f.get("status") or "open")}
@@ -244,12 +251,17 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
                  "decision": a.get("decision"), "details": a.get("details")}
                 for a in f_audit],
             "realization_history": f_events,
+            "ledger": _case_ledger(f, f_events, f_actions, f_audit_all, now),
             "net_realized": recovered_dollars(f, events_by_finding) if f_events else 0.0,
             "rank": rank,
             "age_days": rank["age_days"],
             "created_at": f.get("created_at"),
         })
     cases.sort(key=lambda c: c["rank"]["score"], reverse=True)
+
+    from .realization_ledger import recovery_metrics as _recovery_metrics
+    executive_summary["recovery_metrics"] = _recovery_metrics(
+        findings, recovery_events or [], recovery_actions or [], now=now)
 
     customers = sorted(
         {(f.get("customer_id"), f.get("customer_name") or f.get("customer_id"))

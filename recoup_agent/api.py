@@ -267,6 +267,7 @@ class PaymentEvidence(BaseModel):
     paid_amount: float
     paid_date: str | None = None
     payment_ref: str | None = None
+    recovery_action_id: str | None = None
     note: str = ""
 
 
@@ -663,6 +664,7 @@ def reject_finding(finding_id: str, update: StatusUpdate, user: dict = Depends(v
         raise HTTPException(status_code=404, detail="Finding not found.")
     except db.IllegalTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    _record_outcome(account_id, finding_id)
     return {"status": "rejected", "finding_id": finding_id}
 
 
@@ -705,7 +707,8 @@ def record_finding_invoiced(finding_id: str, evidence: InvoiceEvidence, user: di
 def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
                         realized_value: float, realized_at: str | None,
                         external_reference: str | None, evidence: dict,
-                        recorded_by: str) -> dict:
+                        recorded_by: str,
+                        recovery_action_id: str | None = None) -> dict:
     """Persist a realization event, roll the finding forward, and charge the
     success fee for that event. Returns (event_dict, fee_charge)."""
     from .billing import realized_value as rv
@@ -716,7 +719,8 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
         realized_value=realized_value,
         realized_at=realized_at,
         external_reference=external_reference,
-        evidence=evidence)
+        evidence=evidence,
+        recovery_action_id=recovery_action_id)
     existing = db.get_recovery_events(account_id, finding["finding_id"])
     if not db.save_recovery_event(account_id, event.to_dict()):
         raise HTTPException(
@@ -766,7 +770,29 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
             db.update_finding_fields(account_id, finding["finding_id"],
                                      {"fee_charge": fee_charge},
                                      "success_fee_charge")
+    _record_outcome(account_id, finding["finding_id"])
     return event.to_dict(), fee_charge, payment, net
+
+
+def _record_outcome(account_id: str | None, finding_id: str) -> None:
+    """Project the current case ledger into the tenant-scoped outcome record
+    store. Never raises to the request path."""
+    if account_id is None:
+        return
+    try:
+        from .realization_ledger import case_ledger, outcome_record
+        finding = db.get_finding(account_id, finding_id)
+        if finding is None:
+            return
+        events = db.get_recovery_events(account_id, finding_id)
+        actions = db.get_recovery_actions(account_id, finding_id=finding_id)
+        db.save_outcome_record(
+            account_id,
+            outcome_record(finding,
+                           case_ledger(finding, events, actions), actions))
+    except Exception as exc:
+        logger.warning("outcome record write failed for %s: %s",
+                       finding_id, exc)
 
 
 class RecoveryEventPayload(BaseModel):
@@ -775,6 +801,7 @@ class RecoveryEventPayload(BaseModel):
     currency: str = "USD"
     realized_at: str | None = None
     external_reference: str | None = None
+    recovery_action_id: str | None = None
     note: str | None = None
 
 
@@ -802,6 +829,13 @@ def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
         raise HTTPException(
             status_code=409,
             detail="recovery requires an approved finding")
+    if payload.recovery_action_id:
+        action = db.get_recovery_action(account_id, payload.recovery_action_id)
+        if action is None or action.get("finding_id") != finding_id:
+            raise HTTPException(
+                status_code=422,
+                detail="recovery_action_id must reference an action on this "
+                       "finding for this account")
     event, fee_charge, _payment, _net = _record_realization(
         account_id, finding,
         recovery_basis=payload.recovery_basis,
@@ -809,7 +843,20 @@ def create_recovery_event(finding_id: str, payload: RecoveryEventPayload,
         realized_at=payload.realized_at,
         external_reference=payload.external_reference,
         evidence={"note": payload.note},
-        recorded_by=user.get("email", "unknown"))
+        recorded_by=user.get("email", "unknown"),
+        recovery_action_id=payload.recovery_action_id)
+    if payload.recovery_action_id:
+        action = db.get_recovery_action(account_id, payload.recovery_action_id)
+        if action and action.get("status") in {"sent", "awaiting_response",
+                                               "disputed"}:
+            action.setdefault("history", []).append({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "realization_linked",
+                "from": action.get("status"), "to": action.get("status"),
+                "actor": user.get("email", "unknown"),
+                "details": {"recovery_event_id": event["recovery_event_id"]}})
+            db.update_recovery_action(account_id, action,
+                                      "realization_linked")
     event["fee_charge"] = fee_charge or event.get("fee_charge")
     return event
 
@@ -882,6 +929,7 @@ def reverse_recovery_event(finding_id: str, event_id: str,
             db.update_recovery_event_fields(
                 account_id, original.recovery_event_id,
                 {"fee_status": "adjusted"}, "success_fee_adjustment")
+    _record_outcome(account_id, finding_id)
     out = reversal.to_dict()
     out["net_realized"] = net
     return out
@@ -920,6 +968,14 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
             raise HTTPException(
                 status_code=409,
                 detail="recovery requires an approved finding")
+        if evidence.recovery_action_id:
+            action = db.get_recovery_action(account_id,
+                                            evidence.recovery_action_id)
+            if action is None or action.get("finding_id") != finding_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="recovery_action_id must reference an action on "
+                           "this finding for this account")
         _event, fee_charge, _p, net = _record_realization(
             account_id, finding,
             recovery_basis="cash_payment",
@@ -927,7 +983,24 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
             realized_at=evidence.paid_date,
             external_reference=evidence.payment_ref,
             evidence={"note": evidence.note},
-            recorded_by=user.get("email", "unknown"))
+            recorded_by=user.get("email", "unknown"),
+            recovery_action_id=evidence.recovery_action_id)
+        if evidence.recovery_action_id:
+            action = db.get_recovery_action(account_id,
+                                            evidence.recovery_action_id)
+            if action and action.get("status") in {"sent",
+                                                   "awaiting_response",
+                                                   "disputed"}:
+                action.setdefault("history", []).append({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "event": "realization_linked",
+                    "from": action.get("status"),
+                    "to": action.get("status"),
+                    "actor": user.get("email", "unknown"),
+                    "details": {"recovery_event_id":
+                                _event["recovery_event_id"]}})
+                db.update_recovery_action(account_id, action,
+                                          "realization_linked")
         recovered_amount = net
     return {"status": "recovered", "finding_id": finding_id,
             "fee_charge": fee_charge, "recovered_amount": recovered_amount,
@@ -942,6 +1015,7 @@ def mark_finding_disputed(finding_id: str, note: DisputeNote, user: dict = Depen
     if account_id is not None:
         _transition_fields(account_id, finding_id, "disputed",
                            f"ui_disputed_by_{user.get('email', 'unknown')}", fields=fields)
+        _record_outcome(account_id, finding_id)
     return {"status": "disputed", "finding_id": finding_id, **fields}
 
 
@@ -953,6 +1027,7 @@ def mark_finding_written_off(finding_id: str, note: DisputeNote, user: dict = De
     if account_id is not None:
         _transition_fields(account_id, finding_id, "written_off",
                            f"ui_written_off_by_{user.get('email', 'unknown')}", fields=fields)
+        _record_outcome(account_id, finding_id)
     return {"status": "written_off", "finding_id": finding_id, **fields}
 
 
@@ -1215,6 +1290,7 @@ def record_recovery_action_outcome(action_id: str, body: RecoveryActionOutcome,
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     db.update_recovery_action(account_id, action, "outcome_recorded")
+    _record_outcome(account_id, action.get("finding_id"))
     response = dict(action)
     if body.result == "resolved":
         response["next"] = (f"record realized value at "
@@ -1228,6 +1304,52 @@ def record_recovery_action_outcome(action_id: str, body: RecoveryActionOutcome,
         except (db.FindingNotFound, db.IllegalTransition):
             pass
     return response
+
+
+# --- Closed-loop realization: ledger projection + outcome records ---
+
+@app.get("/api/recovery-cases/{finding_id}/ledger")
+def get_recovery_case_ledger(finding_id: str, user: dict = Depends(verify_token)):
+    from .realization_ledger import case_ledger
+    account_id = _account_id(user)
+    if account_id is None:
+        finding = next((f for f in _offline_findings()
+                        if f["finding_id"] == finding_id), None)
+        if finding is None:
+            raise HTTPException(status_code=404, detail="Finding not found.")
+        return case_ledger(finding, [], [])
+    finding = db.get_finding(account_id, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    return case_ledger(finding,
+                       db.get_recovery_events(account_id, finding_id),
+                       db.get_recovery_actions(account_id, finding_id=finding_id),
+                       db.get_audit_log(account_id, finding_id))
+
+
+@app.get("/api/recovery-cases/{finding_id}/outcome")
+def get_recovery_case_outcome(finding_id: str,
+                              user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "not_persisted", "mode": "sample"}
+    record = db.get_outcome_record(account_id, finding_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    return record
+
+
+@app.get("/api/metrics/recovery")
+def get_recovery_metrics(user: dict = Depends(verify_token)):
+    from .realization_ledger import recovery_metrics
+    account_id = _account_id(user)
+    findings = _findings_for(account_id)
+    if account_id is None:
+        return recovery_metrics(findings, [], [])
+    return recovery_metrics(
+        findings,
+        db.get_recovery_events(account_id),
+        db.get_recovery_actions(account_id))
 
 
 @app.get("/api/billing/status")

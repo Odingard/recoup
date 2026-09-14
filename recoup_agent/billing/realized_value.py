@@ -55,6 +55,8 @@ class RecoveryRealizationEvent:
     reversal_amount: float = 0.0
     reversal_reference: str | None = None
     reverses_event_id: str | None = None
+    recovery_action_id: str | None = None
+    lineage: dict = field(default_factory=dict)
     created_at: str | None = None
     metadata: dict = field(default_factory=dict)
 
@@ -76,7 +78,8 @@ def new_realization(account_id, finding: dict, *, recovery_basis: str,
                     realized_at: str | None = None,
                     external_reference: str | None = None,
                     evidence: dict | None = None,
-                    discrepancy_id: str | None = None) -> RecoveryRealizationEvent:
+                    discrepancy_id: str | None = None,
+                    recovery_action_id: str | None = None) -> RecoveryRealizationEvent:
     """Create a realization event. Fee fields are computed here — callers
     cannot pass them."""
     if recovery_basis not in RECOVERY_BASES:
@@ -89,6 +92,15 @@ def new_realization(account_id, finding: dict, *, recovery_basis: str,
         "rev", account_id, finding["finding_id"], "realization",
         recovery_basis,
         external_reference or f"{realized_at}:{value}")
+    lineage = {
+        "agreement": finding.get("customer_id"),
+        "financial_right": finding.get("right_id") or finding.get("type"),
+        "discrepancy": discrepancy_id or finding.get("discrepancy_id")
+                       or finding.get("finding_id"),
+        "recovery_case": finding["finding_id"],
+        "recovery_action": recovery_action_id,
+        "realization_event": event_id,
+    }
     return RecoveryRealizationEvent(
         recovery_event_id=event_id,
         account_id=account_id,
@@ -106,6 +118,8 @@ def new_realization(account_id, finding: dict, *, recovery_basis: str,
         fee_amount=quantize(value * SUCCESS_FEE_PCT),
         fee_status="unbilled",
         reversal_amount=0.0,
+        recovery_action_id=recovery_action_id,
+        lineage=lineage,
         created_at=_now(),
     )
 
@@ -151,6 +165,8 @@ def new_reversal(account_id, original: RecoveryRealizationEvent, *,
         reversal_amount=quantize(amount),
         reversal_reference=reversal_reference,
         reverses_event_id=original.recovery_event_id,
+        recovery_action_id=original.recovery_action_id,
+        lineage={**(original.lineage or {}), "realization_event": event_id},
         created_at=_now(),
     )
 

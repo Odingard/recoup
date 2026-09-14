@@ -421,3 +421,18 @@ def update_recovery_action(account_id: str, action: dict, event_name: str):
         "details": {"status": action.get("status"),
                     "channel": action.get("channel")},
     })
+
+
+def save_outcome_record(account_id: str, record: dict):
+    """Upsert the structured outcome record keyed by finding_id (tenant-
+    scoped, write-only store)."""
+    db = get_client()
+    _collection(db, account_id, "outcome_records").document(
+        record["finding_id"]).set(record)
+
+
+def get_outcome_record(account_id: str, finding_id: str) -> dict | None:
+    db = get_client()
+    doc = _collection(db, account_id, "outcome_records").document(
+        finding_id).get()
+    return doc.to_dict() if doc.exists else None

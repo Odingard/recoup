@@ -21,12 +21,12 @@ import {
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 import { auth } from './firebase'
 import CommandCenter from './CommandCenter'
-import RecoveryActions from './RecoveryActions'
+import RecoveryActions, { RecoveryActionSelect } from './RecoveryActions'
 import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter, RecoveryActions]
+void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter, RecoveryActions, RecoveryActionSelect]
 
 const STEPS = [
   { id: 1, title: 'Upload contracts', icon: Upload },
@@ -540,7 +540,7 @@ function App() {
   }
 
   const [recoveryForm, setRecoveryForm] = useState(null)
-  const [recoveryFields, setRecoveryFields] = useState({ ref: '', amount: '', date: '', url: '', note: '' })
+  const [recoveryFields, setRecoveryFields] = useState({ ref: '', amount: '', date: '', url: '', note: '', actionId: '' })
 
   const openRecoveryForm = (finding, kind) => {
     const prefill = kind === 'payment'
@@ -553,6 +553,7 @@ function App() {
       date: '',
       url: '',
       note: '',
+      actionId: '',
     })
   }
 
@@ -580,6 +581,7 @@ function App() {
             paid_amount: amount,
             paid_date: recoveryFields.date || null,
             payment_ref: recoveryFields.ref || null,
+            recovery_action_id: recoveryFields.actionId || null,
             note: recoveryFields.note,
           },
         })
@@ -649,6 +651,14 @@ function App() {
             onChange={(event) => setRecoveryFields((f) => ({ ...f, date: event.target.value }))}
           />
         </label>
+        {!isInvoice && (
+          <RecoveryActionSelect
+            findingId={finding.finding_id}
+            apiRequest={apiRequest}
+            value={recoveryFields.actionId}
+            onChange={(v) => setRecoveryFields((f) => ({ ...f, actionId: v }))}
+          />
+        )}
         {isInvoice && (
           <label>
             Invoice URL (optional)
