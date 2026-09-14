@@ -187,6 +187,28 @@ def get_all_contracts(account_id: str) -> list[dict]:
     return [doc.to_dict() for doc in _collection(db, account_id, "contracts").stream()]
 
 
+def confirm_contract(account_id: str, customer_id: str, actor: str | None) -> dict | None:
+    db = get_client()
+    contract_ref = _collection(db, account_id, "contracts").document(customer_id)
+    snapshot = contract_ref.get()
+    if not snapshot.exists:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    fields = {
+        "confirmed": True,
+        "confirmed_by": actor or "unknown",
+        "confirmed_at": now,
+    }
+    contract_ref.update(fields)
+    _collection(db, account_id, "audit_log").document().set({
+        "event": "contract_terms_confirmed",
+        "customer_id": customer_id,
+        "actor": actor or "unknown",
+        "ts": now,
+    })
+    return {"customer_id": customer_id, **(snapshot.to_dict() or {}), **fields}
+
+
 def get_account_billing(account_id: str) -> dict | None:
     db = get_client()
     doc = _account_root(db, account_id).get()

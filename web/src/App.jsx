@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
-  BadgeCheck,
   Building2,
   ChevronRight,
-  CheckCircle2,
   DollarSign,
   Download,
   FileText,
@@ -20,23 +18,50 @@ import {
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 import { auth } from './firebase'
-import CommandCenter from './CommandCenter'
 import RecoveryActions, { RecoveryActionSelect } from './RecoveryActions'
 import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, CheckCircle2, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, BadgeCheck, XCircle, CommandCenter, RecoveryActions, RecoveryActionSelect]
+void [AlertCircle, Building2, ChevronRight, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, XCircle, RecoveryActions, RecoveryActionSelect]
 
-const STEPS = [
-  { id: 1, title: 'Upload contracts', icon: Upload },
-  { id: 2, title: 'Connect Stripe', icon: ShieldCheck },
-  { id: 3, title: 'Run reconciliation', icon: RefreshCw },
-  { id: 4, title: 'Confirm extracted terms', icon: BadgeCheck },
-  { id: 5, title: 'Review findings', icon: FileText },
-  { id: 6, title: 'Recovered & billing', icon: DollarSign },
-  { id: 7, title: 'Command Center', icon: LayoutDashboard },
+const NAV_ITEMS = [
+  { id: 'overview', title: 'Overview', icon: LayoutDashboard },
+  { id: 'opportunities', title: 'Opportunities', icon: FileText },
+  { id: 'agreements', title: 'Agreements', icon: Upload },
+  { id: 'recoveries', title: 'Recoveries', icon: DollarSign },
+  { id: 'integrations', title: 'Integrations', icon: ShieldCheck },
+  { id: 'settings', title: 'Settings', icon: LockKeyhole },
 ]
+
+const METRIC_TILES = [
+  ['potential_recoverable_value', 'Potential recoverable'],
+  ['verified_value', 'Verified'],
+  ['needs_review', 'Needs review'],
+  ['approved', 'Approved'],
+  ['in_recovery', 'In recovery'],
+  ['disputed', 'Disputed'],
+  ['realized_value', 'Realized'],
+  ['written_off', 'Written off'],
+]
+
+const RECOVERY_BASES = [
+  'cash_payment', 'settlement', 'refund', 'rebate', 'reimbursement',
+  'contractual_credit', 'offset', 'other_verified_value',
+]
+
+const EMPTY_FILTERS = {
+  customer: '', status: '', type: '', minValue: '',
+  maxAge: '', minConfidence: '', agreement: '', period: '',
+}
+
+const LEGAL_NEXT_ACTIONS = {
+  open: ['approve', 'reject'],
+  approved: ['invoice', 'payment', 'writeoff', 'reject'],
+  invoiced: ['payment', 'dispute', 'writeoff'],
+  disputed: ['payment', 'writeoff'],
+  rejected: [], recovered: [], written_off: [],
+}
 
 const emptyContractDraft = {
   customer_id: '',
@@ -67,6 +92,12 @@ function formatRate(value) {
   const n = Number(value || 0)
   const digits = n !== 0 && Math.abs(n) < 0.01 ? 6 : 2
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })}`
+}
+
+function formatDate(value) {
+  if (!value) return '—'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString()
 }
 
 function failureMessage(prefix, error) {
@@ -133,15 +164,20 @@ function buildReviewedContract(draft) {
   }
 }
 
+function normalizeHash() {
+  const raw = (window.location.hash || '#/overview').replace(/^#\/?/, '')
+  const [screen, id] = raw.split('/')
+  return { screen: screen || 'overview', id: id || null }
+}
+
 function App() {
   const [firebaseUser, setFirebaseUser] = useState(null)
   const [sessionMode, setSessionMode] = useState(null)
   const [loadingAuth, setLoadingAuth] = useState(true)
-  const [activeStep, setActiveStep] = useState(1)
+  const [route, setRoute] = useState(normalizeHash())
   const [billingPeriod, setBillingPeriod] = useState(DEFAULT_PERIOD)
-  const [findings, setFindings] = useState([])
+  const [, setFindings] = useState([])
   const [allFindings, setAllFindings] = useState([])
-  const [selectedFinding, setSelectedFinding] = useState(null)
   const [running, setRunning] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [uploadedContracts, setUploadedContracts] = useState([])
@@ -160,10 +196,20 @@ function App() {
   const [reviewQueue, setReviewQueue] = useState([])
   const [assurance, setAssurance] = useState(null)
   const [commandCenter, setCommandCenter] = useState(null)
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [rights, setRights] = useState({})
+  const [events, setEvents] = useState({})
+  const [realizationForm, setRealizationForm] = useState(null)
+  const [realizationFields, setRealizationFields] = useState({ basis: 'cash_payment', amount: '', date: '', reference: '', actionId: '', note: '' })
+  const [reverseForm, setReverseForm] = useState(null)
+  const [reverseFields, setReverseFields] = useState({ amount: '', reference: '', reason: '' })
+  const [confirmingCustomer, setConfirmingCustomer] = useState('')
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
   const apiReady = isSampleMode || isAuthenticated
+  const screen = NAV_ITEMS.some((item) => item.id === route.screen) ? route.screen : 'overview'
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       setFirebaseUser(nextUser)
@@ -173,8 +219,22 @@ function App() {
         return nextUser ? 'auth' : null
       })
     })
-
     return unsubscribe
+  }, [])
+
+  useEffect(() => {
+    const onHash = () => setRoute(normalizeHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  const navigate = useCallback((next, detail = null) => {
+    const hash = detail ? `#/${next}/${encodeURIComponent(detail)}` : `#/${next}`
+    if (window.location.hash === hash) {
+      setRoute(normalizeHash())
+    } else {
+      window.location.hash = hash
+    }
   }, [])
 
   const apiRequest = useCallback(async (path, options = {}) => {
@@ -182,9 +242,7 @@ function App() {
     if (isSampleMode) {
       headers['X-Recoup-Sample'] = '1'
     } else {
-      if (!firebaseUser) {
-        throw new Error('Please sign in first')
-      }
+      if (!firebaseUser) throw new Error('Please sign in first')
       const token = await firebaseUser.getIdToken()
       headers.Authorization = `Bearer ${token}`
     }
@@ -196,13 +254,21 @@ function App() {
     const res = await fetch(`${API_BASE}${path}`, { ...options, headers, body })
     if (!res.ok) {
       let detail = await res.text()
-      try {
-        detail = JSON.parse(detail)?.detail || detail
-      } catch { /* keep raw text */ }
+      try { detail = JSON.parse(detail)?.detail || detail } catch { /* keep raw text */ }
       throw new Error(detail)
     }
     const text = await res.text()
     return text ? JSON.parse(text) : null
+  }, [firebaseUser, isSampleMode])
+
+  const authenticatedFetch = useCallback(async (path, options = {}) => {
+    const headers = { ...(options.headers || {}) }
+    if (isSampleMode) headers['X-Recoup-Sample'] = '1'
+    else {
+      if (!firebaseUser) throw new Error('Please sign in first')
+      headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
+    }
+    return fetch(`${API_BASE}${path}`, { ...options, headers })
   }, [firebaseUser, isSampleMode])
 
   const loadConnectorStatus = useCallback(async () => {
@@ -211,149 +277,99 @@ function App() {
       const result = await apiRequest('/connector/stripe/status')
       setConnectorConnection(result)
       setConnectorStatus(result?.message || '')
-    } catch (error) {
-      console.error(error)
-    }
+    } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
   const loadMetrics = useCallback(async () => {
     if (!apiReady) return
-    try {
-      const result = await apiRequest('/metrics')
-      setMetrics(result)
-    } catch (error) {
-      console.error(error)
-    }
+    try { setMetrics(await apiRequest('/metrics')) } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
   const loadCommandCenter = useCallback(async () => {
     if (!apiReady) return
-    try {
-      const result = await apiRequest('/command-center')
-      setCommandCenter(result)
-    } catch (error) {
-      console.error(error)
-    }
+    try { setCommandCenter(await apiRequest('/command-center')) } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
   const loadAssurance = useCallback(async () => {
     if (!apiReady) return
-    try {
-      const result = await apiRequest('/assurance/status')
-      setAssurance(result)
-    } catch (error) {
-      console.error(error)
-    }
+    try { setAssurance(await apiRequest('/assurance/status')) } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
-    const [pending, all] = await Promise.all([
-      apiRequest('/findings/pending'),
-      apiRequest('/findings'),
-    ])
-    void loadMetrics()
-    void loadAssurance()
-    void loadCommandCenter()
+    const [pending, all] = await Promise.all([apiRequest('/findings/pending'), apiRequest('/findings')])
+    void loadMetrics(); void loadAssurance(); void loadCommandCenter()
     setFindings(Array.isArray(pending) ? pending : [])
     setAllFindings(Array.isArray(all) ? all : [])
-    setSelectedFinding((current) => {
-      if (current && all.some((finding) => finding.finding_id === current.finding_id)) {
-        return all.find((finding) => finding.finding_id === current.finding_id) || current
-      }
-      return (pending && pending[0]) || all[0] || null
-    })
   }, [apiReady, apiRequest, loadMetrics, loadAssurance, loadCommandCenter])
-
-  useEffect(() => {
-    if (!apiReady) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshFindings()
-  }, [apiReady, refreshFindings])
-
-  useEffect(() => {
-    if (!apiReady) return
-    const handle = window.setTimeout(() => {
-      void loadConnectorStatus()
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, loadConnectorStatus])
-
-  useEffect(() => {
-    if (!apiReady) return
-    apiRequest('/renewals')
-      .then((rows) => setRenewals(Array.isArray(rows) ? rows : []))
-      .catch(() => setRenewals([]))
-  }, [apiReady, apiRequest])
-
-  const loadBillingStatus = useCallback(async () => {
-    if (!apiReady) return
-    try {
-      const result = await apiRequest('/billing/status')
-      setBilling(result)
-    } catch (error) {
-      console.error(error)
-    }
-  }, [apiReady, apiRequest])
-
-  useEffect(() => {
-    if (!apiReady) return
-    const handle = window.setTimeout(() => {
-      void loadBillingStatus()
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, loadBillingStatus])
 
   const loadContracts = useCallback(async () => {
     if (!apiReady) return
     try {
       const result = await apiRequest('/contracts')
       const list = result?.contracts || []
-      setUploadedContracts(list.map((c) => ({
-        ...c, confirmed: Boolean(c.confirmed), discounts: c.discounts || [],
-      })))
-    } catch (error) {
-      console.error(error)
-    }
+      setUploadedContracts(list.map((c) => ({ ...c, confirmed: Boolean(c.confirmed), discounts: c.discounts || [] })))
+    } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
   useEffect(() => {
     if (!apiReady) return
     const handle = window.setTimeout(() => {
-      void loadContracts()
+      void refreshFindings(); void loadConnectorStatus(); void loadContracts()
+      apiRequest('/renewals').then((rows) => setRenewals(Array.isArray(rows) ? rows : [])).catch(() => setRenewals([]))
     }, 0)
     return () => window.clearTimeout(handle)
-  }, [apiReady, loadContracts])
+  }, [apiReady, refreshFindings, loadConnectorStatus, loadContracts, apiRequest])
+
+  useEffect(() => {
+    if (!apiReady || !route.id || screen !== 'opportunities') return
+    const handle = window.setTimeout(() => {
+      apiRequest(`/findings/${route.id}/recovery-events`)
+        .then((rows) => setEvents((current) => ({ ...current, [route.id]: Array.isArray(rows) ? rows : (rows?.events || []) })))
+        .catch(() => setEvents((current) => ({ ...current, [route.id]: [] })))
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, apiRequest, route.id, screen])
+
+  useEffect(() => {
+    if (!apiReady || screen !== 'agreements') return
+    const missing = uploadedContracts.filter((contract) => contract.customer_id && rights[contract.customer_id] === undefined)
+    if (!missing.length) return
+    const handle = window.setTimeout(() => {
+      missing.forEach((contract) => {
+        apiRequest(`/rights/customers/${contract.customer_id}`)
+          .then((graph) => setRights((current) => ({ ...current, [contract.customer_id]: graph?.rights || graph?.financial_rights || [] })))
+          .catch(() => setRights((current) => ({ ...current, [contract.customer_id]: [] })))
+      })
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, screen, uploadedContracts, rights, apiRequest])
+
+  const loadBillingStatus = useCallback(async () => {
+    if (!apiReady) return
+    try { setBilling(await apiRequest('/billing/status')) } catch (error) { console.error(error) }
+  }, [apiReady, apiRequest])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const billingSetup = params.get('billing_setup')
     if (!billingSetup) return
     if (billingSetup === 'cancelled') {
-      const handle = window.setTimeout(() => {
-        setStatusMessage('Card setup cancelled.')
-      }, 0)
+      const handle = window.setTimeout(() => setStatusMessage('Card setup cancelled.'), 0)
       return () => window.clearTimeout(handle)
     }
     let cancelled = false
     const complete = async () => {
       try {
-        const headers = {}
-        if (isSampleMode) return
-        if (!firebaseUser) return
-        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
-        headers['Content-Type'] = 'application/json'
-        const res = await fetch(`${API_BASE}/billing/setup-complete`, {
-          method: 'POST', headers, body: JSON.stringify({ session_id: billingSetup }),
-        })
+        if (isSampleMode || !firebaseUser) return
+        const headers = { Authorization: `Bearer ${await firebaseUser.getIdToken()}`, 'Content-Type': 'application/json' }
+        const res = await fetch(`${API_BASE}/billing/setup-complete`, { method: 'POST', headers, body: JSON.stringify({ session_id: billingSetup }) })
         const payload = await res.json()
         if (cancelled) return
         if (payload?.status === 'success') {
           setStatusMessage('Payment method saved — proof unlocked.')
           void loadBillingStatus()
-        } else {
-          setStatusMessage(payload?.message || 'Payment method was not saved.')
-        }
+        } else setStatusMessage(payload?.message || 'Payment method was not saved.')
       } catch (error) {
         console.error(error)
         if (!cancelled) setStatusMessage('Payment method was not saved.')
@@ -364,28 +380,30 @@ function App() {
   }, [firebaseUser, isSampleMode, loadBillingStatus])
 
   useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => void loadBillingStatus(), 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, loadBillingStatus])
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const stripeConnect = params.get('stripe_connect')
     if (!stripeConnect) return
     const handle = window.setTimeout(() => {
       if (stripeConnect === 'success') {
         setConnectorStatus('Stripe App connected successfully.')
-        setActiveStep(2)
+        navigate('integrations')
       } else if (stripeConnect === 'error') {
         setConnectorStatus(params.get('message') || 'Stripe connection failed.')
-        setActiveStep(2)
+        navigate('integrations')
       }
     }, 0)
     return () => window.clearTimeout(handle)
-  }, [])
+  }, [navigate])
 
   const sampleModeLogin = useCallback(async () => {
     setLoadingAuth(true)
-    try {
-      await signOut(auth)
-    } catch {
-      // Best-effort; sample mode must stay usable even if Firebase sign-out is unavailable.
-    }
+    signOut(auth).catch(() => { /* sample mode must remain usable */ })
     setSessionMode('sample')
     setLoadingAuth(false)
   }, [])
@@ -393,9 +411,7 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('sample') !== '1' || sessionMode !== null) return
-    const handle = window.setTimeout(() => {
-      void sampleModeLogin()
-    }, 0)
+    const handle = window.setTimeout(() => void sampleModeLogin(), 0)
     return () => window.clearTimeout(handle)
   }, [sessionMode, sampleModeLogin])
 
@@ -412,31 +428,17 @@ function App() {
   }
 
   const handleLogout = async () => {
-    try {
-      await signOut(auth)
-    } finally {
+    try { await signOut(auth) } finally {
       setSessionMode(null)
       setFirebaseUser(null)
-      setFindings([])
-      setAllFindings([])
-      setSelectedFinding(null)
+      setFindings([]); setAllFindings([])
       setStatusMessage('')
-      setConnectorConnection(null)
-      setMetrics(null)
-      setConnectorStatus('')
+      setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
     }
   }
 
-  const handleContractField = (field, value) => {
-    setContractDraft((current) => ({ ...current, [field]: value }))
-  }
-
-  const handleClauseField = (field, value) => {
-    setContractDraft((current) => ({
-      ...current,
-      clauses: { ...current.clauses, [field]: value },
-    }))
-  }
+  const handleContractField = (field, value) => setContractDraft((current) => ({ ...current, [field]: value }))
+  const handleClauseField = (field, value) => setContractDraft((current) => ({ ...current, clauses: { ...current.clauses, [field]: value } }))
 
   const submitContract = async () => {
     if (!contractDraft.customer_name.trim()) {
@@ -451,13 +453,10 @@ function App() {
       setContractDraft(emptyContractDraft)
       setSelectedFileName('')
       setStatusMessage(`Uploaded structured contract for ${payload.customer_name}.`)
-      setActiveStep(4)
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Contract upload failed', error))
-    } finally {
-      setContractSubmitting(false)
-    }
+    } finally { setContractSubmitting(false) }
   }
 
   const handleBulkUpload = async (event) => {
@@ -465,8 +464,7 @@ function App() {
     event.target.value = ''
     if (!fileList.length) return
     setSelectedFileName(fileList[0].name)
-    setBulkUploading(true)
-    setBulkResult(null)
+    setBulkUploading(true); setBulkResult(null)
     try {
       const form = new FormData()
       fileList.forEach((f) => form.append('files', f))
@@ -477,58 +475,73 @@ function App() {
       ;(result?.contract_records || []).forEach((contract) => {
         const fileEntry = filesByName[contract.customer_id] || filesByName[contract.file_name]
         const fileName = contract.file_name || fileEntry?.name
-        setUploadedContracts((current) => [
-          { ...contract, confirmed: false, discounts: contract.discounts || [], ...(fileName ? { file_name: fileName } : {}) },
-          ...current.filter((item) => item.customer_id !== contract.customer_id),
-        ])
+        setUploadedContracts((current) => [{ ...contract, confirmed: false, discounts: contract.discounts || [], ...(fileName ? { file_name: fileName } : {}) }, ...current.filter((item) => item.customer_id !== contract.customer_id)])
       })
       const nr = result?.needs_review?.length
-      setStatusMessage(
-        result?.status === 'needs_review'
-          ? (result.message || 'Bulk upload needs review.')
-          : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` +
-            (nr ? ` ${nr} item(s) need review — see Step 5.` : ''))
+      setStatusMessage(result?.status === 'needs_review'
+        ? (result.message || 'Bulk upload needs review.')
+        : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` + (nr ? ` ${nr} item(s) need review.` : ''))
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
-    } finally {
-      setBulkUploading(false)
+    } finally { setBulkUploading(false) }
+  }
+
+  const confirmContract = async (customerId) => {
+    setConfirmingCustomer(customerId)
+    try {
+      const result = await apiRequest(`/contracts/${encodeURIComponent(customerId)}/confirm`, { method: 'POST' })
+      if (result?.status === 'confirmed' || result?.contract?.confirmed) {
+        setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, confirmed: true, confirmed_by: result.contract?.confirmed_by, confirmed_at: result.contract?.confirmed_at } : item))
+        setStatusMessage('Contract terms confirmed.')
+      } else {
+        setStatusMessage(result?.message || 'Sample mode did not persist confirmation.')
+      }
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Could not confirm terms', error))
+    } finally { setConfirmingCustomer('') }
+  }
+
+  const runEvaluation = async () => {
+    if (!/^\d{4}-\d{2}$/.test(billingPeriod)) {
+      setStatusMessage('Period must be YYYY-MM.')
+      return
     }
-  }
-
-  const confirmContract = (customerId) => {
-    setUploadedContracts((current) => current.map((item) => (
-      item.customer_id === customerId ? { ...item, confirmed: true } : item
-    )))
-    setStatusMessage('Contract terms confirmed.')
-  }
-
-  const runReconciliation = async () => {
     setRunning(true)
     try {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
       setReviewQueue(result?.needs_review || [])
-      setStatusMessage(`Reconciliation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review — see Step 5.` : ''))
+      setStatusMessage(`Evaluation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review.` : ''))
       await refreshFindings()
-      setActiveStep(5)
+      navigate('opportunities')
     } catch (error) {
       console.error(error)
-      setStatusMessage(failureMessage('Reconciliation failed', error))
-    } finally {
-      setRunning(false)
+      setStatusMessage(failureMessage('Evaluation failed', error))
+    } finally { setRunning(false) }
+  }
+
+  const evaluateAssurance = async () => {
+    const customerId = route.id || uploadedContracts[0]?.customer_id || allFindings[0]?.customer_id || ''
+    if (!customerId) {
+      setStatusMessage('No customer is available for manual evaluation.')
+      return
+    }
+    try {
+      const result = await apiRequest('/assurance/evaluate', { method: 'POST', body: { customer_id: customerId, period: billingPeriod } })
+      setStatusMessage(result?.status === 'needs_review' ? result.message : 'Assurance evaluation recorded.')
+      await loadAssurance()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Assurance evaluation failed', error))
     }
   }
 
   const handleAction = async (findingId, action) => {
     try {
       const endpoint = action === 'approve' ? 'approve' : 'reject'
-      const body = action === 'reject'
-        ? { status: 'rejected', reason: 'Reviewed in dashboard' }
-        : undefined
-      const result = await apiRequest(`/findings/${findingId}/${endpoint}`, {
-        method: 'POST',
-        body,
-      })
+      const body = action === 'reject' ? { status: 'rejected', reason: 'Reviewed in dashboard' } : undefined
+      const result = await apiRequest(`/findings/${findingId}/${endpoint}`, { method: 'POST', body })
       setStatusMessage(result.status !== 'approved' && result.status !== 'rejected'
         ? (result.message || 'Sample mode is read-only; approval was not recorded.')
         : (action === 'approve' ? 'Finding approved.' : 'Finding rejected.'))
@@ -539,60 +552,47 @@ function App() {
     }
   }
 
-  const [recoveryForm, setRecoveryForm] = useState(null)
-  const [recoveryFields, setRecoveryFields] = useState({ ref: '', amount: '', date: '', url: '', note: '', actionId: '' })
-
-  const openRecoveryForm = (finding, kind) => {
-    const prefill = kind === 'payment'
-      ? (finding.corrective_invoice?.amount ?? finding.monthly_recoverable)
-      : finding.monthly_recoverable
-    setRecoveryForm({ id: finding.finding_id, kind })
-    setRecoveryFields({
-      ref: '',
-      amount: String(prefill ?? ''),
-      date: '',
-      url: '',
-      note: '',
-      actionId: '',
-    })
+  const openRealizationForm = (finding) => {
+    setRealizationForm({ finding_id: finding.finding_id })
+    setRealizationFields({ basis: 'cash_payment', amount: String(finding.recoverable_difference ?? finding.monthly_recoverable ?? ''), date: '', reference: '', actionId: '', note: '' })
   }
 
-  const submitRecoveryForm = async () => {
-    if (!recoveryForm) return
-    const { id, kind } = recoveryForm
-    const amount = Number(recoveryFields.amount)
+  const submitRealization = async (findingId) => {
+    const amount = Number(realizationFields.amount)
     try {
-      if (kind === 'invoice') {
-        await apiRequest(`/findings/${id}/invoiced`, {
-          method: 'POST',
-          body: {
-            invoice_ref: recoveryFields.ref,
-            invoice_amount: amount,
-            invoice_date: recoveryFields.date || null,
-            invoice_url: recoveryFields.url || null,
-            note: recoveryFields.note,
-          },
-        })
-        setStatusMessage('Corrective invoice recorded.')
-      } else {
-        await apiRequest(`/findings/${id}/recovered`, {
-          method: 'POST',
-          body: {
-            paid_amount: amount,
-            paid_date: recoveryFields.date || null,
-            payment_ref: recoveryFields.ref || null,
-            recovery_action_id: recoveryFields.actionId || null,
-            note: recoveryFields.note,
-          },
-        })
-        setStatusMessage('Payment recorded — finding recovered.')
-      }
-      setRecoveryForm(null)
+      await apiRequest(`/findings/${findingId}/recovery-events`, {
+        method: 'POST',
+        body: {
+          recovery_basis: realizationFields.basis,
+          realized_value: amount,
+          realized_at: realizationFields.date || null,
+          external_reference: realizationFields.reference || null,
+          recovery_action_id: realizationFields.actionId || null,
+          note: realizationFields.note || null,
+        },
+      })
+      setStatusMessage('Realized value recorded.')
+      setRealizationForm(null)
+      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
+      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
       await refreshFindings()
-      await loadMetrics()
     } catch (error) {
       console.error(error)
-      setStatusMessage('Could not record recovery evidence.')
+      setStatusMessage(failureMessage('Could not record realized value', error))
+    }
+  }
+
+  const recordCorrectiveInvoice = async (finding) => {
+    const invoice_ref = window.prompt('Invoice reference:') || ''
+    if (!invoice_ref.trim()) return
+    const invoice_amount = Number(window.prompt('Invoice amount:', String(finding.recoverable_difference ?? finding.monthly_recoverable ?? '')) || 0)
+    try {
+      await apiRequest(`/findings/${finding.finding_id}/invoiced`, { method: 'POST', body: { invoice_ref, invoice_amount, invoice_url: null, note: '' } })
+      setStatusMessage('Corrective invoice recorded.')
+      await refreshFindings()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage('Could not record corrective invoice.')
     }
   }
 
@@ -620,86 +620,35 @@ function App() {
     }
   }
 
-  const renderRecoveryForm = (finding) => {
-    if (!recoveryForm || recoveryForm.id !== finding.finding_id) return null
-    const isInvoice = recoveryForm.kind === 'invoice'
-    return (
-      <div className="recovery-form">
-        <label>
-          {isInvoice ? 'Invoice ref' : 'Payment ref'}
-          <input
-            value={recoveryFields.ref}
-            onChange={(event) => setRecoveryFields((f) => ({ ...f, ref: event.target.value }))}
-            placeholder={isInvoice ? 'INV-1042' : 'txn / check ref'}
-          />
-        </label>
-        <label>
-          {isInvoice ? 'Invoice amount ($)' : 'Paid amount ($)'}
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={recoveryFields.amount}
-            onChange={(event) => setRecoveryFields((f) => ({ ...f, amount: event.target.value }))}
-          />
-        </label>
-        <label>
-          {isInvoice ? 'Invoice date' : 'Paid date'}
-          <input
-            type="date"
-            value={recoveryFields.date}
-            onChange={(event) => setRecoveryFields((f) => ({ ...f, date: event.target.value }))}
-          />
-        </label>
-        {!isInvoice && (
-          <RecoveryActionSelect
-            findingId={finding.finding_id}
-            apiRequest={apiRequest}
-            value={recoveryFields.actionId}
-            onChange={(v) => setRecoveryFields((f) => ({ ...f, actionId: v }))}
-          />
-        )}
-        {isInvoice && (
-          <label>
-            Invoice URL (optional)
-            <input
-              value={recoveryFields.url}
-              onChange={(event) => setRecoveryFields((f) => ({ ...f, url: event.target.value }))}
-              placeholder="https://…"
-            />
-          </label>
-        )}
-        <div className="review-actions">
-          <button className="btn-primary" onClick={submitRecoveryForm}>
-            {isInvoice ? 'Save invoice' : 'Save payment'}
-          </button>
-          <button className="btn-secondary" onClick={() => setRecoveryForm(null)}>Cancel</button>
-        </div>
-      </div>
-    )
+  const submitReversal = async (findingId, eventId) => {
+    try {
+      await apiRequest(`/findings/${findingId}/recovery-events/${eventId}/reverse`, {
+        method: 'POST',
+        body: {
+          reversal_amount: Number(reverseFields.amount),
+          reversal_reference: reverseFields.reference || null,
+          reason: reverseFields.reason || null,
+        },
+      })
+      setStatusMessage('Realization reversed.')
+      setReverseForm(null)
+      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
+      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
+      await refreshFindings()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Reversal failed', error))
+    }
   }
 
   const exportFindings = async () => {
     try {
-      const headers = {}
-      if (isSampleMode) {
-        headers['X-Recoup-Sample'] = '1'
-      } else {
-        if (!firebaseUser) throw new Error('Please sign in first')
-        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
-      }
-      const res = await fetch(`${API_BASE}/findings/export`, { headers })
+      const res = await authenticatedFetch('/findings/export')
       if (!res.ok) throw new Error(await res.text())
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = 'recoup_findings.csv'
-      link.click()
-      URL.revokeObjectURL(url)
+      const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
+      link.href = url; link.download = 'recoup_findings.csv'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
-      console.error(error)
-      setStatusMessage(failureMessage('Export failed', error))
+      console.error(error); setStatusMessage(failureMessage('Export failed', error))
     }
   }
 
@@ -709,46 +658,28 @@ function App() {
       if (!result?.url) throw new Error(result?.message || 'No share URL returned')
       window.open(result.url, '_blank', 'noopener')
     } catch (error) {
-      console.error(error)
-      setStatusMessage('Could not open the audit report.')
+      console.error(error); setStatusMessage('Could not open the audit report.')
     }
   }
 
   const downloadReportPdf = async () => {
     try {
-      const headers = {}
-      if (isSampleMode) {
-        headers['X-Recoup-Sample'] = '1'
-      } else {
-        if (!firebaseUser) throw new Error('Please sign in first')
-        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
-      }
-      const res = await fetch(`${API_BASE}/report.pdf`, { headers })
+      const res = await authenticatedFetch('/report.pdf')
       if (!res.ok) throw new Error(await res.text())
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = 'recoup_report.pdf'
-      link.click()
-      URL.revokeObjectURL(url)
+      const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
+      link.href = url; link.download = 'recoup_report.pdf'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
-      console.error(error)
-      setStatusMessage('Could not download the PDF report.')
+      console.error(error); setStatusMessage('Could not download the PDF report.')
     }
   }
 
   const startBillingSetup = async () => {
     try {
       const result = await apiRequest('/billing/setup-session', { method: 'POST' })
-      if (result?.status === 'success' && result.url) {
-        window.location.assign(result.url)
-        return
-      }
+      if (result?.status === 'success' && result.url) { window.location.assign(result.url); return }
       setStatusMessage(result?.message || 'Could not start card setup.')
     } catch (error) {
-      console.error(error)
-      setStatusMessage('Could not start card setup.')
+      console.error(error); setStatusMessage('Could not start card setup.')
     }
   }
 
@@ -756,19 +687,15 @@ function App() {
     setSyncingRecoveries(true)
     try {
       const result = await apiRequest('/billing/sync-recoveries', { method: 'POST' })
-      if (result?.status === 'needs_connector') {
-        setStatusMessage('Connect Stripe (Step 2) to verify paid invoices.')
-      } else {
+      if (result?.status === 'needs_connector') setStatusMessage('Connect Stripe to verify paid invoices.')
+      else {
         const n = result?.recovered?.length || 0
         setStatusMessage(`Checked ${result?.checked ?? 0} invoices — ${n} newly recovered.`)
         await refreshFindings()
       }
     } catch (error) {
-      console.error(error)
-      setStatusMessage(failureMessage('Stripe sync failed', error))
-    } finally {
-      setSyncingRecoveries(false)
-    }
+      console.error(error); setStatusMessage(failureMessage('Stripe sync failed', error))
+    } finally { setSyncingRecoveries(false) }
   }
 
   const chargeSuccessFee = async () => {
@@ -778,36 +705,21 @@ function App() {
       setStatusMessage(billing.message || `Success fee status: ${billing.status}`)
       await loadMetrics()
     } catch (error) {
-      console.error(error)
-      setStatusMessage('Could not charge the success fee.')
+      console.error(error); setStatusMessage('Could not charge the success fee.')
     }
   }
 
   const [trueupSender, setTrueupSender] = useState('')
-
   const downloadTrueupPdf = async (customerId, customerName) => {
     try {
-      const headers = {}
-      if (isSampleMode) {
-        headers['X-Recoup-Sample'] = '1'
-      } else {
-        if (!firebaseUser) throw new Error('Please sign in first')
-        headers.Authorization = `Bearer ${await firebaseUser.getIdToken()}`
-      }
       const params = trueupSender ? `?sender=${encodeURIComponent(trueupSender)}` : ''
-      const res = await fetch(`${API_BASE}/trueup/${customerId}.pdf${params}`, { headers })
+      const res = await authenticatedFetch(`/trueup/${customerId}.pdf${params}`)
       if (!res.ok) throw new Error(await res.text())
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `trueup_${customerId}.pdf`
-      link.click()
-      URL.revokeObjectURL(url)
+      const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
+      link.href = url; link.download = `trueup_${customerId}.pdf`; link.click(); URL.revokeObjectURL(url)
       setStatusMessage(`True-up pack for ${customerName || customerId} downloaded.`)
     } catch (error) {
-      console.error(error)
-      setStatusMessage('Could not generate the true-up pack.')
+      console.error(error); setStatusMessage('Could not generate the true-up pack.')
     }
   }
 
@@ -819,59 +731,56 @@ function App() {
     }
     try {
       const result = await apiRequest('/account/data', { method: 'DELETE', body: { confirm } })
-      setFindings([])
-      setAllFindings([])
-      setSelectedFinding(null)
-      setUploadedContracts([])
-      setMetrics(null)
+      setFindings([]); setAllFindings([]); setUploadedContracts([]); setMetrics(null)
       setStatusMessage(result?.status === 'deleted' ? 'All account data deleted.' : (result?.message || 'Deletion did not complete.'))
     } catch (error) {
-      console.error(error)
-      setStatusMessage(failureMessage('Account data deletion failed', error))
+      console.error(error); setStatusMessage(failureMessage('Account data deletion failed', error))
     }
   }
 
-  const approvedFindings = useMemo(
-    () => allFindings.filter((finding) => finding.status === 'approved'),
-    [allFindings],
-  )
-  const invoicedFindings = useMemo(
-    () => allFindings.filter((finding) => finding.status === 'invoiced' || finding.status === 'disputed'),
-    [allFindings],
-  )
-  const recoveredFindings = useMemo(
-    () => allFindings.filter((finding) => finding.status === 'recovered'),
-    [allFindings],
-  )
+  const cases = useMemo(() => {
+    const minV = filters.minValue === '' ? null : Number(filters.minValue)
+    const maxAge = filters.maxAge === '' ? null : Number(filters.maxAge)
+    const minConf = filters.minConfidence === '' ? null : Number(filters.minConfidence)
+    return (commandCenter?.cases || []).filter((c) => {
+      if (filters.customer && c.counterparty?.customer_id !== filters.customer) return false
+      if (filters.status && c.status !== filters.status) return false
+      if (filters.type && c.financial_right?.type !== filters.type) return false
+      if (filters.agreement && c.agreement?.customer_id !== filters.agreement) return false
+      if (filters.period && c.period !== filters.period) return false
+      if (minV !== null && Number(c.recoverable_difference || 0) < minV) return false
+      if (maxAge !== null && Number(c.age_days || 0) > maxAge) return false
+      if (minConf !== null && Number(c.confidence || 0) < minConf) return false
+      return true
+    })
+  }, [commandCenter, filters])
 
+  const selectedCase = useMemo(() => {
+    if (screen !== 'opportunities' || !route.id) return null
+    return (commandCenter?.cases || []).find((c) => c.finding_id === route.id)
+      || allFindings.find((f) => f.finding_id === route.id)
+      || null
+  }, [screen, route.id, commandCenter, allFindings])
+
+  const recoveryCases = useMemo(() => allFindings.filter((finding) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(finding.status || 'open')), [allFindings])
   const trueupCustomers = useMemo(() => {
-    const statuses = isSampleMode ? ['approved', 'invoiced', 'disputed', 'open'] : ['approved', 'invoiced', 'disputed']
+    const statuses = ['approved', 'invoiced', 'disputed']
     const map = {}
     allFindings.forEach((f) => {
       if (!statuses.includes(f.status || 'open')) return
-      const entry = map[f.customer_id] ||= { customer_id: f.customer_id, customer_name: f.customer_name || f.customer_id, total: 0 }
-      entry.total += f.monthly_recoverable || 0
+      const entry = map[f.customer_id] ||= { customer_id: f.customer_id, customer_name: f.customer_name || f.customer_id, count: 0 }
+      entry.count += 1
     })
-    return Object.values(map).sort((a, b) => b.total - a.total)
-  }, [allFindings, isSampleMode])
-
-  const needsHumanReview = useMemo(() => {
-    const unconfirmedContracts = uploadedContracts.filter((item) => !item.confirmed)
-    return [...findings, ...unconfirmedContracts]
-  }, [findings, uploadedContracts])
+    return Object.values(map).sort((a, b) => (a.customer_name || '').localeCompare(b.customer_name || ''))
+  }, [allFindings])
 
   const reviewLabel = isSampleMode ? 'Sample data' : firebaseUser?.email || 'Authenticated'
-
   const proofLocked = !isSampleMode && Boolean(billing?.configured) && !billing?.card_on_file
   const lockTitle = 'Add a payment method to unlock'
 
   const startStripeInstall = useCallback(async () => {
-    if (isSampleMode) {
-      setConnectorStatus('Sample mode does not connect to Stripe.')
-      return
-    }
-    setConnectorSubmitting(true)
-    setConnectorStatus('')
+    if (isSampleMode) { setConnectorStatus('Sample mode does not connect to Stripe.'); return }
+    setConnectorSubmitting(true); setConnectorStatus('')
     try {
       const result = await apiRequest('/connector/stripe/oauth/start', { method: 'POST' })
       if (result?.install_url) {
@@ -881,52 +790,340 @@ function App() {
       }
       setConnectorStatus(result?.message || 'Could not start the Stripe App install.')
     } catch (error) {
-      console.error(error)
-      setConnectorStatus(error.message || 'Could not start the Stripe App install.')
-    } finally {
-      setConnectorSubmitting(false)
-    }
+      console.error(error); setConnectorStatus(error.message || 'Could not start the Stripe App install.')
+    } finally { setConnectorSubmitting(false) }
   }, [apiRequest, isSampleMode])
 
-  if (loadingAuth) {
+  const renderStatus = () => statusMessage ? <p className={`status-message ${statusMessage.toLowerCase().includes('failed') || statusMessage.toLowerCase().includes('not') ? 'error' : ''}`} role="status">{statusMessage}</p> : null
+
+  const actionButton = (action, finding) => {
+    if (action === 'approve') return <button className="btn-primary" onClick={() => handleAction(finding.finding_id, 'approve')}>Approve</button>
+    if (action === 'reject') return <button className="btn-secondary" onClick={() => handleAction(finding.finding_id, 'reject')}>Reject</button>
+    if (action === 'invoice') return <button className="btn-primary" onClick={() => recordCorrectiveInvoice(finding)}>Record corrective invoice</button>
+    if (action === 'payment') return <button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>
+    if (action === 'dispute') return <button className="btn-secondary" onClick={() => markDisputed(finding.finding_id)}>Mark disputed</button>
+    if (action === 'writeoff') return <button className="btn-danger" onClick={() => markWrittenOff(finding.finding_id)}>Write off</button>
+    return null
+  }
+
+  const renderRealizationForm = (finding) => {
+    if (!realizationForm || realizationForm.finding_id !== finding.finding_id) return null
     return (
-      <div className="app-container loading-shell">
-        <RefreshCw className="spin" size={28} />
-        <span>Loading session…</span>
+      <div className="recovery-form">
+        <label>Recovery basis
+          <select value={realizationFields.basis} onChange={(e) => setRealizationFields((f) => ({ ...f, basis: e.target.value }))}>
+            {RECOVERY_BASES.map((basis) => <option key={basis} value={basis}>{basis.replace(/_/g, ' ')}</option>)}
+          </select>
+        </label>
+        <label>Realized amount ($)
+          <input type="number" min="0" step="0.01" value={realizationFields.amount} onChange={(e) => setRealizationFields((f) => ({ ...f, amount: e.target.value }))} />
+        </label>
+        <label>Realized date
+          <input type="date" value={realizationFields.date} onChange={(e) => setRealizationFields((f) => ({ ...f, date: e.target.value }))} />
+        </label>
+        <label>External reference
+          <input value={realizationFields.reference} onChange={(e) => setRealizationFields((f) => ({ ...f, reference: e.target.value }))} placeholder="txn / check ref" />
+        </label>
+        <label>Note
+          <input value={realizationFields.note} onChange={(e) => setRealizationFields((f) => ({ ...f, note: e.target.value }))} />
+        </label>
+        <RecoveryActionSelect findingId={finding.finding_id} apiRequest={apiRequest} value={realizationFields.actionId} onChange={(v) => setRealizationFields((f) => ({ ...f, actionId: v }))} />
+        <div className="review-actions">
+          <button className="btn-primary" onClick={() => submitRealization(finding.finding_id)}>Save realized value</button>
+          <button className="btn-secondary" onClick={() => setRealizationForm(null)}>Cancel</button>
+        </div>
       </div>
     )
+  }
+
+  const renderEvents = (finding) => (
+    <div className="info-group">
+      <div className="info-label">Realization events</div>
+      {(events[finding.finding_id] || []).length === 0 ? <p className="muted-copy">No realization events recorded.</p> : (
+        <ul className="upload-history">
+          {(events[finding.finding_id] || []).map((event) => (
+            <li key={event.recovery_event_id} className="upload-history-item event-row">
+              <span>{event.event_type?.replace(/_/g, ' ') || 'event'} · {event.recovery_basis?.replace(/_/g, ' ')} · {formatCurrency(event.event_type === 'reversal' ? event.reversal_amount : event.realized_value)}</span>
+              <span className="muted-copy">{event.external_reference || event.reversal_reference || '—'} · {formatDate(event.realized_at || event.created_at)}</span>
+              {event.event_type === 'realization' && (
+                <button className="btn-secondary" onClick={() => { setReverseForm({ finding_id: finding.finding_id, event_id: event.recovery_event_id }); setReverseFields({ amount: '', reference: '', reason: '' }) }}>Reverse</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {reverseForm && reverseForm.finding_id === finding.finding_id && (
+        <div className="recovery-form">
+          <label>Reversal amount
+            <input type="number" min="0" step="0.01" value={reverseFields.amount} onChange={(e) => setReverseFields((f) => ({ ...f, amount: e.target.value }))} />
+          </label>
+          <label>Reference
+            <input value={reverseFields.reference} onChange={(e) => setReverseFields((f) => ({ ...f, reference: e.target.value }))} />
+          </label>
+          <label>Reason
+            <input value={reverseFields.reason} onChange={(e) => setReverseFields((f) => ({ ...f, reason: e.target.value }))} />
+          </label>
+          <div className="review-actions">
+            <button className="btn-danger" onClick={() => submitReversal(finding.finding_id, reverseForm.event_id)}>Reverse event</button>
+            <button className="btn-secondary" onClick={() => setReverseForm(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
+  const renderOpportunityDetail = (finding) => {
+    const evidence = finding.evidence || {}
+    const legal = LEGAL_NEXT_ACTIONS[finding.status || 'open'] || []
+    const ledger = finding.ledger || null
+    const detailFinding = { ...finding, monthly_recoverable: finding.recoverable_difference ?? finding.monthly_recoverable }
+    return (
+      <section className="panel-card opportunity-detail">
+        <div className="panel-heading">
+          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2></div>
+          <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
+        </div>
+        <div className="detail-grid detail-grid-two">
+          <div className="info-group"><div className="info-label">1. What the agreement says</div>
+            {finding.locked ? <p className="muted-copy">Proof locked — add a payment method.</p> : (
+              <div className="provenance-box">{evidence.clause_ref || finding.clause_ref || '—'}<br />{evidence.clause_text || finding.clause_text || 'No clause text on file.'}</div>
+            )}
+          </div>
+          <div className="info-group"><div className="info-label">2. Expected vs actual</div>
+            <div><span className="muted-copy">Expected: </span><strong className="money">{formatCurrency(finding.expected_value)}</strong></div>
+            <div><span className="muted-copy">Actual: </span><strong className="money">{formatCurrency(finding.actual_value)}</strong></div>
+          </div>
+          <div className="info-group discrepancy-hero"><div className="info-label">3. Financial discrepancy</div>
+            <div className="discrepancy-amount money">{formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}</div>
+            <div className="muted-copy">Confidence {Math.round(Number(finding.confidence || finding.confidence_score || 0) * 100)}% · period {finding.period || '—'} · {finding.currency || 'USD'}</div>
+          </div>
+          <div className="info-group"><div className="info-label">4. Calculation / evidence chain</div>
+            <div className="detail-copy">{evidence.math || finding.math || '—'}</div>
+            <div className="muted-copy">{evidence.provenance || finding.provenance || '—'}</div>
+            {(finding.evidence_refs || []).map((ref) => <span key={ref} className="file-chip">{ref}</span>)}
+          </div>
+        </div>
+        <div className="info-group"><div className="info-label">5. Status and audit history</div>
+          <span className={`status-pill status-${finding.status}`}>{String(finding.status || 'open').replace(/_/g, ' ')}</span>
+          <ul className="upload-history">
+            {(finding.recovery_history || []).map((h, i) => <li key={i}><span>{h.event}{h.decision ? ` · ${h.decision}` : ''}</span><span className="muted-copy">{h.ts}</span></li>)}
+          </ul>
+        </div>
+        <div className="info-group"><div className="info-label">6. Allowed next action</div>
+          {legal.length === 0 ? <p className="muted-copy">No legal actions remain for this status.</p> : <div className="review-actions">{legal.map((action) => <span key={action}>{actionButton(action, detailFinding)}</span>)}</div>}
+          {renderRealizationForm(detailFinding)}
+        </div>
+        {['approved', 'invoiced', 'disputed'].includes(finding.status) && (
+          <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshFindings} />
+        )}
+        {ledger && (
+          <div className="info-group"><div className="info-label">7. Realization ledger</div>
+            <div className="detail-grid">
+              <div><span className="metric-label">Potential</span><div className="money">{formatCurrency(ledger.potential_value)}</div></div>
+              <div><span className="metric-label">Requested</span><div className="money">{formatCurrency(ledger.approved_requested_value)}</div></div>
+              <div><span className="metric-label">Realized</span><div className="money">{formatCurrency(ledger.realized_value)}</div></div>
+              <div><span className="metric-label">Reversed</span><div className="money">{formatCurrency(ledger.reversed_value)}</div></div>
+              <div><span className="metric-label">Outstanding</span><div className="money">{formatCurrency(ledger.outstanding_value)}</div></div>
+              <div><span className="metric-label">Shortfall</span><div className="money">{formatCurrency(ledger.settlement_shortfall)}</div></div>
+            </div>
+          </div>
+        )}
+        {renderEvents(detailFinding)}
+      </section>
+    )
+  }
+
+  const renderOverview = () => {
+    const es = commandCenter?.executive_summary || {}
+    return (
+      <section className="panel-card">
+        <div className="panel-heading"><div><p className="eyebrow">Overview</p><h2>Recovery overview</h2></div></div>
+        {!(commandCenter?.cases || []).length ? <p className="muted-copy empty-state">No agreements evaluated yet → <button className="link-button" onClick={() => navigate('agreements')}>Agreements</button></p> : null}
+        <div className="metric-grid">
+          {METRIC_TILES.map(([key, label]) => <div key={key} className="metric-card"><span className="metric-label">{label}</span><strong className="metric-value money">{formatCurrency(commandCenter?.metrics?.[key])}</strong></div>)}
+        </div>
+        <div className="panel-section"><div className="info-label">Pipeline</div>
+          <div className="cc-pipeline">{(commandCenter?.pipeline || []).map((stage) => <div key={stage.stage} className="pipeline-stage"><div className="metric-label">{stage.stage}</div><strong className="money">{formatCurrency(stage.value)}</strong><div className="muted-copy">{stage.count} case{stage.count === 1 ? '' : 's'}</div></div>)}</div>
+        </div>
+        <div className="panel-section"><div className="info-label">Executive summary</div>
+          <div className="exec-strip">
+            <span><strong className="money">{formatCurrency(es.total_opportunity)}</strong> <span className="muted-copy">total opportunity</span></span>
+            <span><strong className="money">{formatCurrency(es.realized_value)}</strong> <span className="muted-copy">realized</span></span>
+            <span><strong>{Math.round((es.recovery_rate || 0) * 100)}%</strong> <span className="muted-copy">recovery rate</span></span>
+            <span><strong>{es.avg_days_to_recovery ?? '—'}</strong> <span className="muted-copy">avg days to recovery</span></span>
+            <span><strong>{es.open_cases ?? 0}</strong> <span className="muted-copy">open cases</span></span>
+          </div>
+        </div>
+        {es.recovery_metrics && <div className="panel-section"><div className="info-label">Recovery performance</div><div className="exec-strip"><span><strong className="money">{formatCurrency(es.recovery_metrics.total_opportunity)}</strong> <span className="muted-copy">total opportunity</span></span><span><strong className="money">{formatCurrency(es.recovery_metrics.realized_value)}</strong> <span className="muted-copy">realized</span></span><span><strong>{Math.round((es.recovery_metrics.recovery_rate || 0) * 100)}%</strong> <span className="muted-copy">rate</span></span><span><strong>{es.recovery_metrics.avg_time_to_recovery ?? '—'}</strong> <span className="muted-copy">avg days</span></span><span><strong className="money">{formatCurrency(es.recovery_metrics.avg_recovery_per_case)}</strong> <span className="muted-copy">avg / case</span></span></div></div>}
+        <div className="panel-section"><div className="info-label">Continuous assurance</div>
+          <dl className="assurance-rows">
+            <div className="assurance-row"><dt className="muted-copy">Last evaluated</dt><dd>{formatDate(assurance?.last_evaluated_at)}</dd></div>
+            <div className="assurance-row"><dt className="muted-copy">Last trigger</dt><dd>{assurance?.last_trigger || '—'}</dd></div>
+            <div className="assurance-row"><dt className="muted-copy">Open discrepancies</dt><dd>{assurance?.open_discrepancies ?? 0}</dd></div>
+            <div className="assurance-row"><dt className="muted-copy">Needs review</dt><dd>{assurance?.needs_review ?? 0}</dd></div>
+          </dl>
+          <div className="chip-row">{(assurance?.sources_monitored || []).map((src) => <span key={src} className="file-chip">{src}</span>)}{(assurance?.triggers_monitored || []).map((trigger) => <span key={trigger} className="file-chip">{trigger.replace(/_/g, ' ')}</span>)}</div>
+          <button className="btn-primary" onClick={evaluateAssurance}>Evaluate now</button>
+        </div>
+      </section>
+    )
+  }
+
+  const renderOpportunities = () => {
+    const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
+    if (route.id && selectedCase) return renderOpportunityDetail(selectedCase)
+    return (
+      <section className="panel-card">
+        <div className="panel-heading"><div><p className="eyebrow">Opportunities</p><h2>Working queue</h2></div><span className="hint-pill">{cases.length} cases</span></div>
+        <div className="cc-filters">
+          <select value={filters.customer} onChange={set('customer')}><option value="">All customers</option>{(commandCenter?.filters?.customers || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          <select value={filters.status} onChange={set('status')}><option value="">All statuses</option>{(commandCenter?.filters?.statuses || []).map((s) => <option key={s} value={s}>{s}</option>)}</select>
+          <select value={filters.type} onChange={set('type')}><option value="">All types</option>{(commandCenter?.filters?.types || []).map((t) => <option key={t} value={t}>{t}</option>)}</select>
+          <select value={filters.agreement} onChange={set('agreement')}><option value="">All agreements</option>{(commandCenter?.filters?.agreements || []).map((a) => <option key={a} value={a}>{a}</option>)}</select>
+          <select value={filters.period} onChange={set('period')}><option value="">All periods</option>{(commandCenter?.filters?.periods || []).map((p) => <option key={p} value={p}>{p}</option>)}</select>
+          <input type="number" placeholder="Min value" value={filters.minValue} onChange={set('minValue')} />
+          <input type="number" placeholder="Max age (days)" value={filters.maxAge} onChange={set('maxAge')} />
+          <input type="number" step="0.05" min="0" max="1" placeholder="Min confidence" value={filters.minConfidence} onChange={set('minConfidence')} />
+        </div>
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Opportunity</th><th>Value</th><th>Confidence</th><th>Evidence</th><th>Age</th><th>Status</th><th>Next valid action</th></tr></thead><tbody>
+          {cases.map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') navigate('opportunities', c.finding_id) }}>
+            <td title={c.counterparty?.customer_name} className="truncate">{c.counterparty?.customer_name}</td><td>{c.financial_right?.title || c.financial_right?.type}</td><td className="money">{formatCurrency(c.recoverable_difference)}</td><td>{Math.round(Number(c.confidence || 0) * 100)}%</td><td>{Math.round(Number(c.evidence?.completeness || 0) * 100) >= 100 ? 'Complete' : 'Partial'}</td><td>{c.age_days ?? '—'}</td><td>{c.status}</td><td>{c.recommended_next_step}</td>
+          </tr>)}
+          {cases.length === 0 && <tr><td colSpan="8" className="muted-copy">No cases match the current filters.</td></tr>}
+        </tbody></table></div>
+        <div className="panel-section"><div className="info-label">Needs review</div>
+          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason}</span><span className="muted-copy">{item.reason || item.suggested_action}</span></li>)}</ul>}
+        </div>
+        {route.id && <p className="muted-copy">Loading selected opportunity…</p>}
+      </section>
+    )
+  }
+
+  const renderAgreements = () => (
+    <section className="panel-card">
+      <div className="panel-heading"><div><p className="eyebrow">Agreements</p><h2>Agreements and uploads</h2></div><span className="hint-pill">Files or a ZIP — we sort them out</span></div>
+      <div className="upload-grid">
+        <div className="dropzone">
+          <Upload size={22} /><div><strong>{bulkUploading ? 'Uploading…' : 'Drop files here or click to browse'}</strong><p>Drop contracts (PDF/DOCX/scans), billing + usage CSVs, or a ZIP of everything.</p></div>
+          <input type="file" multiple disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
+          {selectedFileName && <span className="file-chip">{selectedFileName}</span>}
+          {bulkResult?.files?.length > 0 && <ul className="upload-history">{bulkResult.files.map((f, i) => <li key={`${f.name}-${i}`} className="upload-history-item"><span className="upload-file-name">{f.name}</span><span className="file-chip">{f.kind} · {f.status}{f.message ? ` — ${f.message}` : ''}</span></li>)}</ul>}
+          <p className="muted-copy">Export templates: <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}<a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}<a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a></p>
+        </div>
+      </div>
+      <details className="manual-entry">
+        <summary>Enter terms manually</summary>
+        <div className="contract-form-grid">
+          <label>Customer name<input value={contractDraft.customer_name} onChange={(event) => handleContractField('customer_name', event.target.value)} /></label>
+          <label>Customer ID<input value={contractDraft.customer_id} onChange={(event) => handleContractField('customer_id', event.target.value)} placeholder="acme" /></label>
+          <label>Committed minimum monthly<input type="number" value={contractDraft.committed_minimum_monthly} onChange={(event) => handleContractField('committed_minimum_monthly', event.target.value)} /></label>
+          <label>Included units<input type="number" value={contractDraft.included_units} onChange={(event) => handleContractField('included_units', event.target.value)} /></label>
+          <label>Overage rate<input type="number" step="0.01" value={contractDraft.overage_rate} onChange={(event) => handleContractField('overage_rate', event.target.value)} /></label>
+          <label>Annual escalator %<input type="number" step="0.01" value={contractDraft.annual_escalator_pct} onChange={(event) => handleContractField('annual_escalator_pct', event.target.value)} /></label>
+          <label>Escalator effective date<input type="date" value={contractDraft.escalator_effective_date} onChange={(event) => handleContractField('escalator_effective_date', event.target.value)} /></label>
+          <label>Discount name<input value={contractDraft.discount_name} onChange={(event) => handleContractField('discount_name', event.target.value)} /></label>
+          <label>Discount value<input type="number" step="0.01" value={contractDraft.discount_value} onChange={(event) => handleContractField('discount_value', event.target.value)} /></label>
+          <label>Discount expires<input type="date" value={contractDraft.discount_expires} onChange={(event) => handleContractField('discount_expires', event.target.value)} /></label>
+          <label>Discount applies to<input value={contractDraft.discount_applies_to} onChange={(event) => handleContractField('discount_applies_to', event.target.value)} /></label>
+        </div>
+        <div className="clause-grid">
+          <label>Committed minimum clause quote<textarea value={contractDraft.clauses.committed_minimum} onChange={(event) => handleClauseField('committed_minimum', event.target.value)} rows={3} /></label>
+          <label>Overage clause quote<textarea value={contractDraft.clauses.overage} onChange={(event) => handleClauseField('overage', event.target.value)} rows={3} /></label>
+          <label>Discount clause quote<textarea value={contractDraft.clauses.discount} onChange={(event) => handleClauseField('discount', event.target.value)} rows={3} /></label>
+          <label>Escalator clause quote<textarea value={contractDraft.clauses.escalator} onChange={(event) => handleClauseField('escalator', event.target.value)} rows={3} /></label>
+        </div>
+        <div className="panel-footer"><button className="btn-primary" onClick={submitContract} disabled={contractSubmitting}>{contractSubmitting ? 'Uploading…' : 'Upload contract'}</button></div>
+      </details>
+      <div className="panel-section"><div className="info-label">Agreement list</div>
+        {uploadedContracts.length === 0 ? <p className="muted-copy">No agreements uploaded yet.</p> : uploadedContracts.map((contract) => (
+          <div key={contract.customer_id} className="agreement-card">
+            <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : ''}`}>{contract.confirmed ? 'Confirmed' : 'Not confirmed'}</span></div>
+            <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
+            <div className="muted-copy">Confidence {Math.round(Number((contract.term_meta?.committed_minimum_monthly?.confidence ?? 1) * 100))}% · {contract.term_meta?.committed_minimum_monthly?.provenance || 'No provenance'}</div>
+            {!contract.confirmed && <button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm terms'}</button>}
+            <details><summary>Financial rights</summary>
+              {rights[contract.customer_id]?.length ? <ul className="upload-history">{rights[contract.customer_id].map((right) => <li key={right.right_id || right.candidate_id}><span>{right.right_type || right.type}</span><span className="muted-copy">{right.status || right.candidate_status || '—'}</span></li>)}</ul> : <p className="muted-copy">{rights[contract.customer_id] === undefined ? 'Loading rights…' : 'No additional rights discovered'}</p>}
+            </details>
+          </div>
+        ))}
+      </div>
+      <div className="panel-section"><div className="info-label">Renewals</div>
+        {renewals.length === 0 ? <p className="muted-copy">No renewal dates recorded.</p> : <ul className="upload-history">{renewals.map((renewal, i) => <li key={i} className="upload-history-item"><span>{renewal.customer_name || renewal.customer_id}</span><span className="muted-copy">{renewal.term_end || renewal.cancellation_deadline || '—'}</span></li>)}</ul>}
+      </div>
+    </section>
+  )
+
+  const renderRecoveries = () => (
+    <section className="panel-card">
+      <div className="panel-heading"><div><p className="eyebrow">Recoveries</p><h2>Recovered value and fees</h2></div></div>
+      <div className="metric-grid">
+        {[['recovered_to_date', 'Recovered to date'], ['recovered_this_month', 'Recovered this month'], ['success_fee_to_date', 'Success fee to date'], ['success_fee_this_month', 'Success fee this month'], ['invoiced_awaiting_payment', 'Invoiced awaiting payment'], ['written_off', 'Written off'], ['potential_monthly_recoverable', 'Potential monthly recoverable']].map(([key, label]) => <div key={key} className="metric-card"><span className="metric-label">{label}</span><strong className="metric-value money">{formatCurrency(metrics?.[key])}</strong></div>)}
+      </div>
+      <div className="panel-section"><div className="info-label">Recovery cases</div>
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).length === 0 && <tr><td colSpan="5" className="muted-copy">No recovery cases yet — approve an opportunity first.</td></tr>}
+        </tbody></table></div>
+      </div>
+      <div className="panel-section"><div className="info-label">Record realized value</div>
+        {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div><button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>{renderRealizationForm(finding)}{renderEvents(finding)}</div>)}
+      </div>
+      <div className="panel-section"><div className="info-label">True-up letters</div>
+        <label className="styled-field">Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>
+        {trueupCustomers.length === 0 ? <p className="muted-copy">No true-up customers.</p> : trueupCustomers.map((customer) => <div key={customer.customer_id} className="agreement-card"><strong>{customer.customer_name}</strong><div className="muted-copy">{customer.count} finding(s)</div><button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={() => downloadTrueupPdf(customer.customer_id, customer.customer_name)}>Download letter + schedule PDF</button></div>)}
+      </div>
+      <div className="review-actions">
+        <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={exportFindings}><Download size={15} /> Export findings CSV</button>
+        <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={openAuditReport}><FileText size={15} /> Audit report</button>
+        <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={downloadReportPdf}><Download size={15} /> PDF report</button>
+        <button className="btn-primary" onClick={chargeSuccessFee}>Bill success fee this month</button>
+      </div>
+    </section>
+  )
+
+  const renderIntegrations = () => (
+    <section className="panel-card">
+      <div className="panel-heading"><div><p className="eyebrow">Integrations</p><h2>Integrations</h2></div><span className={`connected-pill ${connectorConnection?.connected ? 'active' : ''}`}><ShieldCheck size={14} /> {connectorConnection?.connected ? 'Connected' : 'Not connected'}</span></div>
+      <div className="info-box"><ShieldCheck size={18} /><div><strong>Read-only Stripe access</strong><p>The Stripe API key stays on the server. Recoup reads customer, subscription, usage and invoice data only.</p></div></div>
+      <div className="info-box"><DollarSign size={18} /><div><strong>Outcome-based pricing</strong><p>Recoup charges 20% of dollars actually paid to you — tracked on Recoveries.</p></div></div>
+      {isSampleMode ? <div className="info-box"><FileText size={18} /><div><strong>Sample mode</strong><p>Sample mode runs on synthetic data and does not connect to Stripe.</p></div></div> : <button className="btn-primary" onClick={startStripeInstall} disabled={connectorSubmitting}>{connectorSubmitting ? 'Connecting…' : 'Connect with Stripe'}</button>}
+      {connectorStatus && <p className="muted-copy" role="status">{connectorStatus}</p>}
+      <button className="btn-secondary" onClick={syncStripeRecoveries} disabled={syncingRecoveries}>{syncingRecoveries ? 'Checking…' : 'Check Stripe for paid invoices'}</button>
+      <div className="panel-section"><div className="info-label">CSV fallback</div><p className="muted-copy">If Stripe is unavailable, export invoices/usage with these templates and upload on Agreements.</p><p className="muted-copy"><a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}<a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}<a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a></p></div>
+    </section>
+  )
+
+  const renderSettings = () => (
+    <section className="panel-card">
+      <div className="panel-heading"><div><p className="eyebrow">Settings</p><h2>Settings</h2></div></div>
+      <div className="panel-section"><div className="info-label">Billing</div>
+        <p className="muted-copy">Card on file: {billing?.card_on_file ? `${billing.card_brand || ''} •••• ${billing.card_last4 || ''}` : 'None'}</p>
+        <p className="muted-copy">Recoup charges 20% of net realized recovered value. <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a></p>
+        <button className="btn-primary" onClick={startBillingSetup}>Add payment method</button>
+      </div>
+      <div className="panel-section"><div className="info-label">Account</div>
+        <p className="muted-copy">{firebaseUser?.email || 'sample@recoup.local'}</p>
+        {isSampleMode && <button className="btn-secondary" onClick={() => setSessionMode(null)}>Exit sample mode</button>}
+        <button className="btn-secondary" onClick={handleLogout}>Sign out</button>
+        <button className="btn-danger" onClick={deleteAccountData}>Delete all account data</button>
+      </div>
+    </section>
+  )
+
+  if (loadingAuth) {
+    return <div className="app-container loading-shell"><RefreshCw className="spin" size={28} /><span>Loading session…</span></div>
   }
 
   if (!apiReady) {
     return (
       <div className="app-container auth-shell">
-        <div className="glass-panel auth-card">
-          <div className="auth-hero">
-            <div className="auth-mark">
-              <Building2 size={28} />
-            </div>
-            <div>
-              <h1 className="title-glow">Recoup</h1>
-              <p className="auth-subtitle">Revenue assurance for contract recovery workflows.</p>
-            </div>
-          </div>
-
-          <div className="auth-note glass-panel">
-            <LockKeyhole size={16} />
-            <span>Firebase Auth is required for real data. Sample data is available explicitly below.</span>
-          </div>
-
+        <div className="panel-card auth-card">
+          <div className="auth-hero"><div className="auth-mark"><Building2 size={28} /></div><div><h1 className="brand-title">Recoup</h1><p className="auth-subtitle">Revenue assurance for contract recovery workflows.</p></div></div>
+          <div className="auth-note"><LockKeyhole size={16} /><span>Firebase Auth is required for real data. Sample data is available explicitly below.</span></div>
           <div className="auth-actions">
-            <button className="btn-primary auth-button" onClick={handleGoogleLogin}>
-              <LogIn size={16} />
-              Sign in with Google
-            </button>
-            <button className="btn-secondary auth-button" onClick={sampleModeLogin}>
-              <Sparkles size={16} />
-              Try with sample data
-            </button>
+            <button className="btn-primary auth-button" onClick={handleGoogleLogin}><LogIn size={16} /> Sign in with Google</button>
+            <button className="btn-secondary auth-button" onClick={sampleModeLogin}><Sparkles size={16} /> Try with sample data</button>
           </div>
-
           <a className="back-to-site" href="/">&larr; Recoup</a>
         </div>
       </div>
@@ -936,799 +1133,31 @@ function App() {
   return (
     <div className="app-container recoup-shell">
       <header className="header shell-header">
-        <div>
-          <div className="brand-row">
-            <h1 className="title-glow brand-title">
-              <Building2 size={28} />
-              Recoup
-            </h1>
-            <span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span>
-          </div>
-          <p className="subtitle">Revenue recovery dashboard</p>
-        </div>
+        <div><div className="brand-row"><h1 className="brand-title"><Building2 size={28} /> Recoup</h1><span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span></div><p className="subtitle">Revenue recovery workspace</p></div>
         <div className="header-actions">
-          <div className="period-picker glass-panel">
-            <label htmlFor="billing-period">Period</label>
-            <input
-              id="billing-period"
-              value={billingPeriod}
-              onChange={(event) => setBillingPeriod(event.target.value)}
-              placeholder="YYYY-MM"
-            />
-          </div>
-          <button className="btn-primary" onClick={runReconciliation} disabled={running}>
-            {running ? <RefreshCw className="spin" size={16} /> : <FileText size={16} />}
-            {running ? 'Reconciling…' : 'Run reconciliation'}
-          </button>
-          <button className="btn-danger" onClick={handleLogout} title="Sign out">
-            <LogOut size={16} />
-          </button>
+          <div className="period-picker"><label htmlFor="billing-period">Period</label><input id="billing-period" value={billingPeriod} onChange={(event) => setBillingPeriod(event.target.value)} placeholder="YYYY-MM" /></div>
+          <button className="btn-primary" onClick={runEvaluation} disabled={running}>{running ? <RefreshCw className="spin" size={16} /> : <FileText size={16} />}{running ? 'Evaluating…' : 'Run evaluation'}</button>
+          <button className="btn-danger" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
         </div>
       </header>
-
-      {isSampleMode && (
-        <div className="glass-panel mode-banner sample-banner">
-          <Sparkles size={16} />
-          Sample data is active. Requests use synthetic data and are not tied to your account.
-          <button className="btn-secondary" onClick={() => setSessionMode(null)}>
-            Exit sample mode
-          </button>
-        </div>
-      )}
-
-      {proofLocked && (
-        <div className="glass-panel mode-banner">
-          <LockKeyhole size={16} />
-          <div className="template-links">
-            Add a payment method to unlock clause proof, audit reports and true-up packs.
-            You're only charged 20% of dollars actually recovered — nothing upfront.
-            <p className="muted-copy">
-              By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>,
-              including the 20% success fee on recovered revenue.
-            </p>
-          </div>
-          <button className="btn-primary" onClick={startBillingSetup}>
-            Add payment method
-          </button>
-        </div>
-      )}
-
-      <div className="stepper-grid">
-        <aside className="glass-panel sidebar-panel">
-          <div className="stepper-list">
-            {STEPS.map((step) => {
-              const Icon = step.icon
-              void Icon
-              const active = activeStep === step.id
-              return (
-                <button
-                  key={step.id}
-                  type="button"
-                  className={`stepper-item ${active ? 'active' : ''}`}
-                  onClick={() => setActiveStep(step.id)}
-                >
-                  <span className="step-icon">
-                    <Icon size={16} />
-                  </span>
-                  <span className="step-copy">
-                    <span className="step-index">Step {step.id}</span>
-                    <span className="step-title">{step.title}</span>
-                  </span>
-                  <ChevronRight size={16} />
-                </button>
-              )
-            })}
-          </div>
-
-          {assurance && (
-            <div className="assurance-panel" style={{ marginTop: '1rem' }}>
-              <p className="eyebrow">Continuous Assurance</p>
-              <dl className="assurance-rows" style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
-                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <dt className="muted-copy">Last evaluated</dt>
-                  <dd>{assurance.last_evaluated_at ? new Date(assurance.last_evaluated_at).toLocaleString() : '—'}</dd>
-                </div>
-                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <dt className="muted-copy">Next evaluation</dt>
-                  <dd>On next billing, usage or agreement event</dd>
-                </div>
-                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <dt className="muted-copy">Open discrepancies</dt>
-                  <dd>{assurance.open_discrepancies ?? 0}</dd>
-                </div>
-                <div className="assurance-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <dt className="muted-copy">Needs review</dt>
-                  <dd>{assurance.needs_review ?? 0}</dd>
-                </div>
-              </dl>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                {(assurance.sources_monitored || []).map((src) => (
-                  <span key={src} className="file-chip">{src}</span>
-                ))}
-              </div>
-              {(assurance.recent_events || []).length > 0 && (
-                <ul className="upload-history" style={{ marginTop: '0.5rem' }}>
-                  {assurance.recent_events.slice(0, 5).map((ev) => (
-                    <li key={ev.event_id} className="upload-history-item">
-                      <span>{ev.trigger}{ev.customer_id ? ` · ${ev.customer_id}` : ''}{ev.period ? ` · ${ev.period}` : ''}</span>
-                      <span className="muted-copy">{ev.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+      {isSampleMode && <div className="mode-banner sample-banner"><Sparkles size={16} /> Sample data is active. Requests use synthetic data and are not tied to your account.<button className="btn-secondary" onClick={() => setSessionMode(null)}>Exit sample mode</button></div>}
+      {proofLocked && <div className="mode-banner"><LockKeyhole size={16} /><div><strong>{lockTitle}</strong><p className="muted-copy">Add a payment method to unlock clause proof, audit reports and true-up packs. You are only charged 20% of dollars actually recovered — nothing upfront. By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>.</p></div><button className="btn-primary" onClick={startBillingSetup}>Add payment method</button></div>}
+      <div className="app-grid">
+        <aside className="sidebar-panel">
+          <nav className="stepper-list" aria-label="Primary">
+            {NAV_ITEMS.map((item) => { const Icon = item.icon; const active = screen === item.id; void Icon; return <button key={item.id} type="button" className={`stepper-item ${active ? 'active' : ''}`} onClick={() => navigate(item.id)}><span className="step-icon"><Icon size={16} /></span><span className="step-copy"><span className="step-title">{item.title}</span></span><ChevronRight size={16} /></button> })}
+          </nav>
         </aside>
-
         <main className="step-content">
-          {activeStep === 1 && (
-            <section className="glass-panel panel-card onboarding-card">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Step 1</p>
-                  <h2>Upload contracts</h2>
-                </div>
-                <span className="hint-pill">Files or a ZIP — we sort them out</span>
-              </div>
-
-              <div className="upload-grid">
-                <div className="dropzone glass-panel">
-                  <Upload size={22} />
-                  <div>
-                    <strong>{bulkUploading ? 'Uploading…' : 'Drop files here or click to browse'}</strong>
-                    <p>Drop contracts (PDF/DOCX/scans), billing + usage CSVs, or a ZIP of everything.</p>
-                  </div>
-                  <input
-                    type="file"
-                    multiple
-                    disabled={bulkUploading}
-                    accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg"
-                    onChange={handleBulkUpload}
-                  />
-                  {selectedFileName && <span className="file-chip">{selectedFileName}</span>}
-                  {bulkResult?.files?.length > 0 && (
-                    <ul className="upload-history">
-                      {bulkResult.files.map((f, i) => (
-                        <li key={`${f.name}-${i}`} className="upload-history-item">
-                          <span className="upload-file-name">{f.name}</span>
-                          <span className="file-chip">{f.kind} · {f.status}{f.message ? ` — ${f.message}` : ''}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <p className="muted template-links">
-                    Export templates:{' '}
-                    <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}
-                    <a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}
-                    <a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a>
-                  </p>
-                </div>
-
-                <div className="contract-form-grid">
-                  <label>
-                    Customer name
-                    <input value={contractDraft.customer_name} onChange={(event) => handleContractField('customer_name', event.target.value)} />
-                  </label>
-                  <label>
-                    Customer ID
-                    <input value={contractDraft.customer_id} onChange={(event) => handleContractField('customer_id', event.target.value)} placeholder="acme" />
-                  </label>
-                  <label>
-                    Committed minimum monthly
-                    <input type="number" value={contractDraft.committed_minimum_monthly} onChange={(event) => handleContractField('committed_minimum_monthly', event.target.value)} />
-                  </label>
-                  <label>
-                    Included units
-                    <input type="number" value={contractDraft.included_units} onChange={(event) => handleContractField('included_units', event.target.value)} />
-                  </label>
-                  <label>
-                    Overage rate
-                    <input type="number" step="0.01" value={contractDraft.overage_rate} onChange={(event) => handleContractField('overage_rate', event.target.value)} />
-                  </label>
-                  <label>
-                    Annual escalator %
-                    <input type="number" step="0.01" value={contractDraft.annual_escalator_pct} onChange={(event) => handleContractField('annual_escalator_pct', event.target.value)} />
-                  </label>
-                  <label>
-                    Escalator effective date
-                    <input type="date" value={contractDraft.escalator_effective_date} onChange={(event) => handleContractField('escalator_effective_date', event.target.value)} />
-                  </label>
-                  <label>
-                    Discount name
-                    <input value={contractDraft.discount_name} onChange={(event) => handleContractField('discount_name', event.target.value)} />
-                  </label>
-                  <label>
-                    Discount value
-                    <input type="number" step="0.01" value={contractDraft.discount_value} onChange={(event) => handleContractField('discount_value', event.target.value)} />
-                  </label>
-                  <label>
-                    Discount expires
-                    <input type="date" value={contractDraft.discount_expires} onChange={(event) => handleContractField('discount_expires', event.target.value)} />
-                  </label>
-                  <label>
-                    Discount applies to
-                    <input value={contractDraft.discount_applies_to} onChange={(event) => handleContractField('discount_applies_to', event.target.value)} />
-                  </label>
-                </div>
-              </div>
-
-              <div className="clause-grid">
-                <label>
-                  Committed minimum clause quote
-                  <textarea value={contractDraft.clauses.committed_minimum} onChange={(event) => handleClauseField('committed_minimum', event.target.value)} rows={3} />
-                </label>
-                <label>
-                  Overage clause quote
-                  <textarea value={contractDraft.clauses.overage} onChange={(event) => handleClauseField('overage', event.target.value)} rows={3} />
-                </label>
-                <label>
-                  Discount clause quote
-                  <textarea value={contractDraft.clauses.discount} onChange={(event) => handleClauseField('discount', event.target.value)} rows={3} />
-                </label>
-                <label>
-                  Escalator clause quote
-                  <textarea value={contractDraft.clauses.escalator} onChange={(event) => handleClauseField('escalator', event.target.value)} rows={3} />
-                </label>
-              </div>
-
-              <div className="panel-footer">
-                <span className="footer-note">Structured uploads are saved to the backend and shown in the confirmation step.</span>
-                <button className="btn-primary" onClick={submitContract} disabled={contractSubmitting}>
-                  {contractSubmitting ? <RefreshCw className="spin" size={16} /> : <Upload size={16} />}
-                  {contractSubmitting ? 'Uploading…' : 'Upload contract'}
-                </button>
-              </div>
-            </section>
-          )}
-
-          {activeStep === 2 && (
-            <section className="glass-panel panel-card onboarding-card">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Step 2</p>
-                  <h2>Connect Stripe</h2>
-                </div>
-                <span className={`connected-pill ${connectorConnection?.connected ? 'active' : ''}`}>
-                  <ShieldCheck size={14} /> {connectorConnection?.connected ? 'Connected' : 'Not connected'}
-                </span>
-              </div>
-              <div className="stacked-copy">
-                <div className="info-box glass-panel">
-                  <ShieldCheck size={18} />
-                  <div>
-                    <strong>Read-only Stripe access</strong>
-                    <p>The Stripe API key stays on the server. This screen only confirms billing is available for reconciliation.</p>
-                  </div>
-                </div>
-                <div className="info-box glass-panel">
-                  <DollarSign size={18} />
-                  <div>
-                    <strong>Outcome-based pricing</strong>
-                    <p>Recoup charges 20% of dollars actually paid to you — tracked on the Recovered &amp; billing step.</p>
-                  </div>
-                </div>
-                {isSampleMode ? (
-                  <div className="info-box glass-panel">
-                    <FileText size={18} />
-                    <div>
-                      <strong>Sample mode</strong>
-                      <p>Sample mode runs on synthetic data and does not connect to Stripe.</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="stacked-copy">
-                    <button className="btn-primary action-button" onClick={startStripeInstall} disabled={connectorSubmitting}>
-                      {connectorSubmitting ? <RefreshCw className="spin" size={16} /> : <ShieldCheck size={16} />}
-                      {connectorSubmitting ? 'Starting…' : 'Connect with Stripe'}
-                    </button>
-                    <div className="status-message">
-                      {connectorStatus || 'Click to begin the OAuth install. Recoup stores the per-tenant read credential after Stripe redirects back.'}
-                    </div>
-                  </div>
-                )}
-                <div className="info-box glass-panel">
-                  <BadgeCheck size={18} />
-                  <div>
-                    <strong>Connection status</strong>
-                    <p>
-                      {connectorConnection?.connected
-                        ? `Connected as ${connectorConnection.stripe_account_id || 'the selected Stripe account'}.`
-                        : connectorConnection?.message || 'Awaiting Stripe App install.'}
-                    </p>
-                  </div>
-                </div>
-
-              </div>
-            </section>
-          )}
-
-          {activeStep === 3 && (
-            <section className="glass-panel panel-card onboarding-card">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Step 3</p>
-                  <h2>Run reconciliation</h2>
-                </div>
-                <span className="hint-pill">Period {billingPeriod}</span>
-              </div>
-              <div className="stacked-copy">
-                <p>Run the deterministic revenue recovery pass against the currently selected billing period.</p>
-                <div className="info-box glass-panel">
-                  <FileText size={18} />
-                  <div>
-                    <strong>Findings and review items</strong>
-                    <p>Any review items stay highlighted for human attention before approval.</p>
-                  </div>
-                </div>
-                <button className="btn-primary action-button" onClick={runReconciliation} disabled={running}>
-                  {running ? <RefreshCw className="spin" size={16} /> : <RefreshCw size={16} />}
-                  {running ? 'Reconciling…' : 'Run reconciliation'}
-                </button>
-                {statusMessage && <div className="status-message">{statusMessage}</div>}
-              </div>
-            </section>
-          )}
-
-          {activeStep === 4 && (
-            <section className="glass-panel panel-card onboarding-card">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Step 4</p>
-                  <h2>Confirm extracted terms</h2>
-                </div>
-                <span className="warning-pill">Needs human review</span>
-              </div>
-
-              {uploadedContracts.length === 0 ? (
-                <div className="empty-state glass-panel">
-                  <BadgeCheck size={22} />
-                  <p>Upload a contract first to confirm the extracted terms and provenance.</p>
-                </div>
-              ) : (
-                <div className="contract-review-list">
-                  {uploadedContracts.map((contract) => (
-                    <article key={contract.customer_id} className="glass-panel contract-review-card">
-                      <div className="review-header">
-                        <div>
-                          <h3>{contract.customer_name}</h3>
-                          <p>{contract.customer_id}</p>
-                        </div>
-                        <span className={contract.confirmed ? 'badge badge-approved' : 'badge badge-pending'}>
-                          {contract.confirmed ? 'Confirmed' : 'Needs human review'}
-                        </span>
-                      </div>
-
-                      <div className="term-list">
-                        {[
-                          ['Committed minimum', formatCurrency(contract.committed_minimum_monthly), contract.term_meta?.committed_minimum_monthly],
-                          ['Included units', Number(contract.included_units || 0).toLocaleString(), contract.term_meta?.included_units],
-                          ['Overage rate', formatRate(contract.overage_rate), contract.term_meta?.overage_rate],
-                          ['Annual escalator', `${Number(contract.annual_escalator_pct || 0) * 100}%`, contract.term_meta?.annual_escalator_pct],
-                          ['Escalator effective date', contract.escalator_effective_date || '—', contract.term_meta?.escalator_effective_date],
-                        ].map(([label, value, meta]) => (
-                          <div key={label} className="term-row">
-                            <span>{label}</span>
-                            <strong>{value}</strong>
-                            <small>
-                              {meta ? `${Math.round(meta.confidence * 100)}% • ${meta.provenance}` : 'Manual structured entry'}
-                            </small>
-                          </div>
-                        ))}
-                        {(contract.discounts || []).map((discount) => (
-                          <div key={discount.name} className="term-row">
-                            <span>Discount</span>
-                            <strong>{discount.name}</strong>
-                            <small>
-                              {contract.term_meta?.discounts
-                                ? `${Math.round(contract.term_meta.discounts.confidence * 100)}% • ${contract.term_meta.discounts.provenance}`
-                                : 'Manual structured entry'}
-                            </small>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="review-actions">
-                        <button className="btn-secondary" onClick={() => confirmContract(contract.customer_id)}>
-                          <BadgeCheck size={16} /> Confirm terms
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-
-              <div className="contract-review-list">
-                <h3 className="queue-title">Renewal calendar</h3>
-                {renewals.length === 0 ? (
-                  <div className="empty-state glass-panel">
-                    <BadgeCheck size={22} />
-                    <p>No contracts with term data yet.</p>
-                  </div>
-                ) : (
-                  renewals.map((row) => (
-                    <article key={row.customer_id} className="glass-panel contract-review-card">
-                      <div className="review-header">
-                        <div>
-                          <h3>{row.customer_name}</h3>
-                          <p>
-                            {row.term_end ? `Term ends ${row.term_end}` : 'Term end unknown'}
-                            {row.auto_renew_months ? ` · auto-renews ${row.auto_renew_months}mo` : ''}
-                            {row.notice_deadline ? ` · notice by ${row.notice_deadline} (${row.days_to_deadline}d)` : ''}
-                          </p>
-                          {row.provenance && <small>{row.provenance}</small>}
-                        </div>
-                        <span className={`badge ${
-                          row.state === 'notice_window_open' || row.state === 'unknown' ? 'badge-pending'
-                            : row.state === 'expired' ? 'badge-rejected'
-                            : 'badge-approved'}`}>
-                          {row.state === 'notice_window_open' ? 'Notice window open'
-                            : row.state === 'upcoming_90d' ? 'Within 90 days'
-                            : row.state === 'expired' ? 'Expired'
-                            : row.state === 'unknown' ? 'Unknown term'
-                            : 'Later'}
-                        </span>
-                      </div>
-                    </article>
-                  ))
-                )}
-              </div>
-            </section>
-          )}
-
-          {activeStep === 6 && (
-            <section className="glass-panel panel-card onboarding-card">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Step 6</p>
-                  <h2>Recovered &amp; billing</h2>
-                </div>
-                <span className="connected-pill">
-                  <DollarSign size={14} /> 20% success fee
-                </span>
-              </div>
-
-              <div className="metric-grid">
-                <div className="glass-panel metric-card">
-                  <span className="metric-label">Recovered to date</span>
-                  <strong className="metric-value">{formatCurrency(metrics?.recovered_to_date)}</strong>
-                </div>
-                <div className="glass-panel metric-card">
-                  <span className="metric-label">Your success fee this month</span>
-                  <strong className="metric-value">{formatCurrency(metrics?.success_fee_this_month)}</strong>
-                  <small>20% of {formatCurrency(metrics?.recovered_this_month)} actually paid to you this month</small>
-                </div>
-                <div className="glass-panel metric-card">
-                  <span className="metric-label">Potential (not yet recovered)</span>
-                  <strong className="metric-value">{formatCurrency(metrics?.potential_monthly_recoverable)}</strong>
-                </div>
-              </div>
-
-              <div className="review-actions">
-                <button className="btn-secondary" onClick={exportFindings} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
-                  <Download size={16} /> Export findings (CSV)
-                </button>
-                <button className="btn-secondary" onClick={openAuditReport} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
-                  <FileText size={16} /> Audit report
-                </button>
-                <button className="btn-secondary" onClick={downloadReportPdf} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
-                  <Download size={16} /> Download PDF
-                </button>
-                {!isSampleMode && (
-                  <button className="btn-secondary" onClick={syncStripeRecoveries} disabled={syncingRecoveries}>
-                    <RefreshCw size={16} /> {syncingRecoveries ? 'Checking Stripe…' : 'Check Stripe for paid invoices'}
-                  </button>
-                )}
-                <button className="btn-primary" onClick={chargeSuccessFee}>
-                  <DollarSign size={16} /> Bill success fee this month
-                </button>
-                {!isSampleMode && billing?.card_on_file && (
-                  <small className="muted-copy">
-                    Card on file: {billing.card_brand || 'card'} •••• {billing.card_last4}
-                  </small>
-                )}
-              </div>
-
-              <div className="contract-review-list">
-                <h3 className="queue-title">Approved — awaiting recovery</h3>
-                {approvedFindings.length === 0 ? (
-                  <div className="empty-state glass-panel">
-                    <CheckCircle2 size={22} />
-                    <p>No approved findings awaiting recovery.</p>
-                  </div>
-                ) : (
-                  approvedFindings.map((finding) => (
-                    <article key={finding.finding_id} className="glass-panel contract-review-card">
-                      <div className="review-header">
-                        <div>
-                          <h3>{finding.customer_name}</h3>
-                          <p>{finding.title}</p>
-                        </div>
-                        <span className="amount">{formatCurrency(finding.monthly_recoverable)}</span>
-                      </div>
-                      <div className="review-actions">
-                        <button className="btn-secondary" onClick={() => openRecoveryForm(finding, 'invoice')}>
-                          <FileText size={16} /> Record invoice
-                        </button>
-                        <button className="btn-primary" onClick={() => openRecoveryForm(finding, 'payment')}>
-                          <DollarSign size={16} /> Record payment
-                        </button>
-                      </div>
-                      {renderRecoveryForm(finding)}
-                    </article>
-                  ))
-                )}
-
-                {invoicedFindings.length > 0 && (
-                  <>
-                    <h3 className="queue-title">Invoiced — awaiting payment</h3>
-                    {invoicedFindings.map((finding) => (
-                      <article key={finding.finding_id} className="glass-panel contract-review-card">
-                        <div className="review-header">
-                          <div>
-                            <h3>{finding.customer_name}</h3>
-                            <p>{finding.title}</p>
-                          </div>
-                          <span className="badge badge-pending">
-                            {finding.status === 'disputed' ? 'Disputed' : 'Invoiced'} • {finding.corrective_invoice?.ref || '—'} • {formatCurrency(finding.corrective_invoice?.amount ?? finding.monthly_recoverable)}
-                          </span>
-                        </div>
-                        <div className="review-actions">
-                          <button className="btn-primary" onClick={() => openRecoveryForm(finding, 'payment')}>
-                            <DollarSign size={16} /> Record payment
-                          </button>
-                          <button className="btn-secondary" onClick={() => markDisputed(finding.finding_id)}>
-                            Mark disputed
-                          </button>
-                          <button className="btn-danger" onClick={() => markWrittenOff(finding.finding_id)}>
-                            Write off
-                          </button>
-                        </div>
-                        {renderRecoveryForm(finding)}
-                      </article>
-                    ))}
-                  </>
-                )}
-
-                {recoveredFindings.length > 0 && (
-                  <>
-                    <h3 className="queue-title">Recovered</h3>
-                    {recoveredFindings.map((finding) => (
-                      <article key={finding.finding_id} className="glass-panel contract-review-card">
-                        <div className="review-header">
-                          <div>
-                            <h3>{finding.customer_name}</h3>
-                            <p>{finding.title}</p>
-                          </div>
-                          <span className="badge badge-approved">
-                            Recovered • {formatCurrency(finding.recovered_amount ?? finding.monthly_recoverable)}
-                            {finding.payment?.ref ? ` • ${finding.payment.ref}` : ''}
-                          </span>
-                          {finding.fee_charge?.status && (
-                            <p className="muted-copy">
-                              Recoup fee {formatCurrency(finding.fee_charge.amount)} — {finding.fee_charge.status}
-                              {finding.fee_charge.invoice_id ? ` (invoice ${finding.fee_charge.invoice_id})` : ''}
-                            </p>
-                          )}
-                        </div>
-                      </article>
-                    ))}
-                  </>
-                )}
-              </div>
-
-              <div className="contract-review-list">
-                <h3 className="queue-title">True-up packs</h3>
-                <div className="recovery-form">
-                  <label>
-                    Sender (your company name)
-                    <input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} placeholder="[Your company]" />
-                  </label>
-                </div>
-                {trueupCustomers.length === 0 ? (
-                  <div className="empty-state glass-panel">
-                    <FileText size={22} />
-                    <p>No collectible findings yet — approve findings first.</p>
-                  </div>
-                ) : (
-                  trueupCustomers.map((cust) => (
-                    <article key={cust.customer_id} className="glass-panel contract-review-card">
-                      <div className="review-header">
-                        <div>
-                          <h3>{cust.customer_name}</h3>
-                          <p>{formatCurrency(cust.total)} outstanding</p>
-                        </div>
-                        <div className="review-actions">
-                          <button className="btn-secondary" onClick={() => downloadTrueupPdf(cust.customer_id, cust.customer_name)} disabled={proofLocked} title={proofLocked ? lockTitle : undefined}>
-                            <Download size={16} /> Download letter + schedule (PDF)
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  ))
-                )}
-              </div>
-
-              {!isSampleMode && (
-                <div className="contract-review-list">
-                  <h3 className="queue-title">Danger zone</h3>
-                  <article className="glass-panel contract-review-card">
-                    <div className="review-header">
-                      <div>
-                        <h3>Delete account data</h3>
-                        <p>Remove all findings, invoices, usage, contracts, audit log, and the Stripe connector key.</p>
-                      </div>
-                      <div className="review-actions">
-                        <button className="btn-danger" onClick={deleteAccountData}>
-                          Delete all Recoup data for this account
-                        </button>
-                      </div>
-                    </div>
-                  </article>
-                </div>
-              )}
-            </section>
-          )}
-
-          {activeStep === 5 && (
-            <section className="glass-panel panel-card review-card">
-              <div className="panel-heading review-heading">
-                <div>
-                  <p className="eyebrow">Step 5</p>
-                  <h2>Review findings</h2>
-                </div>
-                <span className="review-tag">Needs human review • {allFindings.length} total</span>
-              </div>
-
-              {needsHumanReview.length > 0 && (
-                <div className="review-callout glass-panel">
-                  <AlertCircle size={18} />
-                  <div>
-                    <strong>There are items needing human review before approval.</strong>
-                    <p>Review the active queue, confirm terms, and then approve or reject each finding.</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="dashboard-grid">
-                <div className="queue-list">
-                  <h3 className="queue-title">Pending Review</h3>
-                  {findings.length === 0 ? (
-                    <div className="empty-state glass-panel">
-                      <CheckCircle2 size={28} />
-                      <p>No pending findings.</p>
-                    </div>
-                  ) : (
-                    findings.map((finding) => (
-                      <button
-                        type="button"
-                        key={finding.finding_id}
-                        className={`glass-panel queue-item ${selectedFinding?.finding_id === finding.finding_id ? 'active' : ''}`}
-                        onClick={() => setSelectedFinding(finding)}
-                      >
-                        <div className="queue-topline">
-                          <span className="badge badge-pending">Action required</span>
-                          <span className="amount">{formatCurrency(finding.monthly_recoverable)}</span>
-                        </div>
-                        <div className="queue-name">{finding.customer_name}</div>
-                        <div className="queue-title-text">{finding.title}</div>
-                      </button>
-                    ))
-                  )}
-                </div>
-
-                {reviewQueue.length > 0 && (
-                  <div className="contract-review-list">
-                    <h3 className="queue-title">Needs review ({reviewQueue.length})</h3>
-                    {reviewQueue.map((item, idx) => (
-                      <article key={`${item.customer_id || 'unknown'}-${item.term}-${idx}`} className="glass-panel contract-review-card">
-                        <div className="review-header">
-                          <div>
-                            <h3>{item.customer_name || 'Unknown customer'}</h3>
-                            <p>{item.term}</p>
-                          </div>
-                        </div>
-                        <p>{item.reason}</p>
-                        {item.suggested_action && <small className="muted-copy">Suggested: {item.suggested_action}</small>}
-                      </article>
-                    ))}
-                  </div>
-                )}
-
-                {selectedFinding ? (
-                  <div className="glass-panel detail-view">
-                    <div className="detail-header">
-                      <div className="detail-topline">
-                        <div>
-                          <h2>{selectedFinding.customer_name}</h2>
-                          <div className="detail-meta">
-                            <span>ID: {selectedFinding.finding_id}</span>
-                            <span>Period: {selectedFinding.period || '—'}</span>
-                          </div>
-                        </div>
-                        <div className="amount detail-amount">{formatCurrency(selectedFinding.monthly_recoverable)} / mo</div>
-                      </div>
-                    </div>
-
-                    <div className="detail-content">
-                      <div>
-                        <h3 className="detail-section-title">Discrepancy details</h3>
-                        <div className="info-group">
-                          <div className="info-label">Title</div>
-                          <div>{selectedFinding.title}</div>
-                        </div>
-                        <div className="info-group">
-                          <div className="info-label">Engine reasoning</div>
-                          <div className="detail-copy">{selectedFinding.detail}</div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <h3 className="detail-section-title">
-                          <AlertCircle size={18} /> Contract grounding
-                        </h3>
-                        {Number.isFinite(Number(selectedFinding.confidence_score)) && (
-                          <div className="info-group">
-                            <div className="info-label">Confidence score</div>
-                            <div>{Math.round(Number(selectedFinding.confidence_score) * 100)}%</div>
-                          </div>
-                        )}
-                        <div className="info-group">
-                          <div className="info-label">Exact clause quote (provenance)</div>
-                          <div className="provenance-box">
-                            {selectedFinding.locked && <LockKeyhole size={14} />}
-                            {(selectedFinding.provenance || selectedFinding.clause_text)
-                              ? `“${selectedFinding.provenance || selectedFinding.clause_text}”`
-                              : 'No contract clause cited — this finding should be treated as needs review.'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="action-bar">
-                      <button className="btn-danger action-button" onClick={() => handleAction(selectedFinding.finding_id, 'reject')}>
-                        <XCircle size={16} /> Reject finding
-                      </button>
-                      <button className="btn-success action-button" onClick={() => handleAction(selectedFinding.finding_id, 'approve')}>
-                        <CheckCircle2 size={16} /> Approve &amp; draft invoice
-                      </button>
-                      <button className="btn-primary action-button" onClick={() => openRecoveryForm(selectedFinding, 'payment')}>
-                        <DollarSign size={16} /> Record payment
-                      </button>
-                    </div>
-                    {renderRecoveryForm(selectedFinding)}
-                    {['approved', 'invoiced', 'disputed'].includes(selectedFinding.status) && (
-                      <RecoveryActions
-                        finding={selectedFinding}
-                        apiRequest={apiRequest}
-                        onChanged={refreshFindings}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <div className="glass-panel empty-detail">
-                    Select a finding from the queue to review.
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-
-          {activeStep === 7 && (
-            <CommandCenter
-              data={commandCenter}
-              apiRequest={apiRequest}
-              onChanged={() => { void loadCommandCenter(); void refreshFindings() }}
-              onOpenInReview={(findingId) => {
-                const target = allFindings.find((f) => f.finding_id === findingId)
-                if (target) setSelectedFinding(target)
-                setActiveStep(5)
-              }}
-            />
-          )}
+          {renderStatus()}
+          {screen === 'overview' && renderOverview()}
+          {screen === 'opportunities' && renderOpportunities()}
+          {screen === 'agreements' && renderAgreements()}
+          {screen === 'recoveries' && renderRecoveries()}
+          {screen === 'integrations' && renderIntegrations()}
+          {screen === 'settings' && renderSettings()}
         </main>
       </div>
-
-      {statusMessage && activeStep !== 3 && <div className="floating-status glass-panel">{statusMessage}</div>}
     </div>
   )
 }
