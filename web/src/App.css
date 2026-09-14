@@ -62,6 +62,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .topbar-links { align-items: center; display: flex; gap: 16px; }
 .topbar-link { color: var(--text-muted); }
 .topbar-link:hover, .topbar-link.active { color: var(--text); }
+.topbar-action { align-items: center; display: inline-flex; gap: 4px; }
+.topbar-action:disabled { cursor: not-allowed; opacity: 0.55; }
+.topbar-action input { display: none; }
 .link-quiet { background: none; color: var(--text-muted); padding: 4px 2px; }
 .link-quiet:hover { color: var(--text); }
 .icon-btn { background: none; color: var(--text-muted); padding: 8px; }
@@ -99,11 +102,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 /* Loop spine */
 .spine-block { display: grid; gap: 10px; }
-.spine-head { align-items: flex-end; display: flex; gap: 14px; justify-content: space-between; }
-.spine { display: grid; flex: 1; gap: 8px; grid-template-columns: repeat(8, minmax(0, 1fr)); list-style: none; margin: 0; padding: 0; }
-.spine-step { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 2px; min-width: 0; padding: 10px 11px; }
+.spine-head { display: block; }
+.spine { display: grid; gap: 8px; grid-template-columns: repeat(8, minmax(0, 1fr)); list-style: none; margin: 0; padding: 0; }
+.spine-step { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 2px; min-width: 0; padding: 0; }
+.spine-step.selected { border-top: 2px solid var(--green); }
+.spine-step > button { background: none; border: 0; color: inherit; cursor: pointer; display: grid; gap: 2px; min-height: 100%; padding: 10px 11px; text-align: left; width: 100%; }
+.spine-step > button:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 .spine-num { color: var(--ink3); font-family: var(--mono); font-size: 0.66rem; }
 .spine-title { font-size: 0.82rem; font-weight: 700; }
+.spine-help { align-items: center; border: 1px solid var(--ink3); border-radius: 50%; color: var(--ink3); display: inline-flex; font-family: var(--mono); font-size: 0.58rem; height: 13px; justify-content: center; margin-left: 5px; width: 13px; }
 .spine-sub { color: var(--text-muted); font-size: 0.7rem; line-height: 1.35; }
 .human-badge { border: 1px solid rgba(228, 176, 74, 0.5); border-radius: 999px; color: var(--gold); font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.08em; margin-left: 6px; padding: 1px 6px; text-transform: uppercase; vertical-align: middle; }
 .spine-step.working { animation: spine-pulse 1.4s ease-in-out infinite; border-color: var(--green-2); }
@@ -111,10 +118,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   0%, 100% { background: var(--surface); box-shadow: 0 0 0 rgba(47, 191, 131, 0); }
   50% { background: var(--surface-2); box-shadow: 0 0 14px rgba(47, 191, 131, 0.25); }
 }
-.spine-tools { display: flex; gap: 8px; }
-.spine-add { cursor: pointer; white-space: nowrap; }
-.spine-add input { display: none; }
+.spine-caption { color: var(--text-muted); font-size: 0.78rem; margin: 0; }
 .spine-status { color: var(--green); font-family: var(--mono); font-size: 0.78rem; margin: 0; }
+.activity { display: grid; gap: 12px; }
+.activity-head { align-items: center; display: flex; justify-content: space-between; }
+.activity-head h2 { align-items: center; display: flex; font-size: 1rem; gap: 8px; margin: 0; }
+.live-dot, .pulse-dot { background: var(--green); border-radius: 50%; display: inline-block; height: 7px; width: 7px; }
+.pulse-dot { animation: live-pulse 1.2s ease-in-out infinite; margin-right: 7px; }
+.activity-status { color: var(--text-muted); font-family: var(--mono); font-size: 0.72rem; }
+.activity-list { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.activity-list li { align-items: baseline; display: flex; gap: 10px; font-size: 0.82rem; }
+.activity-list time { color: var(--ink3); flex: 0 0 58px; font-family: var(--mono); font-size: 0.7rem; }
+@keyframes live-pulse { 50% { opacity: 0.35; transform: scale(0.8); } }
 
 /* Next-up banner */
 .nextup { align-items: center; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 10px; display: flex; gap: 14px; justify-content: space-between; padding: 12px 16px; }
@@ -194,7 +209,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 1024px) {
+@media (max-width: 1099px) {
   .spine { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 

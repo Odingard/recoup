@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   ChevronDown,
   DollarSign,
   Download,
   FileText,
-  FilePlus2,
   LogOut,
   LockKeyhole,
   RefreshCw,
@@ -22,7 +21,7 @@ import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, ChevronDown, DollarSign, Download, FileText, FilePlus2, LogOut, LockKeyhole, RefreshCw, ShieldCheck, SlidersHorizontal, Upload, X, XCircle, RecoveryActions, RecoveryActionSelect]
+void [AlertCircle, ChevronDown, DollarSign, Download, FileText, LogOut, LockKeyhole, RefreshCw, ShieldCheck, SlidersHorizontal, Upload, X, XCircle, RecoveryActions, RecoveryActionSelect]
 
 const SHELL_LINKS = [
   { id: 'agreements', title: 'Agreements' },
@@ -32,14 +31,43 @@ const SHELL_LINKS = [
 
 const SPINE_TITLES = ['Watch', 'Detect', 'Prove', 'Prioritize', 'Act', 'Approve', 'Recover', 'Verify']
 
+const SPINE_DESCRIPTIONS = [
+  'Continuously monitor agreements, amendments, billing, usage and recovery evidence.',
+  'Identify when financial reality diverges from what the agreement required.',
+  'Tie the discrepancy to the source term, evidence, actual activity and calculation.',
+  'Rank recovery opportunities by value, confidence, age and status.',
+  'Prepare the appropriate recovery action.',
+  'Your team retains authority over consequential recovery actions.',
+  'Move the approved case through the recovery workflow.',
+  'Confirm whether value was actually realized.',
+]
+
+const TRIGGER_LABELS = {
+  new_invoice: 'New invoice', new_billing_period: 'New billing period', new_usage: 'New usage',
+  new_credit: 'Credit/refund', new_agreement: 'New agreement', agreement_amendment: 'Agreement amended',
+  contract_renewal: 'Renewal', term_expiration: 'Term expired', pricing_change: 'Pricing change',
+}
+
 const STAGE_LABEL = {
-  open: 'Prove',
-  approved: 'Act',
-  invoiced: 'Recover',
-  disputed: 'Recover',
-  recovered: 'Verify',
-  rejected: '—',
-  written_off: '—',
+  open: 'Prove', approved: 'Act', invoiced: 'Recover', disputed: 'Recover',
+  recovered: 'Verify', rejected: '—', written_off: '—',
+}
+
+function triggerLabel(trigger) {
+  if (!trigger) return 'Evaluation'
+  return TRIGGER_LABELS[trigger] || trigger.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function relativeTime(value) {
+  if (!value) return null
+  const ms = Date.now() - new Date(value).getTime()
+  if (!Number.isFinite(ms)) return null
+  const minutes = Math.max(0, Math.round(ms / 60000))
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
 }
 
 const TEMPLATE_LINKS = (
@@ -262,6 +290,10 @@ function App() {
   const apiReady = isSampleMode || isAuthenticated
   const [uploadFileCount, setUploadFileCount] = useState(0)
   const [dragging, setDragging] = useState(false)
+  const [stageFilter, setStageFilter] = useState(null)
+  const [pulseStep, setPulseStep] = useState(0)
+  const [activity, setActivity] = useState([])
+  const sampleSeeded = useRef(false)
   const [showFilters, setShowFilters] = useState(false)
   const [showPerformance, setShowPerformance] = useState(() => {
     try { return window.localStorage.getItem('recoup.performance') === '1' } catch { return false }
@@ -459,6 +491,32 @@ function App() {
     } finally { setAdminSaving(false) }
   }
 
+  const appendActivity = useCallback((lines) => {
+    const entries = (Array.isArray(lines) ? lines : [lines]).filter(Boolean).map((message) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      at: new Date().toISOString(),
+      message,
+    }))
+    if (!entries.length) return
+    setActivity((current) => [...current, ...entries].slice(-50))
+  }, [])
+
+  const formatAssuranceActivity = useCallback((event) => {
+    if (!event || event.status === 'duplicate') return null
+    const customer = uploadedContracts.find((contract) => contract.customer_id === event.customer_id)?.customer_name
+      || commandCenter?.filters?.customers?.find((item) => item.id === event.customer_id)?.name
+      || event.customer_id
+      || 'counterparty'
+    const period = event.period || 'all periods'
+    const label = triggerLabel(event.trigger)
+    if (event.status === 'needs_review') return `${label} · could not resolve counterparty → sent to review`
+    if (event.status === 'error') return `${label} · evaluation failed → sent to review`
+    const updated = Number(event.findings_upserted || 0)
+    const withdrawn = Array.isArray(event.findings_withdrawn) ? event.findings_withdrawn.length : Number(event.findings_withdrawn || 0)
+    const review = Array.isArray(event.needs_review) ? event.needs_review.length : Number(event.needs_review_count || 0)
+    return `${label} · ${customer} · ${period} → ${updated} discrepanc${updated === 1 ? 'y' : 'ies'} updated${withdrawn ? `, ${withdrawn} withdrawn` : ''}${review ? `, ${review} sent to review` : ''}`
+  }, [uploadedContracts, commandCenter])
+
   const loadConnectorStatus = useCallback(async () => {
     if (!apiReady) return
     try {
@@ -480,8 +538,14 @@ function App() {
 
   const loadAssurance = useCallback(async () => {
     if (!apiReady) return
-    try { setAssurance(await apiRequest('/assurance/status')) } catch (error) { console.error(error) }
-  }, [apiReady, apiRequest])
+    try {
+      const result = await apiRequest('/assurance/status')
+      setAssurance(result)
+      const recentEvents = (result?.recent_events || []).slice().reverse()
+      const seeded = recentEvents.map((event) => ({ message: formatAssuranceActivity(event), at: event.evaluated_at || new Date().toISOString() })).filter((entry) => entry.message)
+      if (seeded.length) setActivity((current) => current.length ? current : seeded.map((entry, index) => ({ id: `seed-${index}-${entry.message}`, ...entry })))
+    } catch (error) { console.error(error) }
+  }, [apiReady, apiRequest, formatAssuranceActivity])
 
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
@@ -624,6 +688,26 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!isSampleMode || sampleSeeded.current) return undefined
+    sampleSeeded.current = true
+    const seed = async () => {
+      try {
+        const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
+        appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} agreements for ${billingPeriod}`)
+        const latestFindings = await apiRequest('/findings')
+        appendActivity((Array.isArray(latestFindings) ? latestFindings : []).map((finding) => {
+          const customer = finding.customer_name || finding.customer_id || 'counterparty'
+          const title = finding.financial_right?.title || finding.title || finding.finding_id
+          return `Found ${title} · ${customer} · ${formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}`
+        }))
+        await refreshAll()
+      } catch (error) { console.error(error) }
+    }
+    void seed()
+    return undefined
+  }, [apiRequest, appendActivity, billingPeriod, isSampleMode, refreshAll, sampleSeeded])
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('sample') !== '1' || sessionMode !== null) return
     const handle = window.setTimeout(() => void sampleModeLogin(), 0)
@@ -647,7 +731,7 @@ function App() {
       setSessionMode(null)
       setFirebaseUser(null)
       setFindings([]); setAllFindings([]); setFindingsLoaded(false)
-      setEvents({}); setEventsLoading({})
+      setEvents({}); setEventsLoading({}); setActivity([]); sampleSeeded.current = false; setStageFilter(null)
       setStatusMessage('')
       setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
       setIsOperator(false); setAdminSettings(null); setAdminInviteText('')
@@ -692,6 +776,13 @@ function App() {
       fileList.forEach((f) => form.append('files', f))
       const result = await apiRequest('/ingest/bulk', { method: 'POST', body: form })
       setBulkResult(result)
+      appendActivity((result?.files || []).map((file) => {
+        const kind = file.kind || file.type || 'file'
+        const customer = file.customer || file.customer_name || file.customer_id
+        const review = file.status === 'error' || file.status === 'needs_review' ? ' · needs review' : ''
+        return `Read ${file.name} → ${kind}${customer ? ` · matched ${customer}` : ''}${review}`
+      }))
+      appendActivity((result?.assurance?.events || []).map(formatAssuranceActivity).filter(Boolean))
       setReviewQueue(result?.needs_review || [])
       const filesByName = Object.fromEntries((result?.files || []).map((f) => [f.name, f]))
       ;(result?.contract_records || []).forEach((contract) => {
@@ -755,7 +846,14 @@ function App() {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
       setReviewQueue(result?.needs_review || [])
       setStatusMessage(`Evaluation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review.` : ''))
+      appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} agreements for ${billingPeriod}`)
       await refreshAll()
+      const latestFindings = await apiRequest('/findings')
+      appendActivity((Array.isArray(latestFindings) ? latestFindings : []).map((finding) => {
+        const customer = finding.customer_name || finding.customer_id || 'counterparty'
+        const title = finding.financial_right?.title || finding.title || finding.finding_id
+        return `Found ${title} · ${customer} · ${formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}`
+      }))
       navigate('opportunities')
     } catch (error) {
       console.error(error)
@@ -785,6 +883,10 @@ function App() {
       const endpoint = action === 'approve' ? 'approve' : 'reject'
       const body = action === 'reject' ? { status: 'rejected', reason: 'Reviewed in dashboard' } : undefined
       const result = await apiRequest(`/findings/${findingId}/${endpoint}`, { method: 'POST', body })
+      const finding = allFindings.find((item) => item.finding_id === findingId)
+      const customer = finding?.customer_name || finding?.customer_id || 'counterparty'
+      const amount = formatCurrency(finding?.recoverable_difference ?? finding?.monthly_recoverable)
+      appendActivity(`You ${action === 'approve' ? 'approved' : 'rejected'} ${customer} · ${amount}`)
       setStatusMessage(result.status !== 'approved' && result.status !== 'rejected'
         ? (result.message || 'Sample mode is read-only; approval was not recorded.')
         : (action === 'approve' ? 'Finding approved.' : 'Finding rejected.'))
@@ -989,6 +1091,14 @@ function App() {
     const maxAge = filters.maxAge === '' ? null : Number(filters.maxAge)
     const minConf = filters.minConfidence === '' ? null : Number(filters.minConfidence)
     return (commandCenter?.cases || []).filter((c) => {
+      const status = c.status || 'open'
+      const pendingApproval = (c.recovery_actions || []).some((action) => action.status === 'pending_approval')
+      if (stageFilter === 'Watch') return false
+      if (stageFilter === 'Prove' && !(status === 'open' && !c.verified)) return false
+      if (stageFilter === 'Act' && status !== 'approved') return false
+      if (stageFilter === 'Approve' && !((status === 'open' && c.verified) || pendingApproval)) return false
+      if (stageFilter === 'Recover' && !['invoiced', 'disputed'].includes(status)) return false
+      if (stageFilter === 'Verify' && status !== 'recovered') return false
       if (filters.customer && c.counterparty?.customer_id !== filters.customer) return false
       if (filters.status && c.status !== filters.status) return false
       if (filters.type && c.financial_right?.type !== filters.type) return false
@@ -999,7 +1109,7 @@ function App() {
       if (minConf !== null && Number(c.confidence || 0) < minConf) return false
       return true
     })
-  }, [commandCenter, filters])
+  }, [commandCenter, filters, stageFilter])
 
   const selectedCase = useMemo(() => {
     if (route.screen !== 'opportunities' || !route.id) return null
@@ -1045,6 +1155,13 @@ function App() {
   const workingText = bulkUploading
     ? `Reading ${uploadFileCount || 'your'} file${uploadFileCount === 1 ? '' : 's'}…`
     : 'Evaluating…'
+
+  useEffect(() => {
+    if (!isWorking) return undefined
+    const reset = window.setTimeout(() => setPulseStep(0), 0)
+    const timer = window.setInterval(() => setPulseStep((current) => Math.min(3, current + 1)), 700)
+    return () => { window.clearTimeout(reset); window.clearInterval(timer) }
+  }, [isWorking])
 
   const spineSteps = useMemo(() => {
     const allActions = ccCases.flatMap((c) => c.recovery_actions || [])
@@ -1344,40 +1461,53 @@ function App() {
     <section className="spine-block" aria-label="How Recoup works">
       <div className="spine-head">
         <ol className="spine">
-          {spineSteps.map((step, i) => (
-            <li
-              key={step.title}
-              className={`spine-step ${isWorking && i < 4 ? 'working' : ''}`}
-              aria-current={isWorking && i === (bulkUploading ? 0 : 1) ? 'step' : undefined}
-              style={isWorking && i < 4 ? { animationDelay: `${i * 0.35}s` } : undefined}
-            >
-              <span className="spine-num">{step.n}</span>
-              <span className="spine-title">{step.title}{step.human && <span className="human-badge">human</span>}</span>
-              <span className="spine-sub">{step.sub}</span>
-            </li>
-          ))}
+          {spineSteps.map((step, i) => {
+            const selected = stageFilter === step.title
+            const onStep = () => {
+              if (step.title === 'Watch') {
+                navigate('agreements')
+                return
+              }
+              setStageFilter((current) => current === step.title ? null : step.title)
+            }
+            return (
+              <li key={step.title} className={`spine-step ${isWorking && i === pulseStep ? 'working' : ''} ${selected ? 'selected' : ''}`}>
+                <button type="button" onClick={onStep} aria-pressed={selected} title={SPINE_DESCRIPTIONS[i]}>
+                  <span className="spine-num">{step.n}</span>
+                  <span className="spine-title">{step.title}<span className="spine-help" aria-hidden="true">?</span>{step.human && <span className="human-badge">human</span>}</span>
+                  <span className="spine-sub">{step.sub}</span>
+                </button>
+              </li>
+            )
+          })}
         </ol>
-        <div className="spine-tools">
-          <label className="btn-secondary spine-add" aria-label="Add documents">
-            <FilePlus2 size={15} /> Add documents
-            <input type="file" multiple hidden disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
-          </label>
-          <button className="btn-secondary" onClick={runEvaluation} disabled={running}>
-            {running ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />}{running ? ' Evaluating…' : ' Run evaluation'}
-          </button>
-        </div>
       </div>
+      <p className="spine-caption">Recoup's operating loop — every case moves left to right; nothing leaves your team without approval at step 06.</p>
       {isWorking && <p className="spine-status" role="status">{workingText}</p>}
     </section>
   )
+
+  const renderActivity = () => {
+    const lastEvaluated = relativeTime(assurance?.last_evaluated_at)
+    return (
+      <section className="activity panel-card" aria-label="Activity">
+        <div className="activity-head">
+          <h2><span className="live-dot" />Activity</h2>
+          <span className="activity-status">{isWorking ? <><span className="pulse-dot" />Working…</> : lastEvaluated ? `Monitoring · last evaluated ${lastEvaluated}` : 'Monitoring'}</span>
+        </div>
+        {activity.length ? <ul className="activity-list">{activity.slice(-8).reverse().map((entry) => <li key={entry.id}><time>{new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><span>{entry.message}</span></li>)}</ul> : <p className="muted-copy">Monitoring for new agreement and billing activity.</p>}
+      </section>
+    )
+  }
 
   const renderQueue = () => {
     const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
     return (
       <section className="panel-card queue-card">
         <div className="panel-heading">
-          <div><p className="eyebrow">Work queue</p><h2>Ranked cases</h2></div>
+          <div><p className="eyebrow">Work queue</p><h2>Ranked cases · {stageFilter || 'All'}</h2></div>
           <div className="review-actions">
+            {stageFilter && <button className="link-button" onClick={() => setStageFilter(null)}>Clear</button>}
             <span className="hint-pill">{cases.length} cases</span>
             <button className="btn-secondary" onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
               <SlidersHorizontal size={14} /> Filter
@@ -1458,6 +1588,7 @@ function App() {
     return (
       <>
         {renderSpine()}
+        {renderActivity()}
         <div className="nextup">
           <span>{nextUp.text}</span>
           {nextUp.label && <button className="btn-primary" onClick={nextUp.onClick}>{nextUp.label}</button>}
@@ -1719,6 +1850,13 @@ function App() {
           {navItems.map((item) => (
             <button key={item.id} type="button" className={`link-quiet topbar-link ${drawerScreen === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}>{item.title}</button>
           ))}
+          <label className="topbar-link topbar-action" aria-label="Add documents">
+            ＋ Add documents
+            <input type="file" multiple hidden disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
+          </label>
+          <button type="button" className="link-quiet topbar-link topbar-action" onClick={runEvaluation} disabled={running}>
+            {running ? <RefreshCw className="spin" size={13} /> : '↻'} {running ? 'Evaluating…' : 'Run evaluation'}
+          </button>
           <span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span>
           <button className="icon-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
         </nav>
