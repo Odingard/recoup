@@ -8,7 +8,9 @@ Final phase: Product Truth + Production Acceptance. No new product features were
 |---|---|---|---|
 | RC1 (frozen) | `8bc85791739c0a97fe8641760618524a3507c85f` | `recoup-00054-bjn` | Full browser acceptance walk (tests 1–12 + time-separated always-on run) |
 | RC2 | `79911f013db56083440c933409105306b69afe1c` | `recoup-00056-sxf` | Fixes D01–D17 (PR #37); targeted browser re-walk |
-| RC3 (current production) | `58fff0211f9c3d63ca02d21a726aa6db9d268ea1` | `recoup-00058-nqk` | Fix D09b partial-realization aggregate metrics (PR #38); targeted API/browser verification |
+| RC3 | `58fff0211f9c3d63ca02d21a726aa6db9d268ea1` | `recoup-00058-nqk` | Fix D09b partial-realization aggregate metrics (PR #38); targeted API/browser verification |
+| D18 copy | `fde9176f10d5ce9f60648318fba45853121c13cf` | `recoup-00062-b9c` | Landing copy no longer claims a live payment source (PR #40) |
+| Closeout (current production, **frozen**) | `d40604d29c0801ffde1b6daf894de14947a6a679` | auto-deployed from main | Fixes D19–D22 found in the card-gated exercise (PR #41); share-secret provisioning added to deploy |
 
 Production URL: https://recoup.odingard.com. `GET /api/health` returned `{"status":"ok","version":"<SHA>","mode":"live"}` for each candidate at deploy time; `/api/ready` 200; `/api/command-center`, `/api/metrics/recovery`, `POST /api/contracts/{id}/confirm` return 401 unauthenticated. No `*_TEST_*` env vars on the production service; `recoup-validation` and `recoup-staging` untouched.
 
@@ -76,9 +78,15 @@ Closed loop (RC2, Birch $500 requested): cash $100 → settlement $200 → rever
 | D15 | S3 | RC1 | `$12,345,678.9` | Two-decimal `Intl.NumberFormat` (#37) | RC2 PASS |
 | D16 | S2 | RC1 | Audit actor `ui_approval_by_None` | `_actor(user)` email→uid fallback (#37) | RC2 PASS |
 | D17 | S2 | RC1 | Realize control offered on written-off row | Controls only for actionable statuses; Reverse still allowed on recovered (#37) | RC2 PASS |
-| D18 | S2 | RC1 | Hero claims comparison against "paid" with no live payment source | Product decision pending (copy) | open — non-code |
+| D18 | S2 | RC1 | Hero claims comparison against "paid" with no live payment source | Hero/support copy → "billing, usage, credits, and operational records" (#40) | PASS (prod HTML verified) |
+| D19 | S1 | Closeout | Fee credit note on reversal rejected by Stripe (paid invoice needs full allocation) | `CreditNote.create(..., refund_amount=fee)` refunds to card (#41) | Closeout rerun PASS (`cn_1UFUMsGdRXoU9c1NhKQCRkK6`, $20 refund) |
+| D20 | S1 | Closeout | Date-only realized date → 500 on command-center/case-ledger (naive vs aware datetime), blanking Overview | `_dt()` normalises naive timestamps to UTC (#41) | Closeout rerun PASS |
+| D21 | S1 | Closeout | Phantom $1,000 Delta minimum: partial uploaded period filled from connector with empty data, and stale open finding survived re-evaluation | Connector only when neither uploaded record exists; complete re-evaluation withdraws unreproduced `open` findings (`rejected`, `assurance_withdrawn_stale`) — approved+ states and novel rights never touched (#41) | Closeout rerun PASS (4 findings / $2,000) |
+| D22 | S1 | Closeout | `POST /api/report/share` 503 — `RECOUP_REPORT_SHARE_SECRET` never provisioned | deploy generates `recoup-report-share-secret` once per project and mounts it (#41) | Closeout rerun PASS (share 200, tampered token 403) |
+| D23 | S3 | Closeout rerun | Same-day date-only realization shows −0.3 days to recovery | Not fixed (product frozen); cosmetic | open — documented |
+| D24 | S3 | Closeout rerun | Proof stayed visually locked until the next refresh after saving a card | Not fixed (product frozen); resolves on refresh | open — documented |
 
-Open code defects after RC3: **0**. Open product-copy items: D18.
+Open S1/S2 defects: **0**. Open S3 (cosmetic, documented): D23, D24.
 
 ## 6. Data hygiene
 
@@ -98,10 +106,28 @@ Evidence: `/home/ubuntu/acceptance/RESULTS_RC3.md`, `acceptance/rc3/screenshots/
 
 This report is committed as a docs-only change on top of `58fff02`; the resulting main SHA redeploys identical application code.
 
+## 7a. Launch closeout — card-gated surfaces (validation environment, Stripe TEST mode)
+
+Run on the isolated `recoup-validation` project (revisions `recoup-validation-00007-tff` @ `a897a24`, then `recoup-validation-00008-jqk` @ `d40604d`), Stripe restricted `rk_test_` keys only, card `4242 4242 4242 4242`; no live card, no production data.
+
+| Surface | Result |
+|---|---|
+| No card: report/PDF/share/true-up → 402, clause proof redacted, fee control gated, status transitions still available | PASS |
+| Hosted Stripe setup; Settings shows Visa ····4242; persists across logout/login | PASS |
+| Report page, PDF, findings CSV, true-up pack unlock; amounts equal authoritative findings (4 findings, $2,000) | PASS |
+| Public share link: create 200, renders unauthenticated, tampered token 403 | PASS (after D22) |
+| $500 realization → one paid $100 TEST invoice (`in_1UFULQGdRXoU9c1Ngr4f9DJH`, `pi_3UFULRGdRXoU9c1N0e6TtCF6`); repeated monthly billing → no duplicate | PASS |
+| $100 reversal → $400 net / $80 fee; $20 credit note with $20 refund on the fee invoice | PASS (after D19); refund settlement status not readable with the restricted key (`charge_read` missing) — verify once in the Stripe dashboard |
+| Tenant B cannot read tenant A private data | PASS |
+| Cleanup: tenant A/B app data deleted; Stripe TEST customers deleted | PASS |
+
+Evidence: `acceptance/closeout/RESULTS_CLOSEOUT.md`, `acceptance/closeout/RESULTS_CLOSEOUT_RERUN.md`, recordings `acceptance/closeout/recording.mp4` and `screencasts/recoup-closeout-rerun/recoup-closeout-rerun-edited.mp4`.
+
 ## 8. Known limitations (not defects)
 
 - `new_payment` assurance trigger is not emitted: invoices carry no payment field; payments enter via realization events. A payment/AR source is a future connector.
-- Report/PDF proof, share links and the live 20% charge are card-gated and were not exercised with a real card by policy.
+- The 20% billing path was exercised end to end in Stripe TEST mode only; the first live charge will be the first paying customer's.
+- Stale-finding withdrawal (D21) is covered by unit tests; the rerun's ingest order produced no transient finding, so the withdrawal branch was not observed in the browser.
 - Scanned-image OCR path, Gemini/Firestore/Stripe outage behaviour, and persistence across an in-flight redeploy were not tested.
 - The service emits no request-correlation ID; evidence is keyed on server timestamps and tenant IDs.
 - Mobile layout was verified on RC1; RC2/RC3 UI changes were verified on desktop only.
@@ -112,7 +138,8 @@ This report is committed as a docs-only change on top of `58fff02`; the resultin
 
 Gate check: 0 blockers; 0 open critical (S1) defects; all 12 core journeys pass on the current production code; financial calculations exact in every scenario ($2,000 baseline, $260/$52 and $300/$60 closed loops, 20% fee, no double counting); lifecycle states persisted across re-login and a 12m47s time-separated re-evaluation; Continuous Assurance demonstrated on invoice, usage and amendment events with idempotent re-uploads; billing correctness (deterministic fee, no-card gate 402); tenant isolation with uniform 404; public UI reflects only real capability with SAMPLE labelling.
 
-Conditions of the GO:
-1. Before the first paying customer: exercise the card-gated surfaces (report/PDF, share link, one live 20% charge on a test card) — the only untested money path.
-2. Decide D18 landing copy ("paid").
-3. Operate as supervised: every recovery action remains human-approved and no channel sends externally.
+Closeout status: all three launch-closeout items are done — D18 copy shipped (#40); card-gated surfaces exercised in Stripe TEST mode (§7a) with the four defects they exposed fixed and re-verified (#41); product frozen at `d40604d`.
+
+**Product freeze.** No further feature work. Changes after this point are limited to security patches, outage fixes, and defects raised by pilot customers. Supervised pilots may begin: every recovery action remains human-approved and no channel sends externally.
+
+One operator follow-up: confirm refund `re_3UFULRGdRXoU9c1N0LS77fyT` settled in the Stripe TEST dashboard (the validation key cannot read refund status).
