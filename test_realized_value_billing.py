@@ -290,6 +290,7 @@ def test_reversal_credits_paid_fee_once(monkeypatch):
     assert body["net_realized"] == 6000.0
     assert len(state["credit_notes"]) == 1
     assert state["credit_notes"][0]["amount"] == 80000
+    assert state["credit_notes"][0]["refund_amount"] == 80000
     assert state["credit_notes"][0]["reason"] == "order_change"
     # original event never mutated beyond fee bookkeeping
     original = store.events[("acct1", event_id)]

@@ -681,7 +681,7 @@ function App() {
 
   const submitReversal = async (findingId, eventId) => {
     try {
-      await apiRequest(`/findings/${findingId}/recovery-events/${eventId}/reverse`, {
+      const reversal = await apiRequest(`/findings/${findingId}/recovery-events/${eventId}/reverse`, {
         method: 'POST',
         body: {
           reversal_amount: Number(reverseFields.amount),
@@ -689,7 +689,12 @@ function App() {
           reason: reverseFields.reason || null,
         },
       })
-      setStatusMessage('Realization reversed.')
+      const feeNote = reversal?.fee_status === 'adjusted'
+        ? 'Success fee credited.'
+        : reversal?.fee_status === 'adjustment_pending'
+          ? `Success fee adjustment pending: ${reversal?.fee_charge?.message || 'review the fee invoice manually.'}`
+          : ''
+      setStatusMessage(`Realization reversed. ${feeNote}`.trim())
       setReverseForm(null)
       await loadRecoveryEvents(findingId)
       await refreshAll()

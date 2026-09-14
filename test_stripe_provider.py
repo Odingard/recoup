@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from recoup_agent.billing.models import NormalizedInvoice, NormalizedUsage
 from recoup_agent.billing.stripe_provider import StripeBillingProvider, map_stripe_billing_to_reconcile_inputs
+from recoup_agent.pipeline import compute_findings_and_review
 
 
 def _ts(year, month, day):
@@ -135,6 +136,42 @@ def _install_fake_stripe(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "stripe", fake_stripe)
     return fake_stripe
+
+
+def test_pipeline_does_not_fill_partial_uploaded_period_from_connector():
+    contract = {"customer_id": "X", "customer_name": "X Corp",
+                "committed_minimum_monthly": 1000.0}
+    invoice = {"customer_id": "X", "customer_name": "X Corp",
+               "period": "2026-06", "base_charge": 1000.0,
+               "overage_charge": 0.0}
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def get_usage(self, customer_id, period):
+            self.calls.append(("usage", customer_id, period))
+            return NormalizedUsage(customer_id=customer_id, period=period,
+                                   total_units=0)
+
+        def get_invoices(self, customer_id, period):
+            self.calls.append(("invoices", customer_id, period))
+            return []
+
+    provider = Provider()
+    findings, review = compute_findings_and_review(
+        "2026-06", account_id="acct", billing_provider=provider,
+        book=([contract], [], [invoice]))
+    assert findings == []
+    assert provider.calls == []
+    assert any("No usage data found" in item["reason"] for item in review)
+
+    findings, review = compute_findings_and_review(
+        "2026-06", account_id="acct", billing_provider=provider,
+        book=([contract], [], []))
+    assert provider.calls == [("usage", "X", "2026-06"),
+                              ("invoices", "X", "2026-06")]
+    assert any("no Stripe invoices found" in item["reason"] for item in review)
 
 
 def test_stripe_provider_methods_and_adapter(monkeypatch):

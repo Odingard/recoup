@@ -81,6 +81,10 @@ jobs:
           write_secret recoup-stripe-app-client-id "$APP_CLIENT_ID"
           write_secret recoup-stripe-app-secret    "$APP_SECRET"
           write_secret recoup-stripe-state-secret  "$STATE_SECRET"
+          # Report-share signing key: generated once per project, never rotated by deploy.
+          if ! gcloud secrets describe recoup-report-share-secret --project=$PROJECT_ID &>/dev/null; then
+            openssl rand -hex 32 | tr -d '\n' | gcloud secrets create recoup-report-share-secret --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+          fi
           if [ -n "$FIREBASE_SA_JSON" ]; then
             if printf '%s' "$FIREBASE_SA_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("type")=="service_account" and d.get("private_key")'; then
               write_secret firebase-sa-json "$FIREBASE_SA_JSON"
@@ -95,7 +99,7 @@ jobs:
           COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
           RUNTIME_SA="recoup-backend@${PROJECT_ID}.iam.gserviceaccount.com"
 
-          for secret in recoup-billing-stripe-key recoup-stripe-app-client-id recoup-stripe-app-secret recoup-stripe-state-secret firebase-sa-json; do
+          for secret in recoup-billing-stripe-key recoup-stripe-app-client-id recoup-stripe-app-secret recoup-stripe-state-secret recoup-report-share-secret firebase-sa-json; do
             if gcloud secrets describe "$secret" --project=$PROJECT_ID &>/dev/null; then
               for sa in "$RUNTIME_SA" "$COMPUTE_SA"; do
                 gcloud secrets add-iam-policy-binding "$secret" \
@@ -109,7 +113,7 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          SECRETS_LIST="RECOUP_STRIPE_APP_CLIENT_ID=recoup-stripe-app-client-id:latest,RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest"
+          SECRETS_LIST="RECOUP_REPORT_SHARE_SECRET=recoup-report-share-secret:latest,RECOUP_STRIPE_APP_CLIENT_ID=recoup-stripe-app-client-id:latest,RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest"
           if gcloud secrets describe recoup-billing-stripe-key --project=$PROJECT_ID &>/dev/null; then
             SECRETS_LIST="RECOUP_BILLING_STRIPE_API_KEY=recoup-billing-stripe-key:latest,$SECRETS_LIST"
           fi

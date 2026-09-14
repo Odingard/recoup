@@ -46,6 +46,18 @@ def test_full_realization_resolved():
     assert led["integrity"] == "ok"
 
 
+def test_date_only_realization_with_aware_audit_is_timezone_safe():
+    f = _finding(status="recovered", amount=1000,
+                 created="2026-09-01T00:00:00+00:00")
+    event = _real(f, 1000, at="2026-09-14")
+    audit = [{"finding_id": f["finding_id"], "decision": "approved",
+              "ts": "2026-09-02T12:00:00+00:00"}]
+    led = case_ledger(f, [event], [], audit)
+    assert isinstance(led["days_to_recovery"], float)
+    assert led["days_to_recovery"] == 13.0
+    assert led["first_action_date"] == "2026-09-02T12:00:00+00:00"
+
+
 # 2. partial + reversal → partially_realized; recovered under requested → settled
 def test_partial_and_settled():
     f = _finding(status="invoiced", amount=1000)

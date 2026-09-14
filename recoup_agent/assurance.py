@@ -293,6 +293,44 @@ def build_novel_findings(account_id: str, customer_id: str, period: str) -> Nove
                            not_evaluable=list(graph.not_evaluable))
 
 
+STALE_WITHDRAWAL_REASON = ("Superseded: re-evaluation with complete billing "
+                           "and usage data no longer reproduces this discrepancy")
+
+
+def _withdraw_stale_findings(account_id: str, customer_ids: list[str],
+                             periods: list[str], fresh: list[dict],
+                             usage_list: list[dict], invoices_list: list[dict]
+                             ) -> list[str]:
+    """Close still-open rule findings in the evaluated scope that a complete
+    re-evaluation did not reproduce. Only 'open' findings for customer/periods
+    with both usage and invoice data on file are touched; approved and later
+    states, and novel-right findings, are never reset."""
+    complete = {(r.get("customer_id"), r.get("period")) for r in usage_list} & \
+               {(r.get("customer_id"), r.get("period")) for r in invoices_list}
+    scope = {(cid, p) for cid in customer_ids for p in periods} & complete
+    if not scope:
+        return []
+    fresh_ids = {f.get("finding_id") for f in fresh}
+    withdrawn: list[str] = []
+    for f in db.get_all_findings(account_id):
+        if f.get("status") != "open":
+            continue
+        if (f.get("customer_id"), f.get("period")) not in scope:
+            continue
+        if f.get("finding_id") in fresh_ids or str(f.get("type") or "").startswith("novel:"):
+            continue
+        try:
+            db.transition_finding_status(
+                account_id, f["finding_id"], "rejected",
+                "assurance_withdrawn_stale",
+                fields={"withdrawal_reason": STALE_WITHDRAWAL_REASON})
+            withdrawn.append(f["finding_id"])
+        except Exception:
+            logger.warning("could not withdraw stale finding %s",
+                           f.get("finding_id"), exc_info=True)
+    return withdrawn
+
+
 def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
     """Scoped re-evaluation for one change event. Never raises to the caller —
     failures are recorded on the event doc so ingest still succeeds."""
@@ -337,11 +375,15 @@ def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
                         "suggested_action": "Re-run the evaluation or inspect the compiled right"})
         if all_findings:
             db.save_findings(account_id, all_findings)
+        withdrawn = _withdraw_stale_findings(
+            account_id, customer_ids, periods, all_findings,
+            usage_list, invoices_list)
 
         db.save_assurance_event(account_id, {
             **asdict(event), "status": "evaluated",
             "customer_ids": customer_ids, "periods": periods,
             "findings_upserted": len(all_findings),
+            "findings_withdrawn": withdrawn,
             "needs_review": all_review, "evaluated_at": _now()})
         db.append_assurance_audit(account_id, {
             "event": "assurance_evaluated", "event_id": event.event_id,
@@ -351,6 +393,7 @@ def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
         _refresh_status(account_id)
         return {**base, "status": "evaluated", "customer_ids": customer_ids,
                 "periods": periods, "findings_upserted": len(all_findings),
+                "findings_withdrawn": withdrawn,
                 "needs_review_count": len(all_review)}
     except Exception as exc:
         logger.warning("assurance event %s failed", event.event_id, exc_info=True)

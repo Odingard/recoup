@@ -289,8 +289,9 @@ def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
 def adjust_success_fee_for_reversal(account_id: str, original_event,
                                     reversal_event) -> dict:
     """Credit the fee on a reversed realization. Only paid invoices get a
-    Stripe credit note; pending/unbilled originals stay 'adjustment_pending'
-    for a human to void/adjust. Never raises."""
+    Stripe credit note, refunded to the card (a paid invoice's credit note must
+    allocate its full amount to refund/credit/out-of-band); pending/unbilled
+    originals stay 'adjustment_pending' for a human to void/adjust. Never raises."""
     fee_credit = abs(reversal_event.fee_amount or 0)
     charge = original_event.fee_charge or {}
     invoice_id = charge.get("invoice_id")
@@ -305,6 +306,7 @@ def adjust_success_fee_for_reversal(account_id: str, original_event,
         note = stripe.CreditNote.create(
             invoice=invoice_id,
             amount=to_cents(fee_credit),
+            refund_amount=to_cents(fee_credit),
             reason="order_change",
             memo=(f"Reversal of recovered value ({reversal_event.recovery_basis}) "
                   f"on finding {original_event.finding_id}: "

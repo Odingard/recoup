@@ -62,6 +62,16 @@ class FakeDb:
                 doc["created_at"] = existing.get("created_at", f.get("created_at"))
             self.findings[fid] = doc
 
+    def transition_finding_status(self, account_id, finding_id, new_status,
+                                  event, fields=None):
+        finding = self.findings[finding_id]
+        finding["status"] = new_status
+        if fields:
+            finding.update(fields)
+        self.audit.append({"event": event, "finding_id": finding_id,
+                           **(fields or {})})
+        return dict(finding)
+
     def assurance_event_exists(self, account_id, event_id):
         return event_id in self.events
 
@@ -89,7 +99,7 @@ def fake_db(monkeypatch):
     for name in ("get_all_contracts", "get_all_usage", "get_all_invoices",
                  "get_all_findings", "get_compiled_rights", "get_observations",
                  "save_contract", "save_invoice", "save_usage", "save_findings",
-                 "assurance_event_exists", "save_assurance_event",
+                 "transition_finding_status", "assurance_event_exists", "save_assurance_event",
                  "get_assurance_events", "append_assurance_audit",
                  "get_assurance_status", "set_assurance_status"):
         monkeypatch.setattr(assurance.db, name, getattr(fake, name))
@@ -218,6 +228,66 @@ def test_changed_same_period_invoice_reevaluates_and_identical_is_duplicate(fake
 
     metadata_only = {**changed, "invoice_id": "in_new", "uploaded_at": "newer"}
     assert assurance.classify_invoice_event(changed, metadata_only) == []
+
+
+def _seed_complete_assurance_book(fake_db, finding=None, *, include_usage=True):
+    fake_db.save_contract("acct", _contract("X", minimum=1000.0))
+    fake_db.save_invoice("acct", _invoice("X", "2026-06", base=1000.0))
+    if include_usage:
+        fake_db.save_usage("acct", _usage("X", "2026-06", units=0))
+    if finding is not None:
+        fake_db.findings[finding["finding_id"]] = dict(finding)
+
+
+def _evaluate_usage_event(fake_db):
+    event = _event(trigger="new_usage", cid="X", period="2026-06",
+                   payload=_usage("X", "2026-06", units=0))
+    return assurance.evaluate_event("acct", event)
+
+
+def test_withdraws_open_stale_finding_after_complete_evaluation(fake_db):
+    finding = {"finding_id": "F-X-202606-MIN", "customer_id": "X",
+               "period": "2026-06", "type": "unenforced_minimum",
+               "status": "open", "monthly_recoverable": 1000.0}
+    _seed_complete_assurance_book(fake_db, finding)
+    result = _evaluate_usage_event(fake_db)
+    stored = fake_db.findings[finding["finding_id"]]
+    assert stored["status"] == "rejected"
+    assert stored["withdrawal_reason"] == assurance.STALE_WITHDRAWAL_REASON
+    assert any(a["event"] == "assurance_withdrawn_stale"
+               and a["finding_id"] == finding["finding_id"]
+               for a in fake_db.audit)
+    assert result["findings_withdrawn"] == [finding["finding_id"]]
+
+
+def test_does_not_withdraw_approved_stale_finding(fake_db):
+    finding = {"finding_id": "F-X-202606-MIN", "customer_id": "X",
+               "period": "2026-06", "type": "unenforced_minimum",
+               "status": "approved", "monthly_recoverable": 1000.0}
+    _seed_complete_assurance_book(fake_db, finding)
+    result = _evaluate_usage_event(fake_db)
+    assert fake_db.findings[finding["finding_id"]]["status"] == "approved"
+    assert result["findings_withdrawn"] == []
+
+
+def test_does_not_withdraw_when_period_is_incomplete(fake_db):
+    finding = {"finding_id": "F-X-202606-MIN", "customer_id": "X",
+               "period": "2026-06", "type": "unenforced_minimum",
+               "status": "open", "monthly_recoverable": 1000.0}
+    _seed_complete_assurance_book(fake_db, finding, include_usage=False)
+    result = _evaluate_usage_event(fake_db)
+    assert fake_db.findings[finding["finding_id"]]["status"] == "open"
+    assert result["findings_withdrawn"] == []
+
+
+def test_does_not_withdraw_novel_right_finding(fake_db):
+    finding = {"finding_id": "F-X-202606-N-XYZ", "customer_id": "X",
+               "period": "2026-06", "type": "novel:xyz", "status": "open",
+               "monthly_recoverable": 1000.0}
+    _seed_complete_assurance_book(fake_db, finding)
+    result = _evaluate_usage_event(fake_db)
+    assert fake_db.findings[finding["finding_id"]]["status"] == "open"
+    assert result["findings_withdrawn"] == []
 
 
 def test_ambiguous_fails_to_review(fake_db):

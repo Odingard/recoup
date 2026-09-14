@@ -68,7 +68,9 @@ def compute_findings_and_review(
         if key in usage and key in invoices:
             findings.extend(reconcile(c, usage[key], invoices[key], period, needs_review=needs_review))
             continue
-        if provider is not None:
+        # A partially uploaded period (usage xor invoice) is never completed
+        # from the connector: mixing sources would reconcile against $0.
+        if provider is not None and key not in usage and key not in invoices:
             from .billing.stripe_provider import map_stripe_billing_to_reconcile_inputs
             normalized_usage = provider.get_usage(c["customer_id"], period)
             normalized_invoices = provider.get_invoices(c["customer_id"], period)
