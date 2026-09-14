@@ -20,6 +20,32 @@ function pretty(v) {
   return String(v || '').replace(/_/g, ' ')
 }
 
+export function RecoveryActionSelect({ findingId, apiRequest, value, onChange }) {
+  const [actions, setActions] = useState([])
+  useEffect(() => {
+    let on = true
+    if (!findingId) return undefined
+    apiRequest(`/findings/${findingId}/recovery-actions`)
+      .then((list) => { if (on) setActions(list) })
+      .catch(() => {})
+    return () => { on = false }
+  }, [findingId]) // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
+  if (!actions.length) return null
+  return (
+    <label>
+      Linked recovery action (optional)
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">— none —</option>
+        {actions.map((a) => (
+          <option key={a.recovery_action_id} value={a.recovery_action_id}>
+            {pretty(a.action_type)} · {pretty(a.status)}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 export default function RecoveryActions({ finding, apiRequest, onChanged }) {
   const [actions, setActions] = useState([])
   const [actionType, setActionType] = useState(ACTION_TYPES[0])

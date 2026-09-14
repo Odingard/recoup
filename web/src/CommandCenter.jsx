@@ -102,6 +102,42 @@ export default function CommandCenter({ data, onOpenInReview, apiRequest,
         )}
       </div>
 
+      {es.recovery_metrics && (
+        <div className="glass-panel" style={{ padding: '0.9rem', marginTop: '1rem' }}>
+          <div className="info-label" style={{ marginBottom: '0.6rem' }}>Recovery performance</div>
+          <div className="exec-strip" style={{ display: 'flex', gap: '1.4rem', flexWrap: 'wrap', marginBottom: '0.8rem' }}>
+            <span><strong>{formatCurrency(es.recovery_metrics.total_opportunity)}</strong> <span className="muted-copy">total opportunity</span></span>
+            <span><strong>{formatCurrency(es.recovery_metrics.realized_value)}</strong> <span className="muted-copy">realized</span></span>
+            <span><strong>{Math.round((es.recovery_metrics.recovery_rate || 0) * 100)}%</strong> <span className="muted-copy">rate</span></span>
+            <span><strong>{es.recovery_metrics.avg_time_to_recovery ?? '—'}</strong> <span className="muted-copy">avg days</span></span>
+            <span><strong>{formatCurrency(es.recovery_metrics.avg_recovery_per_case)}</strong> <span className="muted-copy">avg / case</span></span>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            {[
+              ['By right type', es.recovery_metrics.recovery_by_right_type, 'right_type'],
+              ['By customer', es.recovery_metrics.recovery_by_customer, 'customer_name'],
+              ['By action strategy', es.recovery_metrics.recovery_by_action_strategy, 'action_type'],
+            ].map(([title, rows, keyField]) => (
+              <div key={title} style={{ flex: 1, minWidth: '14rem' }}>
+                <div className="info-label">{title}</div>
+                <table className="cc-table">
+                  <thead><tr><th></th><th>Realized</th><th>Cases</th></tr></thead>
+                  <tbody>
+                    {(rows || []).slice(0, 5).map((r) => (
+                      <tr key={r[keyField]}>
+                        <td>{String(r[keyField] || '').replace(/_/g, ' ')}</td>
+                        <td>{formatCurrency(r.realized)}</td>
+                        <td>{r.cases ?? r.actions ?? r.resolved_cases ?? 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="cc-filters" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
         <select value={filters.customer} onChange={set('customer')}>
           <option value="">All customers</option>
@@ -245,6 +281,56 @@ export default function CommandCenter({ data, onOpenInReview, apiRequest,
               apiRequest={apiRequest}
               onChanged={onChanged}
             />
+          )}
+          {selected.ledger && (
+            <div className="info-group"><div className="info-label">Realization ledger</div>
+              <div className="detail-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
+                <div><span className="metric-label">Potential</span><div>{formatCurrency(selected.ledger.potential_value)}</div></div>
+                <div><span className="metric-label">Requested</span><div>{formatCurrency(selected.ledger.approved_requested_value)}</div></div>
+                <div><span className="metric-label">Realized</span><div>{formatCurrency(selected.ledger.realized_value)}</div></div>
+                <div><span className="metric-label">Reversed</span><div>{formatCurrency(selected.ledger.reversed_value)}</div></div>
+                <div><span className="metric-label">Outstanding</span><div>{formatCurrency(selected.ledger.outstanding_value)}</div></div>
+                <div><span className="metric-label">Shortfall</span><div>{formatCurrency(selected.ledger.settlement_shortfall)}</div></div>
+              </div>
+              <div style={{ margin: '0.5rem 0' }}>
+                <span className="status-pill">{String(selected.ledger.resolution_status || '').replace(/_/g, ' ')}</span>{' '}
+                {selected.ledger.dispute_status !== 'none' && (
+                  <span className="status-pill">{String(selected.ledger.dispute_status).replace(/_/g, ' ')}</span>
+                )}
+              </div>
+              <div className="muted-copy">
+                {selected.ledger.first_action_date && <>First action: {selected.ledger.first_action_date} · </>}
+                {selected.ledger.realization_date && <>Realized: {selected.ledger.realization_date} · </>}
+                {selected.ledger.days_to_recovery != null && <>{selected.ledger.days_to_recovery} days to recovery</>}
+                {selected.ledger.recovery_bases?.length > 0 && <> · bases: {selected.ledger.recovery_bases.join(', ')}</>}
+              </div>
+              {(selected.ledger.external_references || []).length > 0 && (
+                <table className="cc-table">
+                  <thead><tr><th>Reference</th><th>Basis</th><th>Amount</th><th>At</th></tr></thead>
+                  <tbody>
+                    {selected.ledger.external_references.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.reference || r.event_id}</td>
+                        <td>{r.basis}</td>
+                        <td>{formatCurrency(r.amount)}</td>
+                        <td className="muted-copy">{r.at}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {(selected.ledger.events || []).some((e) => e.lineage && Object.keys(e.lineage).length > 0) && (
+                <div className="muted-copy" style={{ marginTop: '0.4rem' }}>
+                  {selected.ledger.events.filter((e) => e.lineage && Object.keys(e.lineage).length).map((e, i) => (
+                    <div key={i}>
+                      {[e.lineage.agreement, e.lineage.financial_right, e.lineage.discrepancy,
+                        e.lineage.recovery_case, e.lineage.recovery_action, e.lineage.realization_event]
+                        .filter(Boolean).join(' → ')}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           {selected.locked && (
             <p className="muted-copy"><AlertCircle size={13} /> Proof is locked until a payment method is on file.</p>
