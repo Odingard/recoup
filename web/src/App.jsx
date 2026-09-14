@@ -48,6 +48,12 @@ const TRIGGER_LABELS = {
   contract_renewal: 'Renewal', term_expiration: 'Term expired', pricing_change: 'Pricing change',
 }
 
+const TERM_LABELS = {
+  committed_minimum_monthly: 'Minimum', included_units: 'Included units', overage_rate: 'Overage',
+  annual_escalator_pct: 'Escalator', escalator_effective_date: 'Escalator date', term_start: 'Term',
+  term_end: 'Term', auto_renew_months: 'Auto-renew', renewal_notice_days: 'Notice', committed_seats: 'Seats',
+}
+
 function caseStageLabel(caseItem) {
   const status = caseItem?.status || 'open'
   if (status === 'open') return caseItem?.verified ? 'Approve' : 'Prove'
@@ -55,6 +61,11 @@ function caseStageLabel(caseItem) {
   if (status === 'invoiced' || status === 'disputed') return 'Recover'
   if (status === 'recovered') return 'Verify'
   return status
+}
+
+function shortActor(value) {
+  if (!value) return 'your team'
+  return String(value).split('@')[0]
 }
 
 function triggerLabel(trigger) {
@@ -116,27 +127,6 @@ const LEGAL_NEXT_ACTIONS = {
   rejected: [], recovered: [], written_off: [],
 }
 
-const emptyContractDraft = {
-  customer_id: '',
-  customer_name: '',
-  committed_minimum_monthly: '',
-  included_units: '',
-  overage_rate: '',
-  annual_escalator_pct: '',
-  escalator_effective_date: '',
-  discount_name: '',
-  discount_type: 'percent',
-  discount_value: '',
-  discount_applies_to: 'base',
-  discount_expires: '',
-  clauses: {
-    committed_minimum: '',
-    overage: '',
-    discount: '',
-    escalator: '',
-  },
-}
-
 function apiErrorMessage(text) {
   let detail = text
   try {
@@ -179,64 +169,6 @@ function failureMessage(prefix, error) {
   return `${prefix}: ${detail.slice(0, 240)}`
 }
 
-function buildReviewedContract(draft) {
-  const customerId = (draft.customer_id || draft.customer_name || 'contract').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
-  const customerName = draft.customer_name.trim()
-  const committedMinimum = Number(draft.committed_minimum_monthly || 0)
-  const includedUnits = Number(draft.included_units || 0)
-  const overageRate = Number(draft.overage_rate || 0)
-  const annualEscalatorPct = Number(draft.annual_escalator_pct || 0)
-  const discountValue = Number(draft.discount_value || 0)
-  const discountIsPercent = draft.discount_type === 'percent'
-  const discount = draft.discount_name.trim()
-    ? [{
-        name: draft.discount_name.trim(),
-        type: discountIsPercent ? 'percent' : 'amount',
-        value: discountValue,
-        applies_to: draft.discount_applies_to,
-        expires: draft.discount_expires || '',
-      }]
-    : []
-
-  return {
-    customer_id: customerId,
-    customer_name: customerName,
-    committed_minimum_monthly: committedMinimum,
-    included_units: includedUnits,
-    overage_rate: overageRate,
-    annual_escalator_pct: annualEscalatorPct,
-    escalator_effective_date: draft.escalator_effective_date || '',
-    discounts: discount,
-    clauses: { ...draft.clauses },
-    term_meta: {
-      committed_minimum_monthly: {
-        confidence: 0.97,
-        provenance: draft.clauses.committed_minimum || 'Structured upload form',
-      },
-      included_units: {
-        confidence: 0.97,
-        provenance: draft.clauses.overage || 'Structured upload form',
-      },
-      overage_rate: {
-        confidence: 0.97,
-        provenance: draft.clauses.overage || 'Structured upload form',
-      },
-      annual_escalator_pct: {
-        confidence: 0.97,
-        provenance: draft.clauses.escalator || 'Structured upload form',
-      },
-      escalator_effective_date: {
-        confidence: 0.97,
-        provenance: draft.clauses.escalator || 'Structured upload form',
-      },
-      discounts: discount.length > 0 ? {
-        confidence: 0.95,
-        provenance: draft.clauses.discount || 'Structured upload form',
-      } : undefined,
-    },
-  }
-}
-
 function normalizeHash() {
   const raw = (window.location.hash || '#/workspace').replace(/^#\/?/, '')
   const [screen, id] = raw.split('/')
@@ -255,11 +187,9 @@ function App() {
   const [running, setRunning] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [uploadedContracts, setUploadedContracts] = useState([])
-  const [contractDraft, setContractDraft] = useState(emptyContractDraft)
   const [selectedFileName, setSelectedFileName] = useState('')
   const [bulkResult, setBulkResult] = useState(null)
   const [bulkUploading, setBulkUploading] = useState(false)
-  const [contractSubmitting, setContractSubmitting] = useState(false)
   const [metrics, setMetrics] = useState(null)
   const [connectorSubmitting, setConnectorSubmitting] = useState(false)
   const [connectorStatus, setConnectorStatus] = useState('')
@@ -742,29 +672,6 @@ function App() {
       setAdminTenants([]); setAdminAudit([]); setAdminSelected(null)
       setAdminResetConfirm('')
     }
-  }
-
-  const handleContractField = (field, value) => setContractDraft((current) => ({ ...current, [field]: value }))
-  const handleClauseField = (field, value) => setContractDraft((current) => ({ ...current, clauses: { ...current.clauses, [field]: value } }))
-
-  const submitContract = async () => {
-    if (!contractDraft.customer_name.trim()) {
-      setStatusMessage('Enter a customer name before uploading.')
-      return
-    }
-    setContractSubmitting(true)
-    try {
-      const payload = buildReviewedContract(contractDraft)
-      await apiRequest('/ingest/contract', { method: 'POST', body: payload })
-      setUploadedContracts((current) => [{ ...payload, confirmed: false, file_name: selectedFileName }, ...current.filter((item) => item.customer_id !== payload.customer_id)])
-      setContractDraft(emptyContractDraft)
-      setSelectedFileName('')
-      setStatusMessage(`Uploaded structured contract for ${payload.customer_name}.`)
-      await refreshAll()
-    } catch (error) {
-      console.error(error)
-      setStatusMessage(failureMessage('Contract upload failed', error))
-    } finally { setContractSubmitting(false) }
   }
 
   const handleBulkUpload = async (filesOrEvent) => {
@@ -1633,7 +1540,7 @@ function App() {
 
   const renderAgreements = () => (
     <section className="panel-card">
-      <div className="panel-heading"><div><p className="eyebrow">Agreements</p><h2>Agreements and uploads</h2></div><span className="hint-pill">Files or a ZIP — we sort them out</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">Agreements</p><h2>Agreements and uploads</h2></div><span className="hint-pill">Recoup reads them — nothing to key in</span></div>
       <div className="upload-grid">
         <div className="dropzone">
           <Upload size={22} /><div><strong>{bulkUploading ? 'Uploading…' : 'Drop files here or click to browse'}</strong><p>Drop contracts (PDF/DOCX/scans), billing + usage CSVs, or a ZIP of everything.</p></div>
@@ -1643,41 +1550,24 @@ function App() {
           <p className="muted-copy">Export templates: <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}<a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}<a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a></p>
         </div>
       </div>
-      <details className="manual-entry">
-        <summary>Enter terms manually</summary>
-        <div className="contract-form-grid">
-          <label>Customer name<input value={contractDraft.customer_name} onChange={(event) => handleContractField('customer_name', event.target.value)} /></label>
-          <label>Customer ID<input value={contractDraft.customer_id} onChange={(event) => handleContractField('customer_id', event.target.value)} placeholder="acme" /></label>
-          <label>Committed minimum monthly<input type="number" value={contractDraft.committed_minimum_monthly} onChange={(event) => handleContractField('committed_minimum_monthly', event.target.value)} /></label>
-          <label>Included units<input type="number" value={contractDraft.included_units} onChange={(event) => handleContractField('included_units', event.target.value)} /></label>
-          <label>Overage rate<input type="number" step="0.01" value={contractDraft.overage_rate} onChange={(event) => handleContractField('overage_rate', event.target.value)} /></label>
-          <label>Annual escalator %<input type="number" step="0.01" value={contractDraft.annual_escalator_pct} onChange={(event) => handleContractField('annual_escalator_pct', event.target.value)} /></label>
-          <label>Escalator effective date<input type="date" value={contractDraft.escalator_effective_date} onChange={(event) => handleContractField('escalator_effective_date', event.target.value)} /></label>
-          <label>Discount name<input value={contractDraft.discount_name} onChange={(event) => handleContractField('discount_name', event.target.value)} /></label>
-          <label>Discount value<input type="number" step="0.01" value={contractDraft.discount_value} onChange={(event) => handleContractField('discount_value', event.target.value)} /></label>
-          <label>Discount expires<input type="date" value={contractDraft.discount_expires} onChange={(event) => handleContractField('discount_expires', event.target.value)} /></label>
-          <label>Discount applies to<input value={contractDraft.discount_applies_to} onChange={(event) => handleContractField('discount_applies_to', event.target.value)} /></label>
-        </div>
-        <div className="clause-grid">
-          <label>Committed minimum clause quote<textarea value={contractDraft.clauses.committed_minimum} onChange={(event) => handleClauseField('committed_minimum', event.target.value)} rows={3} /></label>
-          <label>Overage clause quote<textarea value={contractDraft.clauses.overage} onChange={(event) => handleClauseField('overage', event.target.value)} rows={3} /></label>
-          <label>Discount clause quote<textarea value={contractDraft.clauses.discount} onChange={(event) => handleClauseField('discount', event.target.value)} rows={3} /></label>
-          <label>Escalator clause quote<textarea value={contractDraft.clauses.escalator} onChange={(event) => handleClauseField('escalator', event.target.value)} rows={3} /></label>
-        </div>
-        <div className="panel-footer"><button className="btn-primary" onClick={submitContract} disabled={contractSubmitting}>{contractSubmitting ? 'Uploading…' : 'Upload contract'}</button></div>
-      </details>
       <div className="panel-section"><div className="info-label">Agreement list</div>
-        {uploadedContracts.length === 0 ? <p className="muted-copy">No agreements uploaded yet.</p> : uploadedContracts.map((contract) => (
+        {uploadedContracts.length === 0 ? <p className="muted-copy">No agreements uploaded yet.</p> : uploadedContracts.map((contract) => {
+          const termMeta = contract.term_meta || {}
+          const termEntries = Object.entries(termMeta).filter(([key, meta]) => key !== 'discounts' && TERM_LABELS[key] && meta && typeof meta === 'object' && typeof meta.confidence === 'number')
+          const needsReview = Object.values(termMeta).some((meta) => meta && typeof meta.confidence === 'number' && meta.confidence < 0.85) || !contract.term_start || !contract.term_end
+          const provenances = [...new Set(termEntries.map(([, meta]) => meta.provenance).filter(Boolean))]
+          return (
           <div key={contract.customer_id} className="agreement-card">
-            <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : ''}`}>{contract.confirmed ? 'Confirmed' : 'Not confirmed'}</span></div>
+            <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : needsReview ? 'status-review' : 'status-read'}`}>{contract.confirmed ? `Confirmed by ${shortActor(contract.confirmed_by)}` : needsReview ? 'Needs your review' : 'Read by Recoup'}</span></div>
             <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
-            <div className="muted-copy">Confidence {Math.round(Number((contract.term_meta?.committed_minimum_monthly?.confidence ?? 1) * 100))}% · {contract.term_meta?.committed_minimum_monthly?.provenance || 'No provenance'}</div>
-            {!contract.confirmed && <button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm terms'}</button>}
+            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%</span>)}</div>}
+            {provenances.length === 1 && <div className="muted-copy source-line">Source: {provenances[0]}</div>}
+            {needsReview && !contract.confirmed && <><button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm as read'}</button><span className="muted-copy review-note">Recoup wasn't sure about the amber terms — confirm or re-upload a clearer copy.</span></>}
             <details><summary>Financial rights</summary>
               {rights[contract.customer_id]?.length ? <ul className="upload-history">{rights[contract.customer_id].map((right) => <li key={right.right_id || right.candidate_id}><span>{right.right_type || right.type}</span><span className="muted-copy">{right.status || right.candidate_status || '—'}</span></li>)}</ul> : <p className="muted-copy">{rights[contract.customer_id] === undefined ? 'Loading rights…' : 'No additional rights discovered'}</p>}
             </details>
           </div>
-        ))}
+        )})}
       </div>
       <div className="panel-section"><div className="info-label">Renewals</div>
         {renewals.length === 0 ? <p className="muted-copy">No renewal dates recorded.</p> : <ul className="upload-history">{renewals.map((renewal, i) => <li key={i} className="upload-history-item"><span>{renewal.customer_name || renewal.customer_id}</span><span className="muted-copy">{renewal.term_end || renewal.cancellation_deadline || '—'}</span></li>)}</ul>}

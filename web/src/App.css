@@ -186,7 +186,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .empty-state { background: var(--surface-2); border: 1px dashed var(--border); border-radius: 10px; padding: 18px; }
 .cc-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .cc-filters > * { flex: 1 1 140px; min-width: 140px; }
-.cc-filters select, .cc-filters input, .recovery-form input, .recovery-form select, .contract-form-grid input, .clause-grid textarea, .contract-form-grid textarea { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; }
+.cc-filters select, .cc-filters input, .recovery-form input, .recovery-form select { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; }
 .table-wrap, .table-scroll { margin-top: 14px; overflow-x: auto; }
 .cc-table { border-collapse: collapse; font-size: 0.86rem; width: 100%; }
 .cc-table th { color: var(--text-muted); font-size: 0.75rem; text-align: left; text-transform: uppercase; }
@@ -196,13 +196,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .upload-grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
 .dropzone { border-style: dashed; padding: 18px; position: relative; }
 .dropzone input { inset: 0; opacity: 0; position: absolute; }
-.contract-form-grid, .clause-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-.clause-grid { margin-top: 14px; }
-.contract-form-grid label, .clause-grid label, .recovery-form label { color: var(--text-muted); display: grid; font-size: 0.8rem; gap: 5px; }
+.recovery-form label { color: var(--text-muted); display: grid; font-size: 0.8rem; gap: 5px; }
 .recovery-form { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-top: 12px; padding: 12px; }
 .recovery-form .review-actions { grid-column: 1 / -1; }
 .agreement-card { margin-top: 12px; padding: 14px; }
 .agreement-card > button { margin-top: 10px; }
+.term-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.term-chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-family: var(--mono); font-size: 0.68rem; padding: 4px 7px; }
+.term-chip.review, .status-review { border-color: rgba(228, 176, 74, 0.5); color: var(--amber); }
+.status-read { color: var(--green); }
+.source-line, .review-note { display: block; font-size: 0.76rem; margin-top: 8px; }
 .event-row { align-items: center; }
 .mode-banner { align-items: center; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; max-width: 100%; padding: 12px 14px; }
 .sample-banner { border-color: rgba(228, 176, 74, 0.35); }
