@@ -256,7 +256,24 @@ def test_classify_contract_event():
     incoming = _contract("B")
     assert assurance.classify_contract_event(None, incoming) == "new_agreement"
     same = _contract("B")
-    assert assurance.classify_contract_event(same, incoming) == "agreement_amendment"
+    assert assurance.classify_contract_event(same, incoming) == ""
+    reordered = {
+        **same,
+        "contract_id": "new-doc-id",
+        "uploaded_at": "later",
+        "term_meta": {"committed_minimum_monthly": {"provenance": "different quote"}},
+        "discounts": [
+            {"name": "B", "type": "amount", "value": 20, "expires": "2027-01-01"},
+            {"name": "A", "type": "percent", "value": 0.1, "starts": "2026-01-01"},
+        ],
+    }
+    same["discounts"] = list(reversed(reordered["discounts"]))
+    assert assurance.classify_contract_event(same, reordered) == ""
+    assert assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "test", same
+    ).event_id == assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "test", reordered
+    ).event_id
     pricing = {**same, "committed_minimum_monthly": 1500.0}
     assert assurance.classify_contract_event(same, pricing) == "pricing_change"
     amended_effective = {**same, "escalator_effective_date": "2027-01-01"}
@@ -266,6 +283,22 @@ def test_classify_contract_event():
     assert assurance.classify_contract_event(old, renewed) == "contract_renewal"
     expired = {**same, "term_end": "2020-01-01"}
     assert assurance.classify_contract_event(same, expired) == "term_expiration"
+
+
+def test_identical_contract_ingest_does_not_duplicate_event(fake_db):
+    original = _contract("B")
+    first = api._save_contract_if_needed("acct", original)
+    assert [e["trigger"] for e in first] == ["new_agreement"]
+    assert len(fake_db.events) == 1
+
+    identical = {
+        **original,
+        "contract_id": "different-document-id",
+        "created_at": "later",
+        "term_meta": {"committed_minimum_monthly": {"provenance": "other quote"}},
+    }
+    assert api._save_contract_if_needed("acct", identical) == []
+    assert len(fake_db.events) == 1
 
 
 def test_no_external_action(fake_db, monkeypatch):

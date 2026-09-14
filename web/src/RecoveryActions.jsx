@@ -12,8 +12,15 @@ const CHANNELS = [
   { id: 'manual', label: 'Record manual action' },
 ]
 
+const MONEY_FORMATTER = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 function formatCurrency(value) {
-  return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+  return MONEY_FORMATTER.format(Number(value || 0))
 }
 
 function pretty(v) {
@@ -105,7 +112,7 @@ export default function RecoveryActions({ finding, apiRequest, onChanged }) {
           <div className="action-head">
             <strong>{pretty(a.action_type)}</strong>
             <span className={`status-pill status-${a.status}`}>{pretty(a.status)}</span>
-            <span className="amount-badge">{formatCurrency(a.requested_value)}</span>
+            <span className="amount-badge money">{formatCurrency(a.requested_value)}</span>
             {a.channel && <span className="muted-note">via {pretty(a.channel)}</span>}
           </div>
 

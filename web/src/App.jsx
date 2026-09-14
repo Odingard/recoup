@@ -55,6 +55,8 @@ const EMPTY_FILTERS = {
   maxAge: '', minConfidence: '', agreement: '', period: '',
 }
 
+const ACTIONABLE_REALIZATION_STATUSES = ['approved', 'invoiced', 'disputed']
+
 const LEGAL_NEXT_ACTIONS = {
   open: ['approve', 'reject'],
   approved: ['invoice', 'payment', 'writeoff', 'reject'],
@@ -99,14 +101,19 @@ function apiErrorMessage(text) {
   return String(detail || 'Request failed')
 }
 
+const MONEY_FORMATTER = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 function formatCurrency(value) {
-  return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+  return MONEY_FORMATTER.format(Number(value || 0))
 }
 
 function formatRate(value) {
-  const n = Number(value || 0)
-  const digits = n !== 0 && Math.abs(n) < 0.01 ? 6 : 2
-  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })}`
+  return formatCurrency(value)
 }
 
 function formatDate(value) {
@@ -215,6 +222,7 @@ function App() {
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [rights, setRights] = useState({})
   const [events, setEvents] = useState({})
+  const [eventsLoading, setEventsLoading] = useState({})
   const [realizationForm, setRealizationForm] = useState(null)
   const [realizationFields, setRealizationFields] = useState({ basis: 'cash_payment', amount: '', date: '', reference: '', actionId: '', note: '' })
   const [reverseForm, setReverseForm] = useState(null)
@@ -336,24 +344,30 @@ function App() {
     } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
 
-  useEffect(() => {
+  const loadRenewals = useCallback(async () => {
     if (!apiReady) return
-    const handle = window.setTimeout(() => {
-      void refreshFindings(); void loadConnectorStatus(); void loadContracts()
-      apiRequest('/renewals').then((rows) => setRenewals(Array.isArray(rows) ? rows : [])).catch(() => setRenewals([]))
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, refreshFindings, loadConnectorStatus, loadContracts, apiRequest])
+    try {
+      const rows = await apiRequest('/renewals')
+      setRenewals(Array.isArray(rows) ? rows : [])
+    } catch (error) {
+      console.error(error)
+      setRenewals([])
+    }
+  }, [apiReady, apiRequest])
 
-  useEffect(() => {
-    if (!apiReady || !route.id || screen !== 'opportunities') return
-    const handle = window.setTimeout(() => {
-      apiRequest(`/findings/${route.id}/recovery-events`)
-        .then((rows) => setEvents((current) => ({ ...current, [route.id]: Array.isArray(rows) ? rows : (rows?.events || []) })))
-        .catch(() => setEvents((current) => ({ ...current, [route.id]: [] })))
-    }, 0)
-    return () => window.clearTimeout(handle)
-  }, [apiReady, apiRequest, route.id, screen])
+  const loadRecoveryEvents = useCallback(async (findingId) => {
+    if (!apiReady || !findingId) return
+    setEventsLoading((current) => ({ ...current, [findingId]: true }))
+    try {
+      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
+      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
+    } catch (error) {
+      console.error(error)
+      setEvents((current) => ({ ...current, [findingId]: [] }))
+    } finally {
+      setEventsLoading((current) => ({ ...current, [findingId]: false }))
+    }
+  }, [apiReady, apiRequest])
 
   useEffect(() => {
     if (!apiReady || screen !== 'agreements') return
@@ -373,6 +387,23 @@ function App() {
     if (!apiReady) return
     try { setBilling(await apiRequest('/billing/status')) } catch (error) { console.error(error) }
   }, [apiReady, apiRequest])
+
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([
+      refreshFindings(),
+      loadContracts(),
+      loadRenewals(),
+      loadBillingStatus(),
+    ])
+  }, [refreshFindings, loadContracts, loadRenewals, loadBillingStatus])
+
+  useEffect(() => {
+    if (!apiReady) return
+    const handle = window.setTimeout(() => {
+      void refreshAll(); void loadConnectorStatus()
+    }, 0)
+    return () => window.clearTimeout(handle)
+  }, [apiReady, refreshAll, loadConnectorStatus])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -456,6 +487,7 @@ function App() {
       setSessionMode(null)
       setFirebaseUser(null)
       setFindings([]); setAllFindings([]); setFindingsLoaded(false)
+      setEvents({}); setEventsLoading({})
       setStatusMessage('')
       setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
     }
@@ -477,6 +509,7 @@ function App() {
       setContractDraft(emptyContractDraft)
       setSelectedFileName('')
       setStatusMessage(`Uploaded structured contract for ${payload.customer_name}.`)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Contract upload failed', error))
@@ -505,6 +538,7 @@ function App() {
       setStatusMessage(result?.status === 'needs_review'
         ? (result.message || 'Bulk upload needs review.')
         : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` + (nr ? ` ${nr} item(s) need review.` : ''))
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
@@ -518,6 +552,7 @@ function App() {
       if (result?.status === 'confirmed' || result?.contract?.confirmed) {
         setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, confirmed: true, confirmed_by: result.contract?.confirmed_by, confirmed_at: result.contract?.confirmed_at } : item))
         setStatusMessage('Contract terms confirmed.')
+        await refreshAll()
       } else {
         setStatusMessage(result?.message || 'Sample mode did not persist confirmation.')
       }
@@ -537,7 +572,7 @@ function App() {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
       setReviewQueue(result?.needs_review || [])
       setStatusMessage(`Evaluation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review.` : ''))
-      await refreshFindings()
+      await refreshAll()
       navigate('opportunities')
     } catch (error) {
       console.error(error)
@@ -554,7 +589,7 @@ function App() {
     try {
       const result = await apiRequest('/assurance/evaluate', { method: 'POST', body: { customer_id: customerId, period: billingPeriod } })
       setStatusMessage(result?.status === 'needs_review' ? result.message : 'Assurance evaluation recorded.')
-      await loadAssurance()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Assurance evaluation failed', error))
@@ -569,7 +604,7 @@ function App() {
       setStatusMessage(result.status !== 'approved' && result.status !== 'rejected'
         ? (result.message || 'Sample mode is read-only; approval was not recorded.')
         : (action === 'approve' ? 'Finding approved.' : 'Finding rejected.'))
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not update the finding.')
@@ -597,9 +632,8 @@ function App() {
       })
       setStatusMessage('Realized value recorded.')
       setRealizationForm(null)
-      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
-      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
-      await refreshFindings()
+      await loadRecoveryEvents(findingId)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Could not record realized value', error))
@@ -613,7 +647,7 @@ function App() {
     try {
       await apiRequest(`/findings/${finding.finding_id}/invoiced`, { method: 'POST', body: { invoice_ref, invoice_amount, invoice_url: null, note: '' } })
       setStatusMessage('Corrective invoice recorded.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not record corrective invoice.')
@@ -625,7 +659,7 @@ function App() {
     try {
       await apiRequest(`/findings/${findingId}/disputed`, { method: 'POST', body: { reason } })
       setStatusMessage('Finding marked disputed.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not mark the finding disputed.')
@@ -637,7 +671,7 @@ function App() {
     try {
       await apiRequest(`/findings/${findingId}/written-off`, { method: 'POST', body: { reason } })
       setStatusMessage('Finding written off.')
-      await refreshFindings()
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage('Could not write off the finding.')
@@ -656,9 +690,8 @@ function App() {
       })
       setStatusMessage('Realization reversed.')
       setReverseForm(null)
-      const rows = await apiRequest(`/findings/${findingId}/recovery-events`)
-      setEvents((current) => ({ ...current, [findingId]: Array.isArray(rows) ? rows : (rows?.events || []) }))
-      await refreshFindings()
+      await loadRecoveryEvents(findingId)
+      await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Reversal failed', error))
@@ -715,7 +748,7 @@ function App() {
       else {
         const n = result?.recovered?.length || 0
         setStatusMessage(`Checked ${result?.checked ?? 0} invoices — ${n} newly recovered.`)
-        await refreshFindings()
+        await refreshAll()
       }
     } catch (error) {
       console.error(error); setStatusMessage(failureMessage('Stripe sync failed', error))
@@ -727,7 +760,7 @@ function App() {
       const result = await apiRequest('/billing/charge-success-fee', { method: 'POST' })
       const billing = result?.billing || {}
       setStatusMessage(billing.message || `Success fee status: ${billing.status}`)
-      await loadMetrics()
+      await refreshAll()
     } catch (error) {
       console.error(error); setStatusMessage('Could not charge the success fee.')
     }
@@ -787,6 +820,20 @@ function App() {
   }, [screen, route.id, commandCenter, allFindings])
 
   const recoveryCases = useMemo(() => allFindings.filter((finding) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(finding.status || 'open')), [allFindings])
+  const eventCaseIds = useMemo(() => {
+    const ids = new Set(recoveryCases.map((finding) => finding.finding_id).filter(Boolean))
+    if (selectedCase?.finding_id) ids.add(selectedCase.finding_id)
+    return Array.from(ids)
+  }, [recoveryCases, selectedCase])
+
+  useEffect(() => {
+    eventCaseIds.forEach((findingId) => {
+      if (events[findingId] === undefined && !eventsLoading[findingId]) {
+        void loadRecoveryEvents(findingId)
+      }
+    })
+  }, [eventCaseIds, events, eventsLoading, loadRecoveryEvents])
+
   const trueupCustomers = useMemo(() => {
     const statuses = ['approved', 'invoiced', 'disputed']
     const map = {}
@@ -863,13 +910,15 @@ function App() {
   const renderEvents = (finding) => (
     <div className="info-group">
       <div className="info-label">Realization events</div>
-      {(events[finding.finding_id] || []).length === 0 ? <p className="muted-copy">No realization events recorded.</p> : (
+      {events[finding.finding_id] === undefined || eventsLoading[finding.finding_id] ? (
+        <p className="muted-copy">Loading realization events…</p>
+      ) : events[finding.finding_id].length === 0 ? <p className="muted-copy">No realization events recorded.</p> : (
         <ul className="upload-history">
           {(events[finding.finding_id] || []).map((event) => (
             <li key={event.recovery_event_id} className="upload-history-item event-row">
               <span>{event.event_type?.replace(/_/g, ' ') || 'event'} · {event.recovery_basis?.replace(/_/g, ' ')} · {formatCurrency(event.event_type === 'reversal' ? event.reversal_amount : event.realized_value)}</span>
               <span className="muted-copy">{event.external_reference || event.reversal_reference || '—'} · {formatDate(event.realized_at || event.created_at)}</span>
-              {event.event_type === 'realization' && (
+              {event.event_type === 'realization' && ACTIONABLE_REALIZATION_STATUSES.includes(finding.status) && (
                 <button className="btn-secondary" onClick={() => { setReverseForm({ finding_id: finding.finding_id, event_id: event.recovery_event_id }); setReverseFields({ amount: '', reference: '', reason: '' }) }}>Reverse</button>
               )}
             </li>
@@ -938,7 +987,7 @@ function App() {
           {renderRealizationForm(detailFinding)}
         </div>
         {['approved', 'invoiced', 'disputed'].includes(finding.status) && (
-          <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshFindings} />
+          <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshAll} />
         )}
         {ledger && (
           <div className="info-group"><div className="info-label">7. Realization ledger</div>
@@ -1101,7 +1150,12 @@ function App() {
         </tbody></table></div>
       </div>
       <div className="panel-section"><div className="info-label">Record realized value</div>
-        {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div><button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>{renderRealizationForm(finding)}{renderEvents(finding)}</div>)}
+        {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div>{ACTIONABLE_REALIZATION_STATUSES.includes(finding.status) && (
+            <>
+              <button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>
+              {renderRealizationForm(finding)}
+            </>
+          )}{renderEvents(finding)}</div>)}
       </div>
       <div className="panel-section"><div className="info-label">True-up letters</div>
         <label className="styled-field">Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>

@@ -88,6 +88,12 @@ def test_finding_child_routes_are_tenant_scoped(monkeypatch):
         assert response.json() == {"detail": "Finding not found."}
 
 
+def test_actor_falls_back_to_uid_and_unknown():
+    assert api._actor({"uid": "uid-1"}) == "uid-1"
+    assert api._actor({"email": "owner@example.com", "uid": "uid-1"}) == "owner@example.com"
+    assert api._actor({}) == "unknown"
+
+
 def test_unreadable_pdf_provider_error_returns_friendly_422(monkeypatch):
     client = _auth_client(monkeypatch)
     monkeypatch.setattr(api, "_pdf_has_text_layer", lambda path: (True, None, 1))

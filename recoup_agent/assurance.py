@@ -31,10 +31,16 @@ _CONTRACT_TRIGGERS = set(TRIGGERS) - _PERIOD_TRIGGERS
 _PRICING_FIELDS = ("committed_minimum_monthly", "minimum_schedule", "included_units",
                    "overage_rate", "overage_tiers", "annual_escalator_pct",
                    "escalator_effective_date", "seat_price", "committed_seats",
-                   "discounts")
+                   "seats", "discounts")
 
-# Real normalized contract keys for the agreement end date.
+# Real normalized contract keys for the agreement dates.
+_START_KEYS = ("term_start", "start_date", "term_start_date")
 _END_KEYS = ("term_end", "end_date", "term_end_date")
+
+_DISCOUNT_MONEY_KEYS = ("label", "name", "type", "value", "applies_to",
+                        "starts", "start_date", "expires", "end_date")
+_SCHEDULE_MONEY_KEYS = ("amount", "effective_date")
+_TIER_MONEY_KEYS = ("up_to", "rate")
 
 # Invoice content that can change the expected-vs-actual calculation. Identifiers,
 # provenance, and received/upload timestamps are intentionally excluded.
@@ -46,8 +52,58 @@ _INVOICE_MONEY_FIELDS = (
 )
 
 
+def _canonical(value):
+    if isinstance(value, dict):
+        return {key: _canonical(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        items = [_canonical(item) for item in value]
+        return sorted(items, key=lambda item: json.dumps(
+            item, sort_keys=True, default=str))
+    return value
+
+
 def _invoice_money_payload(invoice: dict) -> dict:
     return {field: invoice.get(field) for field in _INVOICE_MONEY_FIELDS}
+
+
+def _first_present(record: dict, keys) -> object:
+    for key in keys:
+        if record.get(key) is not None:
+            return record.get(key)
+    return None
+
+
+def _contract_money_payload(contract: dict) -> dict:
+    """Money-bearing contract projection: ids, timestamps, provenance and
+    ordering never affect event identity or change detection."""
+    discounts = [
+        {key: discount.get(key) for key in _DISCOUNT_MONEY_KEYS
+         if key in discount}
+        for discount in contract.get("discounts") or []]
+    schedule = [
+        {key: item.get(key) for key in _SCHEDULE_MONEY_KEYS if key in item}
+        for item in contract.get("minimum_schedule") or []]
+    tiers = [
+        {key: item.get(key) for key in _TIER_MONEY_KEYS if key in item}
+        for item in contract.get("overage_tiers") or []]
+    payload = {
+        "customer_id": contract.get("customer_id"),
+        "committed_minimum_monthly": contract.get("committed_minimum_monthly"),
+        "minimum_schedule": schedule,
+        "included_units": contract.get("included_units"),
+        "overage_rate": contract.get("overage_rate"),
+        "overage_tiers": tiers,
+        "annual_escalator_pct": contract.get("annual_escalator_pct"),
+        "escalator_effective_date": contract.get("escalator_effective_date"),
+        "discounts": discounts,
+        "term_start": _first_present(contract, _START_KEYS),
+        "term_end": _first_present(contract, _END_KEYS),
+        "committed_seats": contract.get("committed_seats")
+                           or contract.get("seats"),
+        "seat_price": contract.get("seat_price"),
+        "currency": contract.get("currency"),
+    }
+    return _canonical(payload)
 
 
 @dataclass
@@ -80,6 +136,8 @@ def payload_hash(payload) -> str:
 
 def make_event(account_id: str | None, trigger: str, customer_id: str | None,
                period: str | None, source: str, payload) -> ChangeEvent:
+    if trigger in _CONTRACT_TRIGGERS and isinstance(payload, dict):
+        payload = _contract_money_payload(payload)
     ph = payload_hash(payload)
     event_id = hashlib.sha256(json.dumps(
         [account_id or "", trigger, customer_id or "", period or "", ph],
@@ -109,8 +167,10 @@ def classify_contract_event(existing: dict | None, incoming: dict) -> str:
         return "contract_renewal"
     if new_end and not old_end:
         return "contract_renewal"
+    if _contract_money_payload(existing) == _contract_money_payload(incoming):
+        return ""
     for f in _PRICING_FIELDS:
-        if existing.get(f) != incoming.get(f):
+        if _canonical(existing.get(f)) != _canonical(incoming.get(f)):
             return "pricing_change"
     return "agreement_amendment"
 
