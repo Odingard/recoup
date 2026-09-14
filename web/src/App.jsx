@@ -54,6 +54,10 @@ const TERM_LABELS = {
   term_end: 'Term', auto_renew_months: 'Auto-renew', renewal_notice_days: 'Notice', committed_seats: 'Seats',
 }
 
+const CLAUSE_REF_LABELS = {
+  committed_minimum: 'Committed minimum', overage: 'Overage', discount: 'Discount', escalator: 'Escalator',
+}
+
 function caseStageLabel(caseItem) {
   const status = caseItem?.status || 'open'
   if (status === 'open') return caseItem?.verified ? 'Approve' : 'Prove'
@@ -1245,51 +1249,71 @@ function App() {
   )
 
   const renderOpportunityDetail = (finding) => {
-    const evidence = finding.evidence || {}
-    const legal = LEGAL_NEXT_ACTIONS[finding.status || 'open'] || []
-    const ledger = finding.ledger || null
-    const detailFinding = { ...finding, monthly_recoverable: finding.recoverable_difference ?? finding.monthly_recoverable }
+    const joined = { ...(allFindings.find((f) => f.finding_id === finding.finding_id) || {}), ...finding }
+    const evidence = joined.evidence || {}
+    const legal = LEGAL_NEXT_ACTIONS[joined.status || 'open'] || []
+    const ledger = joined.ledger || null
+    const detailFinding = { ...joined, monthly_recoverable: joined.recoverable_difference ?? joined.monthly_recoverable }
+    const contract = uploadedContracts.find((c) => c.customer_id === joined.customer_id)
+    const fileName = contract?.file_name
+    const clauseRef = evidence.clause_ref || joined.clause_ref
+    const clauseLabel = CLAUSE_REF_LABELS[clauseRef] || clauseRef
+    const gated = joined.locked || proofLocked
     return (
       <section className="panel-card opportunity-detail">
         <div className="panel-heading">
-          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2><div className="detail-counterparty">{finding.counterparty?.customer_name || finding.customer_name || 'Unknown counterparty'} · {finding.counterparty?.customer_id || finding.customer_id || '—'}</div></div>
-          <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
-        </div>
-        <div className="detail-grid detail-grid-two">
-          <div className="info-group"><div className="info-label">1. What the agreement says</div>
-            {(finding.locked || proofLocked) ? renderGate() : (
-              <div className="provenance-box">{evidence.clause_ref || finding.clause_ref || '—'}<br />{evidence.clause_text || finding.clause_text || 'No clause text on file.'}</div>
-            )}
-          </div>
-          <div className="info-group"><div className="info-label">2. Expected vs actual</div>
-            <div><span className="muted-copy">Expected: </span><strong className="money">{formatCurrency(finding.expected_value)}</strong></div>
-            <div><span className="muted-copy">Actual: </span><strong className="money">{formatCurrency(finding.actual_value)}</strong></div>
-          </div>
-          <div className="info-group discrepancy-hero"><div className="info-label">3. Financial discrepancy</div>
-            <div className="discrepancy-amount money">{formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}</div>
-            <div className="muted-copy">Confidence {Math.round(Number(finding.confidence || finding.confidence_score || 0) * 100)}% · period {finding.period || '—'} · {finding.currency || 'USD'}</div>
-          </div>
-          <div className="info-group"><div className="info-label">4. Calculation / evidence chain</div>
-            <div className="detail-copy">{evidence.math || finding.math || '—'}</div>
-            <div className="muted-copy">{evidence.provenance || finding.provenance || '—'}</div>
-            {(finding.evidence_refs || []).map((ref) => <span key={ref} className="file-chip">{ref}</span>)}
+          <div><p className="eyebrow">Opportunity detail</p><h2>{joined.financial_right?.title || joined.title || joined.finding_id}</h2><div className="detail-counterparty">{joined.counterparty?.customer_name || joined.customer_name || 'Unknown counterparty'} · {joined.counterparty?.customer_id || joined.customer_id || '—'}</div></div>
+          <div className="header-actions">
+            {legal.map((action) => <span key={action}>{actionButton(action, detailFinding)}</span>)}
+            <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
           </div>
         </div>
-        <div className="info-group"><div className="info-label">5. Status and audit history</div>
-          <span className={`status-pill status-${finding.status}`}>{String(finding.status || 'open').replace(/_/g, ' ')}</span>
+        {renderRealizationForm(detailFinding)}
+        <div className="info-group"><p className="eyebrow">Where the money was found</p>
+          {gated ? renderGate() : (
+            <>
+              <p className="story-paragraph">
+                {joined.detail || joined.financial_right?.title || joined.title || joined.finding_id}{' '}
+                Recoup read this in {fileName ? `“${fileName}”` : 'the agreement'}{clauseLabel ? `, clause ${clauseLabel}` : ''}, and checked it against the {joined.period || '—'} billing period.
+              </p>
+              {joined.assumption && <p className="muted-copy">Assumption: {joined.assumption}</p>}
+            </>
+          )}
+        </div>
+        <div className="info-group discrepancy-hero"><div className="info-label">Financial discrepancy</div>
+          <div className="discrepancy-amount money">{formatCurrency(joined.recoverable_difference ?? joined.monthly_recoverable)}</div>
+          <div className="discrepancy-cols">
+            <div><span className="metric-label">Expected</span><div className="money">{formatCurrency(joined.expected_value)}</div></div>
+            <div><span className="metric-label">Actual</span><div className="money">{formatCurrency(joined.actual_value)}</div></div>
+            <div><span className="metric-label">Difference</span><div className="money">{formatCurrency(joined.recoverable_difference ?? joined.monthly_recoverable)}</div></div>
+          </div>
+          <div className="muted-copy">Confidence {Math.round(Number(joined.confidence || joined.confidence_score || 0) * 100)}% · period {joined.period || '—'} · {joined.currency || 'USD'}</div>
+        </div>
+        <div className="info-group"><div className="info-label">Proof</div>
+          {gated ? renderGate() : (
+            <div className="detail-grid detail-grid-two">
+              <div><div className="info-label">Agreement clause</div>
+                <div className="provenance-box">{clauseLabel || '—'}<br />{evidence.clause_text || joined.clause_text || 'No clause text on file.'}</div>
+              </div>
+              <div><div className="info-label">Calculation</div>
+                <div className="detail-copy math-copy">{evidence.math || joined.math || '—'}</div>
+                <div className="muted-copy">{evidence.provenance || joined.provenance || '—'}</div>
+              </div>
+            </div>
+          )}
+          {(joined.evidence_refs || []).map((ref) => <span key={ref} className="file-chip">{ref}</span>)}
+        </div>
+        <div className="info-group"><div className="info-label">Status and history</div>
+          <span className={`status-pill status-${joined.status}`}>{String(joined.status || 'open').replace(/_/g, ' ')}</span>
           <ul className="upload-history">
-            {(finding.recovery_history || []).map((h, i) => <li key={i}><span>{h.event}{h.decision ? ` · ${h.decision}` : ''}</span><span className="muted-copy">{h.ts}</span></li>)}
+            {(joined.recovery_history || []).map((h, i) => <li key={i}><span>{h.event}{h.decision ? ` · ${h.decision}` : ''}</span><span className="muted-copy">{h.ts}</span></li>)}
           </ul>
         </div>
-        <div className="info-group"><div className="info-label">6. Allowed next action</div>
-          {legal.length === 0 ? <p className="muted-copy">No legal actions remain for this status.</p> : <div className="review-actions">{legal.map((action) => <span key={action}>{actionButton(action, detailFinding)}</span>)}</div>}
-          {renderRealizationForm(detailFinding)}
-        </div>
-        {['approved', 'invoiced', 'disputed'].includes(finding.status) && (
+        {['approved', 'invoiced', 'disputed'].includes(joined.status) && (
           <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshAll} />
         )}
         {ledger && (
-          <div className="info-group"><div className="info-label">7. Realization ledger</div>
+          <div className="info-group"><div className="info-label">Realization ledger</div>
             <div className="detail-grid">
               <div><span className="metric-label">Potential</span><div className="money">{formatCurrency(ledger.potential_value)}</div></div>
               <div><span className="metric-label">Requested</span><div className="money">{formatCurrency(ledger.approved_requested_value)}</div></div>
