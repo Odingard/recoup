@@ -178,6 +178,7 @@ function App() {
   const [billingPeriod, setBillingPeriod] = useState(DEFAULT_PERIOD)
   const [, setFindings] = useState([])
   const [allFindings, setAllFindings] = useState([])
+  const [findingsLoaded, setFindingsLoaded] = useState(false)
   const [running, setRunning] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [uploadedContracts, setUploadedContracts] = useState([])
@@ -303,10 +304,14 @@ function App() {
 
   const refreshFindings = useCallback(async () => {
     if (!apiReady) return
-    const [pending, all] = await Promise.all([apiRequest('/findings/pending'), apiRequest('/findings')])
-    void loadMetrics(); void loadAssurance(); void loadCommandCenter()
-    setFindings(Array.isArray(pending) ? pending : [])
-    setAllFindings(Array.isArray(all) ? all : [])
+    try {
+      const [pending, all] = await Promise.all([apiRequest('/findings/pending'), apiRequest('/findings')])
+      setFindings(Array.isArray(pending) ? pending : [])
+      setAllFindings(Array.isArray(all) ? all : [])
+    } finally {
+      setFindingsLoaded(true)
+      void loadMetrics(); void loadAssurance(); void loadCommandCenter()
+    }
   }, [apiReady, apiRequest, loadMetrics, loadAssurance, loadCommandCenter])
 
   const loadContracts = useCallback(async () => {
@@ -437,7 +442,7 @@ function App() {
     try { await signOut(auth) } finally {
       setSessionMode(null)
       setFirebaseUser(null)
-      setFindings([]); setAllFindings([])
+      setFindings([]); setAllFindings([]); setFindingsLoaded(false)
       setStatusMessage('')
       setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
     }
@@ -737,7 +742,7 @@ function App() {
     }
     try {
       const result = await apiRequest('/account/data', { method: 'DELETE', body: { confirm } })
-      setFindings([]); setAllFindings([]); setUploadedContracts([]); setMetrics(null)
+      setFindings([]); setAllFindings([]); setFindingsLoaded(false); setUploadedContracts([]); setMetrics(null)
       setStatusMessage(result?.status === 'deleted' ? 'All account data deleted.' : (result?.message || 'Deletion did not complete.'))
     } catch (error) {
       console.error(error); setStatusMessage(failureMessage('Account data deletion failed', error))
@@ -977,7 +982,18 @@ function App() {
 
   const renderOpportunities = () => {
     const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
-    if (route.id && selectedCase) return renderOpportunityDetail(selectedCase)
+    if (route.id) {
+      if (selectedCase) return renderOpportunityDetail(selectedCase)
+      if (findingsLoaded) {
+        return (
+          <section className="panel-card opportunity-detail">
+            <div className="panel-heading"><div><p className="eyebrow">Opportunity detail</p><h2>Opportunity not found</h2></div><button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button></div>
+            <p className="muted-copy">No opportunity exists for this link in the current account.</p>
+          </section>
+        )
+      }
+      return <section className="panel-card"><p className="muted-copy">Loading selected opportunity…</p></section>
+    }
     return (
       <section className="panel-card">
         <div className="panel-heading"><div><p className="eyebrow">Opportunities</p><h2>Working queue</h2></div><span className="hint-pill">{cases.length} cases</span></div>

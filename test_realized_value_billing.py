@@ -365,7 +365,8 @@ def test_tenant_isolation_events(monkeypatch):
     mine = client.get("/api/findings/f1/recovery-events", headers=_auth("acct1"))
     assert len(mine.json()["events"]) == 1
     other = client.get("/api/findings/f1/recovery-events", headers=_auth("acct2"))
-    assert other.json()["events"] == []
+    assert other.status_code == 404
+    assert other.json() == {"detail": "Finding not found."}
     # acct2 cannot create events against acct1's finding
     r = client.post("/api/findings/f1/recovery-events", headers=_auth("acct2"),
                     json={"recovery_basis": "cash_payment", "realized_value": 5.0})
