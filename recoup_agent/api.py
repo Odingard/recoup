@@ -741,15 +741,31 @@ def _pdf_has_text_layer(file_path: str) -> tuple[bool, str | None, int]:
     return True, None, pages
 
 
-def _extract_and_normalize_contract(file_path: str) -> tuple[dict | None, list[dict], str | None]:
+def _extract_and_normalize_contract(file_path: str, filename: str | None = None) -> tuple[dict | None, list[dict], str | None]:
     extracted = extract_entitlements(file_path)
     if not isinstance(extracted, ContractEntitlements):
         return None, [], "Could not extract terms; please confirm manually."
     if not extracted.entitlements:
         return None, [], "Could not extract terms; please confirm manually."
-    normalized = normalize_contract_entitlements(extracted)
+    file_name = filename or Path(file_path).name
+    source = [({**e.model_dump(), "source_file": file_name} if not e.source_file else e.model_dump())
+              for e in extracted.entitlements]
+    from .ingestion_doc import Entitlement as _Ent
+    normalized = normalize_contract_entitlements(ContractEntitlements(
+        customer_name=extracted.customer_name,
+        entitlements=[_Ent(**e) for e in source]))
     if not normalized.get("customer_name") or normalized.get("customer_name") == "Unknown":
         return None, [], "Could not extract terms; please confirm manually."
+    normalized["file_name"] = file_name
+    normalized["source_entitlements"] = source
+    normalized["documents"] = [{
+        "file_name": file_name,
+        "role": (extracted.document or {}).get("role", "master"),
+        "title": (extracted.document or {}).get("title"),
+        "effective_date": (extracted.document or {}).get("effective_date"),
+        "amendment_number": (extracted.document or {}).get("amendment_number"),
+    }]
+    normalized.setdefault("term_history", {})
     return normalized, [], None
 
 
@@ -2168,11 +2184,11 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
                 if pages > MAX_SCANNED_PDF_PAGES:
                     return _needs_review_payload(
                         f"Scanned PDF exceeds {MAX_SCANNED_PDF_PAGES} pages ({pages}); "
-                        "split it into smaller documents or enter terms manually.")
+                        "split it into smaller documents and re-upload.")
                 ocr = True
 
         try:
-            normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
+            normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path, filename)
         except DocumentTooLargeError as exc:
             return _needs_review_payload(str(exc))
         except UnreadableDocumentError:

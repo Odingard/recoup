@@ -59,10 +59,12 @@ class Entitlement(BaseModel):
     page: Optional[int] = None
     section_ref: Optional[str] = None
     verification: Optional[dict] = None
+    source_file: Optional[str] = None
 
 class ContractEntitlements(BaseModel):
     customer_name: str = Field(description="The name of the customer the contract is with.")
     entitlements: List[Entitlement]
+    document: Optional[dict] = None
 
 def _extract_single_shot(file_path: str) -> ContractEntitlements:
     """Legacy single-shot extractor retained for controlled rollback."""
@@ -145,10 +147,12 @@ def extract_entitlements(file_path: str, *, client=None, model: str | None = Non
             mime_type = _MIME_OVERRIDES.get(suffix, "application/pdf" if suffix == ".pdf" else "image/jpeg")
             with open(file_path, "rb") as fh:
                 pages = get_ocr_adapter(client=client).page_texts(fh.read(), mime_type)
-        result = extract_pages(pages, source_kind, client=client, model=model)
+        result = extract_pages(pages, source_kind, client=client, model=model,
+                               file_name=os.path.basename(file_path))
         verified = verify(result, pages, client=client, model=model)
         entitlements = [Entitlement(**item.model_dump()) for item in verified]
-        return ContractEntitlements(customer_name=result.customer_name, entitlements=entitlements)
+        return ContractEntitlements(customer_name=result.customer_name, entitlements=entitlements,
+                                    document=result.document.model_dump())
     except DocumentTooLargeError:
         raise
     except UnreadableDocumentError:

@@ -58,6 +58,19 @@ const CLAUSE_REF_LABELS = {
   committed_minimum: 'Committed minimum', overage: 'Overage', discount: 'Discount', escalator: 'Escalator',
 }
 
+const DOC_ROLE_LABELS = { master: 'Master agreement', order_form: 'Order form', exhibit: 'Exhibit', sow: 'SOW', other: 'Document' }
+const docRoleLabel = (doc) => doc?.role === 'amendment' ? `Amendment${doc.amendment_number ? ` ${doc.amendment_number}` : ''}` : (DOC_ROLE_LABELS[doc?.role] || 'Document')
+const TERM_HISTORY_KEYS = { committed_minimum_monthly: 'committed_minimum', annual_escalator_pct: 'escalator', escalator_effective_date: 'escalator', auto_renew_months: 'auto_renewal', term_start: 'term_start', term_end: 'term_end', included_units: 'included_units', overage_rate: 'overage_rate', renewal_notice_days: 'renewal_notice_days', committed_seats: 'committed_seats', seat_price: 'seat_price' }
+
+function termHistoryNote(contract, metaKey) {
+  const history = contract?.term_history?.[TERM_HISTORY_KEYS[metaKey] || metaKey]
+  if (!history || history.length < 2) return null
+  const last = history[history.length - 1]
+  const doc = (contract?.documents || []).find((d) => d.file_name === last.source_file)
+  const label = doc ? docRoleLabel(doc) : (last.source_file || 'a later document')
+  return `changed by ${label}${last.effective_date ? ` (${last.effective_date})` : ''}`
+}
+
 function caseStageLabel(caseItem) {
   const status = caseItem?.status || 'open'
   if (status === 'open') return caseItem?.verified ? 'Approve' : 'Prove'
@@ -1262,6 +1275,7 @@ function App() {
     const clauseMeta = contract?.term_meta?.[clauseField] || {}
     const clauseSection = clauseMeta.section_ref || joined.section_ref
     const clausePage = clauseMeta.page || joined.page
+    const sourceFileName = clauseMeta.source_file || fileName
     const verifiedQuote = clauseMeta.verification?.quote_found && clauseMeta.verification?.model_check === 'supports'
     const gated = joined.locked || proofLocked
     return (
@@ -1279,7 +1293,7 @@ function App() {
             <>
               <p className="story-paragraph">
                 {joined.detail || joined.financial_right?.title || joined.title || joined.finding_id}{' '}
-                Recoup read this in {fileName ? `“${fileName}”` : 'the agreement'}{clauseSection ? `, ${clauseSection}` : clauseLabel ? `, ${clauseLabel}` : ''}{clausePage ? `, page ${clausePage}` : ''}, and checked it against the {joined.period || '—'} billing period.
+                Recoup read this in {sourceFileName ? `“${sourceFileName}”` : 'the agreement'}{clauseSection ? `, ${clauseSection}` : clauseLabel ? `, ${clauseLabel}` : ''}{clausePage ? `, page ${clausePage}` : ''}, and checked it against the {joined.period || '—'} billing period.
               </p>
               {joined.assumption && <p className="muted-copy">Assumption: {joined.assumption}</p>}
             </>
@@ -1593,8 +1607,9 @@ function App() {
           return (
           <div key={contract.customer_id} className="agreement-card">
             <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : needsReview ? 'status-review' : 'status-read'}`}>{contract.confirmed ? `Confirmed by ${shortActor(contract.confirmed_by)}` : needsReview ? 'Needs your review' : 'Read by Recoup'}</span></div>
+            {(contract.documents || []).length > 0 && <div className="term-chips doc-chips">{contract.documents.map((doc, i) => <span key={`${doc.file_name}-${i}`} className="term-chip">{docRoleLabel(doc)} · {doc.file_name}{doc.effective_date ? ` · eff. ${doc.effective_date}` : ''}</span>)}</div>}
             <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
-            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && meta.verification?.model_check === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
+            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && meta.verification?.model_check === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{termHistoryNote(contract, key) ? ` · ${termHistoryNote(contract, key)}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
             {provenances.length === 1 && <div className="muted-copy source-line">Source: {provenances[0]}</div>}
             {needsReview && !contract.confirmed && <><button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm as read'}</button><span className="muted-copy review-note">Recoup wasn't sure about the amber terms — confirm or re-upload a clearer copy.</span></>}
             <details><summary>Financial rights</summary>

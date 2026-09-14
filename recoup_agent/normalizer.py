@@ -19,6 +19,8 @@ def _term_meta(ent: Entitlement) -> dict:
         meta["section_ref"] = ent.section_ref
     if ent.verification:
         meta["verification"] = ent.verification
+    if ent.source_file:
+        meta["source_file"] = ent.source_file
     return meta
 
 
@@ -57,6 +59,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
                 "confidence": float(ent.confidence_score),
                 **({"page": ent.page} if ent.page is not None else {}),
                 **({"section_ref": ent.section_ref} if ent.section_ref else {}),
+                **({"source_file": ent.source_file} if ent.source_file else {}),
             })
         elif ent.term_type == "included_units":
             normalized["included_units"] = int(ent.value)
@@ -126,6 +129,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             "provenance": latest["provenance"],
             **({"page": latest["page"]} if latest.get("page") is not None else {}),
             **({"section_ref": latest["section_ref"]} if latest.get("section_ref") else {}),
+            **({"source_file": latest["source_file"]} if latest.get("source_file") else {}),
         }
         for e in normalized["minimum_schedule"]:
             e.pop("confidence", None)
@@ -139,6 +143,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             "provenance": tier_provenance[0] if tier_provenance else "",
             **({"page": tiers[0]["page"]} if tiers and tiers[0].get("page") is not None else {}),
             **({"section_ref": tiers[0]["section_ref"]} if tiers and tiers[0].get("section_ref") else {}),
+            **({"source_file": tiers[0]["source_file"]} if tiers and tiers[0].get("source_file") else {}),
         }
 
     if normalized["discounts"]:

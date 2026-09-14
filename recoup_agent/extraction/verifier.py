@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
@@ -88,7 +91,14 @@ def verify(result, pages: list[Page], *, client=None, model: str | None = None) 
         batch = eligible[start:start + 20]
         payload = [{"index": index, "page": ent.page, "page_text": page_map.get(ent.page, ""),
                     "term": ent.model_dump()} for index, ent, _ in batch]
-        for item in _model_check(client, model, payload):
+        try:
+            items = _model_check(client, model, payload)
+        except Exception as exc:
+            logger.warning("model verification batch failed; marking items unclear: %s", exc)
+            items = [VerificationItem(index=index, verdict="unclear",
+                                      reason=f"model verification unavailable: {exc}")
+                     for index, _ent, _found in batch]
+        for item in items:
             checks[item.index] = item
 
     verified: list[VerifiedEntitlement] = []

@@ -52,3 +52,26 @@ def build_long_contract(seed: int, pages: int = 220) -> tuple[str, list[dict]]:
             paragraphs.append('Amendment No. 1. Effective 2026-07-01, the committed monthly Platform Fee is reduced to $42,000.')
         pages_text.append("\n".join(paragraphs))
     return "\n\f\n".join(pages_text), expected
+
+
+def build_long_contract_bundle(seed: int, pages: int = 220) -> tuple[list[tuple[str, str]], list[dict]]:
+    """Same planted terms as build_long_contract, but emitted as three separate
+    documents (master, exhibit, amendment) for document-graph evaluation."""
+    text, expected = build_long_contract(seed, pages)
+    page_texts = text.split("\n\f\n")
+    amendment_page = None
+    exhibit_page = None
+    for i, page in enumerate(page_texts):
+        if "Amendment No. 1" in page:
+            amendment_page = i
+        if "Exhibit B" in page:
+            exhibit_page = i
+    amendment_text = page_texts.pop(amendment_page)
+    exhibit_text = page_texts.pop(exhibit_page)
+    master_text = "\n\f\n".join(page_texts)
+    docs = [
+        ("master-agreement.txt", "Master Subscription Agreement\n" + master_text),
+        ("exhibit-b.txt", "Exhibit B\n" + exhibit_text),
+        ("amendment-1.txt", amendment_text),
+    ]
+    return docs, expected

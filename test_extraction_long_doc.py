@@ -30,6 +30,10 @@ class FakeModels:
 
     def generate_content(self, **kwargs):
         self.calls.append(kwargs)
+        config = kwargs.get("config")
+        schema = getattr(config, "response_schema", None)
+        if getattr(schema, "__name__", "") == "DocumentProfile":
+            return FakeResponse('{"role":"other","title":"Agreement","counterparty":"Acme"}')
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -87,14 +91,14 @@ def test_context_cache_path_deletes_cache_and_falls_back(monkeypatch):
     assert result.cached is True
     assert len(client.caches.created) == 1
     assert client.caches.deleted == [{"name": "cache/1"}]
-    assert len(client.models.calls) == 4
+    assert len(client.models.calls) == 5  # classify + 4 ontology families
 
     failing = FakeClient([FakeResponse(payload)] * 8)
     failing.caches.create = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("cache unavailable"))
     failing.caches.delete = lambda **kwargs: failing.caches.deleted.append(kwargs)
     result = extract_pages(pages, "text", client=failing)
     assert result.cached is False
-    assert len(failing.models.calls) > 4
+    assert len(failing.models.calls) > 5
 
 
 def test_verification_confidence_math_and_quote_search(monkeypatch):
@@ -109,6 +113,20 @@ def test_verification_confidence_math_and_quote_search(monkeypatch):
     verified = verify(SimpleNamespace(entitlements=[missing]), [Page(1, "different text")], client=FakeClient([]))
     assert verified[0].verification["quote_found"] is False
     assert verified[0].confidence_score == 0.5
+
+
+def test_model_check_failure_marks_unclear_not_fatal(monkeypatch):
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda _: None)
+    ent = PageAnchoredEntitlement(term_type="committed_minimum", value=50000,
+                                  confidence_score=0.95,
+                                  provenance="The minimum fee is $50,000.", page=1)
+    client = FakeClient([RuntimeError("503 UNAVAILABLE"), RuntimeError("503 UNAVAILABLE"),
+                         RuntimeError("503 UNAVAILABLE")])
+    verified = verify(SimpleNamespace(entitlements=[ent]),
+                      [Page(1, "The minimum fee is $50,000.")], client=client)
+    assert verified[0].verification["model_check"] == "unclear"
+    assert verified[0].confidence_score == pytest.approx(0.7)
 
 
 def test_retry_and_timeout_configuration(monkeypatch):
