@@ -21,9 +21,12 @@ def _dt(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _days_between(later: datetime | None, earlier: datetime | None) -> float | None:

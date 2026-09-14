@@ -25,6 +25,7 @@ See `recoup_agent/.env.example`. Nothing is hardcoded — set these at deploy ti
 | `RECOUP_STRIPE_APP_STATE_SECRET` | Optional signing secret for OAuth state tokens |
 | `RECOUP_WEB_BASE_URL` | Public Recoup web app URL used after Stripe redirects back |
 | `RECOUP_BILLING_STRIPE_API_KEY` | Dedicated Stripe key used only for Recoup success-fee billing |
+| `RECOUP_REPORT_SHARE_SECRET` | HMAC key that signs public report share links; deploy generates it once per project in Secret Manager (`recoup-report-share-secret`). Unset → `POST /api/report/share` returns 503 and sharing is disabled |
 | `RECOUP_BILLING_SOURCE` | `stripe` to reconcile from Stripe instead of the synthetic/Firestore book |
 | `PORT` | Server port (Cloud Run injects this) |
 

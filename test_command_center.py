@@ -85,6 +85,15 @@ def test_realized_nets_reversals_and_matches_success_fee():
     assert len(case["realization_history"]) == 2
 
 
+def test_date_only_realization_does_not_raise_with_aware_created_at():
+    finding = _f("date-only", "recovered", 500,
+                  created="2026-09-01T00:00:00+00:00")
+    event = _real("date-only", 500)
+    event["realized_at"] = "2026-09-14"
+    out = build_command_center([finding], [event], [], [], now=NOW)
+    assert isinstance(out["executive_summary"]["avg_days_to_recovery"], float)
+
+
 def test_partial_realization_contributes_realized_but_stays_in_recovery():
     findings = [_f("p1", "approved", 500, created="2026-06-01T00:00:00+00:00")]
     events = [_real("p1", 100)]
