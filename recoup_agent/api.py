@@ -759,9 +759,16 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
         "recovery_events_count": len(
             [e for e in all_events if e.get("event_type") == "realization"]),
     }
-    if finding.get("status") != "recovered":
-        _transition_fields(account_id, finding["finding_id"], "recovered",
-                           f"recovery_realized_{recovery_basis}", fields=finding_fields)
+    requested = rv.quantize(finding.get("monthly_recoverable") or 0)
+    closes_case = recovery_basis == "settlement" or net >= requested
+    if finding.get("status") == "recovered":
+        db.update_finding_fields(account_id, finding["finding_id"],
+                                 finding_fields, "recovery_realized")
+    elif closes_case:
+        _transition_fields(
+            account_id, finding["finding_id"], "recovered",
+            f"recovery_realized_{recovery_basis}",
+            fields={**finding_fields, "recovered_at": event.realized_at})
     else:
         db.update_finding_fields(account_id, finding["finding_id"],
                                  finding_fields, "recovery_realized")
@@ -975,6 +982,7 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
     }
     fee_charge = None
     recovered_amount = evidence.paid_amount
+    result_status = "recovered"
     if account_id is not None:
         finding = _get_finding_or_404(account_id, finding_id)
         if finding.get("status", "open") == "open":
@@ -1015,7 +1023,9 @@ def mark_finding_recovered(finding_id: str, evidence: PaymentEvidence, user: dic
                 db.update_recovery_action(account_id, action,
                                           "realization_linked")
         recovered_amount = net
-    return {"status": "recovered", "finding_id": finding_id,
+        updated = db.get_finding(account_id, finding_id) or {}
+        result_status = updated.get("status") or result_status
+    return {"status": result_status, "finding_id": finding_id,
             "fee_charge": fee_charge, "recovered_amount": recovered_amount,
             "payment": payment}
 
@@ -1436,7 +1446,9 @@ def sync_recoveries(user: dict = Depends(verify_token)):
                 continue
             if fee:
                 fee_charges.append(fee)
-            recovered.append(f["finding_id"])
+            updated = db.get_finding(account_id, f["finding_id"]) or {}
+            if updated.get("status") == "recovered":
+                recovered.append(f["finding_id"])
         except Exception as exc:
             errors.append({"finding_id": f.get("finding_id"), "error": str(exc)})
     return {"status": "success", "checked": checked, "recovered": recovered,
@@ -1445,11 +1457,16 @@ def sync_recoveries(user: dict = Depends(verify_token)):
 
 @app.post("/api/billing/charge-success-fee")
 def charge_success_fee(user: dict = Depends(verify_token)):
-    """Collect Recoup's 20% success fee on recovered dollars. Charges the card
-    on file per finding; falls back to a mailed invoice when no card exists."""
+    """Collect Recoup's 20% success fee on recovered dollars using the card
+    on file."""
     account_id = _account_id(user)
     if _is_header_sample(user):
         return _needs_review_payload("Sample mode does not bill a success fee.")
+    billing = (db.get_account_billing(account_id) or {}) if account_id else {}
+    if account_id is not None and not billing.get("payment_method_id"):
+        raise HTTPException(
+            status_code=402,
+            detail="Add a payment method in Settings before billing the success fee.")
     from .billing import realized_value as rv
     findings = _findings_for(account_id)
     metrics = compute_metrics(
@@ -1460,11 +1477,13 @@ def charge_success_fee(user: dict = Depends(verify_token)):
     # event model existed get a single synthesized legacy event (billed once).
     billable_events = []
     for f in findings:
-        if f.get("status") != "recovered":
+        if f.get("status") not in rv.BILLABLE_FINDING_STATUSES:
             continue
         events = db.get_recovery_events(account_id, f["finding_id"]) \
             if account_id else []
         if not events:
+            if f.get("status") != "recovered":
+                continue
             amount = f.get("recovered_amount") or f.get("monthly_recoverable") or 0
             if (f.get("fee_charge") or {}).get("status") in {"paid", "pending"} \
                     or amount <= 0:
@@ -1483,7 +1502,6 @@ def charge_success_fee(user: dict = Depends(verify_token)):
             if rv.billing_eligibility(ev, f, events)[0]:
                 billable_events.append((f, ev))
 
-    billing = (db.get_account_billing(account_id) or {}) if account_id else {}
     if billing.get("payment_method_id"):
         charged = []
         for f, ev in billable_events:

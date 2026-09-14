@@ -84,6 +84,21 @@ const emptyContractDraft = {
   },
 }
 
+function apiErrorMessage(text) {
+  let detail = text
+  try {
+    const parsed = JSON.parse(text)
+    detail = parsed?.detail ?? parsed?.message ?? text
+  } catch { /* keep raw text */ }
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.detail ||
+      (detail.status === 'duplicate'
+        ? 'This external reference was already recorded for this case.'
+        : JSON.stringify(detail))
+  }
+  return String(detail || 'Request failed')
+}
+
 function formatCurrency(value) {
   return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
@@ -254,9 +269,7 @@ function App() {
     }
     const res = await fetch(`${API_BASE}${path}`, { ...options, headers, body })
     if (!res.ok) {
-      let detail = await res.text()
-      try { detail = JSON.parse(detail)?.detail || detail } catch { /* keep raw text */ }
-      throw new Error(detail)
+      throw new Error(apiErrorMessage(await res.text()))
     }
     const text = await res.text()
     const parsed = text ? JSON.parse(text) : null
@@ -655,7 +668,7 @@ function App() {
   const exportFindings = async () => {
     try {
       const res = await authenticatedFetch('/findings/export')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = 'recoup_findings.csv'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
@@ -676,7 +689,7 @@ function App() {
   const downloadReportPdf = async () => {
     try {
       const res = await authenticatedFetch('/report.pdf')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = 'recoup_report.pdf'; link.click(); URL.revokeObjectURL(url)
     } catch (error) {
@@ -725,7 +738,7 @@ function App() {
     try {
       const params = trueupSender ? `?sender=${encodeURIComponent(trueupSender)}` : ''
       const res = await authenticatedFetch(`/trueup/${customerId}.pdf${params}`)
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw new Error(apiErrorMessage(await res.text()))
       const blob = await res.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a')
       link.href = url; link.download = `trueup_${customerId}.pdf`; link.click(); URL.revokeObjectURL(url)
       setStatusMessage(`True-up pack for ${customerName || customerId} downloaded.`)
@@ -1082,8 +1095,8 @@ function App() {
         {[['recovered_to_date', 'Recovered to date'], ['recovered_this_month', 'Recovered this month'], ['success_fee_to_date', 'Success fee to date'], ['success_fee_this_month', 'Success fee this month'], ['invoiced_awaiting_payment', 'Invoiced awaiting payment'], ['written_off', 'Written off'], ['potential_monthly_recoverable', 'Potential monthly recoverable']].map(([key, label]) => <div key={key} className="metric-card"><span className="metric-label">{label}</span><strong className="metric-value money">{formatCurrency(metrics?.[key])}</strong></div>)}
       </div>
       <div className="panel-section"><div className="info-label">Recovery cases</div>
-        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
-          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name || c.customer_name || '—'}{c.counterparty?.customer_id || c.customer_id ? ` · ${c.counterparty?.customer_id || c.customer_id}` : ''}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Net realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name || c.customer_name || '—'}{c.counterparty?.customer_id || c.customer_id ? ` · ${c.counterparty?.customer_id || c.customer_id}` : ''}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.net_realized)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
           {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).length === 0 && <tr><td colSpan="5" className="muted-copy">No recovery cases yet — approve an opportunity first.</td></tr>}
         </tbody></table></div>
       </div>
@@ -1098,7 +1111,12 @@ function App() {
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={exportFindings}><Download size={15} /> Export findings CSV</button>
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={openAuditReport}><FileText size={15} /> Audit report</button>
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={downloadReportPdf}><Download size={15} /> PDF report</button>
-        <button className="btn-primary" onClick={chargeSuccessFee}>Bill success fee this month</button>
+        <button
+          className="btn-primary"
+          onClick={chargeSuccessFee}
+          disabled={billing?.card_on_file === false}
+          title={billing?.card_on_file === false ? 'Add a payment method in Settings before billing the success fee.' : undefined}
+        >Bill success fee this month</button>
       </div>
     </section>
   )

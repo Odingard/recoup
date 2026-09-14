@@ -128,6 +128,11 @@ def _wire(monkeypatch, store, *, billing_card=True, paid_status="paid",
     monkeypatch.setattr(api.db, "update_recovery_event_fields",
                         lambda a, eid, fields, _ev:
                         store.events[(a, eid)].update(fields))
+    monkeypatch.setattr(api.db, "get_recovery_actions",
+                        lambda a, finding_id=None: [])
+    monkeypatch.setattr(api.db, "save_outcome_record",
+                        lambda a, record: None)
+    monkeypatch.setattr(api.db, "get_audit_log", lambda *a: [])
     return TestClient(api.app), state
 
 
@@ -173,6 +178,76 @@ def test_two_partials_distinct_idempotency(monkeypatch):
     keys = [c["idempotency_key"] for c in state["invoice_creates"]]
     assert len(keys) == 2 and keys[0] != keys[1]
     assert store.findings[("acct1", "f1")]["recovered_amount"] == 8000.0
+
+
+def test_partial_then_full_realization_closes_case(monkeypatch):
+    store = _Store()
+    store.add_finding("acct1", "f1", monthly_recoverable=350.0)
+    client, state = _wire(monkeypatch, store)
+
+    first = client.post("/api/findings/f1/recovery-events", headers=_auth(),
+                        json={"recovery_basis": "cash_payment",
+                              "realized_value": 100.0,
+                              "external_reference": "pmt-partial"})
+    assert first.status_code == 200
+    assert first.json()["fee_amount"] == 20.0
+    finding = store.findings[("acct1", "f1")]
+    assert finding["status"] == "approved"
+    assert finding["recovered_amount"] == 100.0
+
+    ledger = client.get("/api/recovery-cases/f1/ledger", headers=_auth())
+    assert ledger.status_code == 200
+    assert ledger.json()["net_realized"] == 100.0
+    assert ledger.json()["outstanding_value"] == 250.0
+    assert ledger.json()["resolution_status"] == "partially_realized"
+    assert ledger.json()["fee"]["net_fee"] == 20.0
+
+    second = client.post("/api/findings/f1/recovery-events", headers=_auth(),
+                         json={"recovery_basis": "cash_payment",
+                               "realized_value": 250.0,
+                               "external_reference": "pmt-full"})
+    assert second.status_code == 200
+    assert second.json()["fee_amount"] == 50.0
+    assert store.findings[("acct1", "f1")]["status"] == "recovered"
+    assert len(state["invoice_creates"]) == 2
+
+    ledger = client.get("/api/recovery-cases/f1/ledger", headers=_auth()).json()
+    assert ledger["net_realized"] == 350.0
+    assert ledger["outstanding_value"] == 0.0
+    assert ledger["resolution_status"] == "resolved_full"
+    assert ledger["fee"]["net_fee"] == 70.0
+
+
+def test_settlement_below_requested_closes_as_settled(monkeypatch):
+    store = _Store()
+    store.add_finding("acct1", "f1", monthly_recoverable=350.0)
+    client, _ = _wire(monkeypatch, store)
+    r = client.post("/api/findings/f1/recovery-events", headers=_auth(),
+                    json={"recovery_basis": "settlement",
+                          "realized_value": 200.0,
+                          "external_reference": "settle-1"})
+    assert r.status_code == 200
+    assert r.json()["fee_amount"] == 40.0
+    assert store.findings[("acct1", "f1")]["status"] == "recovered"
+
+    ledger = client.get("/api/recovery-cases/f1/ledger", headers=_auth()).json()
+    assert ledger["net_realized"] == 200.0
+    assert ledger["outstanding_value"] == 0.0
+    assert ledger["settlement_shortfall"] == 150.0
+    assert ledger["resolution_status"] == "settled"
+
+
+def test_partially_realized_finding_can_be_written_off(monkeypatch):
+    store = _Store()
+    store.add_finding("acct1", "f1", monthly_recoverable=350.0)
+    client, _ = _wire(monkeypatch, store)
+    client.post("/api/findings/f1/recovery-events", headers=_auth(),
+                json={"recovery_basis": "cash_payment",
+                      "realized_value": 100.0})
+    r = client.post("/api/findings/f1/written-off", headers=_auth(),
+                    json={"reason": "uncollectible"})
+    assert r.status_code == 200
+    assert store.findings[("acct1", "f1")]["status"] == "written_off"
 
 
 def test_duplicate_external_reference_409_one_charge(monkeypatch):
@@ -248,7 +323,7 @@ def test_over_reversal_422_and_full_reversal_marks_finding(monkeypatch):
     assert full.status_code == 200
     f = store.findings[("acct1", "f1")]
     assert f["recovered_amount"] == 0.0
-    assert f["status"] == "recovered"
+    assert f["status"] == "approved"
     assert f["metadata"]["fully_reversed"] is True
 
 
@@ -290,6 +365,18 @@ def test_unapproved_finding_409_no_charge(monkeypatch, status):
     assert not store.events
 
 
+def test_charge_success_fee_requires_card_before_stripe(monkeypatch):
+    store = _Store()
+    store.add_finding("acct1", "f1")
+    client, state = _wire(monkeypatch, store, billing_card=False)
+    r = client.post("/api/billing/charge-success-fee", headers=_auth())
+    assert r.status_code == 402
+    assert r.json()["detail"] == (
+        "Add a payment method in Settings before billing the success fee.")
+    assert not state["invoice_creates"]
+    assert not state["items"]
+
+
 def test_stripe_failure_error_then_retry_charges_once(monkeypatch):
     store = _Store()
     store.add_finding("acct1", "f1")
@@ -300,7 +387,7 @@ def test_stripe_failure_error_then_retry_charges_once(monkeypatch):
                           "external_reference": "pmt-e"})
     assert r.status_code == 200
     assert r.json()["fee_status"] == "error"
-    assert store.findings[("acct1", "f1")]["status"] == "recovered"
+    assert store.findings[("acct1", "f1")]["status"] == "approved"
 
     # retry via charge-success-fee once Stripe is healthy again
     _fake, state2 = _install_fake_stripe(monkeypatch)
@@ -378,15 +465,15 @@ def test_legacy_recovered_endpoint_contract(monkeypatch):
     store.add_finding("acct1", "f1", status="invoiced")
     client, state = _wire(monkeypatch, store)
     r = client.post("/api/findings/f1/recovered", headers=_auth(),
-                    json={"paid_amount": 3200.0, "payment_ref": "pmt-9"})
+                    json={"paid_amount": 10000.0, "payment_ref": "pmt-9"})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "recovered"
     assert body["finding_id"] == "f1"
-    assert body["recovered_amount"] == 3200.0
+    assert body["recovered_amount"] == 10000.0
     assert body["payment"]["ref"] == "pmt-9"
     assert body["fee_charge"]["status"] == "paid"
-    assert body["fee_charge"]["amount"] == 640.0
+    assert body["fee_charge"]["amount"] == 2000.0
     # the realization used cash_payment + payment_ref as external_reference
     evs = list(store.events.values())
     assert len(evs) == 1
