@@ -199,6 +199,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .upload-grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
 .dropzone { border-style: dashed; padding: 18px; position: relative; }
 .dropzone input { inset: 0; opacity: 0; position: absolute; }
+.dropzone.dragging { border-color: var(--green); box-shadow: 0 0 0 2px rgba(47, 191, 131, 0.18), 0 0 28px rgba(47, 191, 131, 0.14); }
 .recovery-form label { color: var(--text-muted); display: grid; font-size: 0.8rem; gap: 5px; }
 .recovery-form { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-top: 12px; padding: 12px; }
 .recovery-form .review-actions { grid-column: 1 / -1; }

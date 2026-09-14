@@ -32,7 +32,7 @@ const SHELL_LINKS = [
 const SPINE_TITLES = ['Watch', 'Detect', 'Prove', 'Prioritize', 'Act', 'Approve', 'Recover', 'Verify']
 
 const SPINE_DESCRIPTIONS = [
-  'Continuously monitor agreements, amendments, billing, usage and recovery evidence.',
+  'Re-evaluates the affected agreements whenever new documents are uploaded or an evaluation is run.',
   'Identify when financial reality diverges from what the agreement required.',
   'Tie the discrepancy to the source term, evidence, actual activity and calculation.',
   'Rank recovery opportunities by value, confidence, age and status.',
@@ -1566,7 +1566,12 @@ function App() {
     <section className="panel-card">
       <div className="panel-heading"><div><p className="eyebrow">Agreements</p><h2>Agreements and uploads</h2></div><span className="hint-pill">Recoup reads them — nothing to key in</span></div>
       <div className="upload-grid">
-        <div className="dropzone">
+        <div
+          className={`dropzone ${dragging ? 'dragging' : ''}`}
+          onDragOver={handleEmptyDragOver}
+          onDragLeave={handleEmptyDragLeave}
+          onDrop={handleEmptyDrop}
+        >
           <Upload size={22} /><div><strong>{bulkUploading ? 'Uploading…' : 'Drop files here or click to browse'}</strong><p>Drop contracts (PDF/DOCX/scans), billing + usage CSVs, or a ZIP of everything.</p></div>
           <input type="file" multiple disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
           {selectedFileName && <span className="file-chip">{selectedFileName}</span>}

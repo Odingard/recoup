@@ -114,7 +114,7 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                     "customer_id": None, "customer_name": name,
                     "term": "contract_extraction",
                     "reason": f"Extraction failed: {exc}",
-                    "suggested_action": "Enter terms manually.",
+                    "suggested_action": "Upload a clearer copy of the agreement (PDF or DOCX) so Recoup can read the terms.",
                 })
                 continue
             finally:
@@ -125,8 +125,8 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 result.needs_review.append({
                     "customer_id": None, "customer_name": name,
                     "term": "contract_extraction",
-                    "reason": "No contract terms extracted; enter terms manually.",
-                    "suggested_action": "Open the contract, enter the terms manually in Step 1, or upload a clearer/searchable copy.",
+                    "reason": "No contract terms extracted; the document may be unreadable.",
+                    "suggested_action": "Upload a clearer copy of the agreement (PDF or DOCX) so Recoup can read the terms.",
                 })
                 continue
             normalized = normalize_contract_entitlements(extracted)
