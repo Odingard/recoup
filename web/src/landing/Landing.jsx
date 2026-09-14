@@ -246,7 +246,7 @@ export default function Landing() {
           <div className="hero-copy">
             <div className="kicker">Revenue recovery</div>
             <h1>Find the revenue you're already owed.</h1>
-            <p className="lede">Recoup continuously checks what your agreements say you should receive against what was actually billed, paid, credited, or delivered — then shows your team what was missed and what can be recovered.</p>
+            <p className="lede">Recoup continuously checks what your agreements say you should receive against billing, usage, credits, and operational records — then shows your team what was missed and what can be recovered.</p>
             <div className="hero-cta">
               <a href="#pilot" className="btn">Run a Pilot</a>
               <a href="#how" className="btn ghost">See How Recoup Works</a>
@@ -278,11 +278,11 @@ export default function Landing() {
             <div className="stack" aria-hidden="true">
               <div className="layer rec"><span className="glyph">R</span>Recoup — the recovery layer</div>
               <div className="layer-row">
-                {['Billing', 'Usage', 'Payments', 'Credits', 'Operational evidence'].map((s) => <div key={s} className="layer">{s}</div>)}
+                {['Billing', 'Usage', 'Credits', 'Operational records'].map((s) => <div key={s} className="layer">{s}</div>)}
               </div>
               <div className="layer base">Agreements &amp; amendments</div>
             </div>
-            <p className="sub center">Recoup sits on top of the systems you already use. It continuously compares agreement terms against billing, usage, payments, credits and supporting operational evidence to identify financial value that was missed.</p>
+            <p className="sub center">Recoup sits on top of the systems you already use. It continuously compares agreement terms against billing, usage, credits and supporting operational evidence to identify financial value that was missed.</p>
           </div>
         </section>
 
