@@ -52,6 +52,7 @@ from .ingestion_doc import (
 )
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
+from .platform_admin import is_operator, operator_emails
 from .rights_graph import RightsGraphService
 from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
@@ -146,7 +147,36 @@ def verify_token(authorization: str | None = Header(default=None),
     uid = decoded.get("uid")
     email = decoded.get("email")
     account_id = decoded.get("account_id") or uid
+    if os.getenv("GOOGLE_CLOUD_PROJECT"):
+        try:
+            settings = db.get_platform_settings()
+            email_l = (email or "").lower()
+            invited = {str(e).lower() for e in settings.get("invited_emails") or []}
+            if (not settings.get("signup_enabled", True)
+                    and email_l not in operator_emails()
+                    and email_l not in invited
+                    and db.get_tenant(account_id) is None):
+                raise HTTPException(
+                    status_code=403,
+                    detail=("Recoup pilots are invite-only right now. "
+                            "Contact Odingard to be added."))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("platform signup gate unavailable; allowing sign-in",
+                           exc_info=True)
+        try:
+            db.touch_tenant(account_id, email)
+        except Exception:
+            logger.warning("tenant registry update failed for %s", account_id,
+                           exc_info=True)
     return {"uid": uid, "email": email, "account_id": account_id}
+
+
+def require_operator(user: dict = Depends(verify_token)) -> dict:
+    if not is_operator(user):
+        raise HTTPException(status_code=403, detail="Operator access required.")
+    return user
 
 
 def _startup_config_check():
@@ -280,6 +310,19 @@ class DisputeNote(BaseModel):
     reason: str = ""
 
 
+class AdminSettingsUpdate(BaseModel):
+    signup_enabled: bool
+    invited_emails: list[str] = []
+
+
+class AdminDemoUpdate(BaseModel):
+    demo: bool
+
+
+class AdminTenantReset(BaseModel):
+    confirm_account_id: str
+
+
 class RecoveryActionCreate(BaseModel):
     action_type: str
     draft_mode: str = "template"
@@ -345,6 +388,150 @@ def _account_id(user: dict) -> str | None:
 
 def _actor(user: dict) -> str:
     return user.get("email") or user.get("uid") or "unknown"
+
+
+def _admin_audit(user: dict, action: str, target_account_id: str | None = None,
+                 detail: dict | None = None) -> None:
+    db.append_admin_audit({
+        "operator_email": _actor(user),
+        "action": action,
+        "target_account_id": target_account_id,
+        "detail": detail or {},
+    })
+
+
+def _tenant_summary(tenant: dict) -> dict:
+    from .command_center import build_command_center
+    account_id = tenant.get("account_id")
+    summary = {
+        "account_id": account_id,
+        "email": tenant.get("email"),
+        "first_seen": tenant.get("first_seen"),
+        "last_seen": tenant.get("last_seen"),
+        "demo": bool(tenant.get("demo", False)),
+        "reset_at": tenant.get("reset_at"),
+    }
+    try:
+        findings = db.get_all_findings(account_id)
+        events = db.get_recovery_events(account_id)
+        audit = db.get_audit_log(account_id)
+        contracts = db.get_all_contracts(account_id)
+        actions = db.get_recovery_actions(account_id)
+        assurance_status = db.get_assurance_status(account_id) or {}
+        center = build_command_center(
+            findings, events, audit, contracts,
+            assurance_status=assurance_status,
+            recovery_actions=actions)
+        counts: dict[str, int] = {}
+        for finding in findings:
+            status = finding.get("status") or "open"
+            counts[status] = counts.get(status, 0) + 1
+        billing = db.get_account_billing(account_id) or {}
+        summary.update({
+            "findings_by_status": counts,
+            "potential_value": center.get("executive_summary", {})
+                                  .get("total_opportunity", 0.0),
+            "realized_value": center.get("metrics", {})
+                                .get("realized_value", 0.0),
+            "fee_billed": round(sum(
+                float((case.get("ledger") or {}).get("fee", {})
+                      .get("net_fee") or 0)
+                for case in center.get("cases", [])), 2),
+            "billing": {
+                "card_on_file": bool(billing.get("payment_method_id")
+                                     or billing.get("card_on_file")),
+            },
+            "assurance_last_evaluated": (
+                assurance_status.get("last_evaluated_at")
+                or assurance_status.get("last_evaluated")),
+        })
+    except Exception as exc:
+        summary["error"] = str(exc)
+    return summary
+
+
+@app.get("/api/admin/me")
+def get_admin_me(user: dict = Depends(verify_token)):
+    return {"operator": is_operator(user)}
+
+
+@app.get("/api/admin/settings")
+def get_admin_settings(_user: dict = Depends(require_operator)):
+    return db.get_platform_settings()
+
+
+@app.put("/api/admin/settings")
+def put_admin_settings(payload: AdminSettingsUpdate,
+                       user: dict = Depends(require_operator)):
+    invited: list[str] = []
+    seen: set[str] = set()
+    for raw in payload.invited_emails:
+        email = raw.strip().lower()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400,
+                                detail=f"Invalid invited email: {raw}")
+        if email not in seen:
+            seen.add(email)
+            invited.append(email)
+    settings = db.set_platform_settings({
+        "signup_enabled": payload.signup_enabled,
+        "invited_emails": invited,
+    })
+    _admin_audit(user, "settings_updated", detail=settings)
+    return settings
+
+
+@app.get("/api/admin/tenants")
+def list_admin_tenants(_user: dict = Depends(require_operator)):
+    return [_tenant_summary(tenant) for tenant in db.list_tenants()]
+
+
+@app.get("/api/admin/tenants/{account_id}")
+def get_admin_tenant(account_id: str, _user: dict = Depends(require_operator)):
+    tenant = db.get_tenant(account_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    summary = _tenant_summary(tenant)
+    summary["audit_log"] = db.get_audit_log(account_id)[-50:]
+    summary["assurance_events"] = db.get_assurance_events(account_id, limit=20)
+    return summary
+
+
+@app.post("/api/admin/tenants/{account_id}/demo")
+def set_admin_tenant_demo(account_id: str, payload: AdminDemoUpdate,
+                          user: dict = Depends(require_operator)):
+    if db.get_tenant(account_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    tenant = db.set_tenant_demo(account_id, payload.demo)
+    _admin_audit(user, "tenant_demo_set", account_id, {"demo": payload.demo})
+    return tenant
+
+
+@app.post("/api/admin/tenants/{account_id}/reset")
+def reset_admin_tenant(account_id: str, payload: AdminTenantReset,
+                       user: dict = Depends(require_operator)):
+    if payload.confirm_account_id != account_id:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_account_id must match the tenant account_id.")
+    tenant = db.get_tenant(account_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    if not tenant.get("demo"):
+        raise HTTPException(
+            status_code=409,
+            detail="Only demo tenants can be reset by an operator.")
+    deleted = db.delete_account_data(account_id)
+    tenant = db.set_tenant_demo(
+        account_id, True,
+        reset_at=datetime.now(timezone.utc).isoformat())
+    _admin_audit(user, "tenant_reset", account_id, {"deleted": deleted})
+    return {"status": "reset", "tenant": tenant, "deleted": deleted}
+
+
+@app.get("/api/admin/audit")
+def list_platform_admin_audit(_user: dict = Depends(require_operator)):
+    return db.list_admin_audit(limit=100)
 
 
 def _is_valid_period(period: str) -> bool:

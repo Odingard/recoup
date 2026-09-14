@@ -80,6 +80,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .manual-entry summary { cursor: pointer; font-weight: 700; }
 .styled-field { color: var(--text-muted); display: grid; font-size: 0.8rem; gap: 5px; }
 .styled-field input { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; }
+.admin-toggle { align-items: center; color: var(--text); display: flex; gap: 8px; margin-top: 10px; }
+.admin-invites, .admin-confirm { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); margin-top: 8px; padding: 9px 10px; width: 100%; }
+.admin-detail { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
 .provenance-box { background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 10px; }
 .upload-history { list-style: none; margin: 8px 0 0; padding: 0; }
 .upload-history-item { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 12px; justify-content: space-between; padding: 8px 0; }
