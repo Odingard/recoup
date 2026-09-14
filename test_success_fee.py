@@ -33,6 +33,44 @@ def test_success_fee_only_on_recovered():
     assert m["potential_monthly_recoverable"] == 1000 + 2000 + 5000 + 3000
 
 
+def test_partial_realization_counts_net_and_event_month():
+    now = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    finding = _finding("partial", 500, "approved")
+    events = [
+        {"finding_id": "partial", "event_type": "realization",
+         "recovery_basis": "cash_payment", "realized_value": 100.0,
+         "realized_at": "2026-07-03T00:00:00+00:00"},
+    ]
+    m = success_fee.compute_metrics([finding], events=events, now=now)
+    assert m["recovered_to_date"] == 100.0
+    assert m["success_fee_to_date"] == 20.0
+    assert m["recovered_count"] == 1
+    assert m["recovered_this_month"] == 100.0
+    assert m["success_fee_this_month"] == 20.0
+
+    full_finding = {**finding, "status": "recovered"}
+    full_event = {**events[0], "realized_value": 400.0}
+    full = success_fee.compute_metrics([full_finding],
+                                       events=[events[0], full_event],
+                                       now=now)
+    assert full["recovered_to_date"] == 500.0
+    assert full["success_fee_to_date"] == 100.0
+    assert full["recovered_count"] == 1
+
+    reversal = {"finding_id": "partial", "event_type": "reversal",
+                "recovery_basis": "cash_payment", "reversal_amount": 25.0,
+                "realized_at": "2026-07-10T00:00:00+00:00"}
+    m = success_fee.compute_metrics([finding], events=events + [reversal],
+                                    now=now)
+    assert m["recovered_to_date"] == 75.0
+    assert m["success_fee_to_date"] == 15.0
+    assert m["recovered_this_month"] == 75.0
+
+    prior_month = {**events[0], "realized_at": "2026-06-03T00:00:00+00:00"}
+    m = success_fee.compute_metrics([finding], events=[prior_month], now=now)
+    assert m["recovered_this_month"] == 0.0
+
+
 def test_recoup_billing_needs_config_without_any_key(monkeypatch):
     for name in ("RECOUP_BILLING_STRIPE_API_KEY", "STRIPE_API_KEY", "STRIPE", "RECOUP_CONNECTOR_TEST_STRIPE_API_KEY"):
         monkeypatch.delenv(name, raising=False)

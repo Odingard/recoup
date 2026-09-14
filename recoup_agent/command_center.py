@@ -127,16 +127,30 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
     contracts_by_cid = {c.get("customer_id"): c for c in contracts or []}
 
     amount = lambda f: float(f.get("monthly_recoverable") or 0)
+    event_net = lambda f: recovered_dollars(f, events_by_finding) \
+        if f.get("finding_id") in events_by_finding else 0.0
+    net_realized = lambda f: recovered_dollars(f, events_by_finding)
     open_f = [f for f in findings if (f.get("status") or "open") == "open"]
-    approved_f = [f for f in findings if f.get("status") == "approved"]
-    invoiced_f = [f for f in findings if f.get("status") == "invoiced"]
-    disputed_f = [f for f in findings if f.get("status") == "disputed"]
     recovered_f = [f for f in findings if f.get("status") == "recovered"]
     written_f = [f for f in findings if f.get("status") == "written_off"]
+    partially_realized_f = [
+        f for f in findings
+        if f.get("status") in {"approved", "invoiced", "disputed"}
+        and event_net(f) > 0]
+    partially_ids = {f.get("finding_id") for f in partially_realized_f}
+    approved_f = [f for f in findings
+                  if f.get("status") == "approved"
+                  and f.get("finding_id") not in partially_ids]
+    invoiced_f = [f for f in findings if f.get("status") == "invoiced"]
+    disputed_f = [f for f in findings if f.get("status") == "disputed"]
+    in_recovery_f = invoiced_f + disputed_f + [
+        f for f in partially_realized_f if f.get("status") == "approved"]
+    realized_f = [f for f in findings
+                  if f.get("status") == "recovered"
+                  or events_by_finding.get(f.get("finding_id"))]
 
     verified_open = [f for f in open_f if is_verified(f)]
-    realized_value = round(sum(recovered_dollars(f, events_by_finding)
-                               for f in recovered_f), 2)
+    realized_value = round(sum(net_realized(f) for f in realized_f), 2)
 
     metrics = {
         "potential_recoverable_value": round(sum(amount(f) for f in open_f), 2),
@@ -144,7 +158,8 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
         "needs_review": round(sum(amount(f) for f in open_f
                                   if not is_verified(f)), 2),
         "approved": round(sum(amount(f) for f in approved_f), 2),
-        "in_recovery": round(sum(amount(f) for f in invoiced_f + disputed_f), 2),
+        "in_recovery": round(sum(max(amount(f) - event_net(f), 0.0)
+                                 for f in in_recovery_f), 2),
         "disputed": round(sum(amount(f) for f in disputed_f), 2),
         "realized_value": realized_value,
         "written_off": round(sum(amount(f) for f in written_f), 2),
@@ -158,16 +173,23 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
         {"stage": "Approved", "value": metrics["approved"],
          "count": len(approved_f)},
         {"stage": "In Recovery", "value": metrics["in_recovery"],
-         "count": len(invoiced_f) + len(disputed_f)},
+         "count": len(in_recovery_f)},
         {"stage": "Realized", "value": realized_value,
          "count": len(recovered_f)},
     ]
 
     non_rejected = [f for f in findings if f.get("status") != "rejected"]
     total_opportunity = round(sum(amount(f) for f in non_rejected), 2)
-    days = [d for f in recovered_f
-            if (d := _days_between(_dt(f.get("recovered_at")),
-                                   _dt(f.get("created_at")))) is not None]
+    days = []
+    for f in findings:
+        event_dates = [e.get("realized_at") or e.get("created_at")
+                       for e in events_by_finding.get(f.get("finding_id"), [])
+                       if e.get("event_type") != "reversal"]
+        first_realized = min(event_dates) if event_dates else (
+            f.get("recovered_at") if f.get("status") == "recovered" else None)
+        if (d := _days_between(_dt(first_realized),
+                               _dt(f.get("created_at")))) is not None:
+            days.append(d)
     by_type: dict[str, dict] = {}
     for f in non_rejected:
         t = f.get("type") or "unknown"

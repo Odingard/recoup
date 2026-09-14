@@ -85,6 +85,25 @@ def test_realized_nets_reversals_and_matches_success_fee():
     assert len(case["realization_history"]) == 2
 
 
+def test_partial_realization_contributes_realized_but_stays_in_recovery():
+    findings = [_f("p1", "approved", 500, created="2026-06-01T00:00:00+00:00")]
+    events = [_real("p1", 100)]
+    events[0]["realized_at"] = "2026-06-11T00:00:00+00:00"
+    out = build_command_center(findings, events, [], [], now=NOW)
+    stages = {s["stage"]: s for s in out["pipeline"]}
+    assert out["metrics"]["realized_value"] == 100.0
+    assert out["executive_summary"]["realized_value"] == 100.0
+    assert stages["Approved"] == {"stage": "Approved", "value": 0.0, "count": 0}
+    assert stages["In Recovery"] == {
+        "stage": "In Recovery", "value": 400.0, "count": 1}
+    assert stages["Realized"] == {"stage": "Realized", "value": 100.0,
+                                  "count": 0}
+    rm = out["executive_summary"]["recovery_metrics"]
+    assert rm["realized_value"] == 100.0
+    assert rm["resolution_mix"]["partially_realized"] == 1
+    assert out["executive_summary"]["avg_days_to_recovery"] == 10.0
+
+
 def test_exec_summary_rate_and_avg_days():
     findings = [
         _f("r1", "recovered", 100, created="2026-06-01T00:00:00+00:00",
