@@ -261,6 +261,7 @@ function App() {
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
   const apiReady = isSampleMode || isAuthenticated
   const [uploadFileCount, setUploadFileCount] = useState(0)
+  const [dragging, setDragging] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [showPerformance, setShowPerformance] = useState(() => {
     try { return window.localStorage.getItem('recoup.performance') === '1' } catch { return false }
@@ -678,9 +679,10 @@ function App() {
     } finally { setContractSubmitting(false) }
   }
 
-  const handleBulkUpload = async (event) => {
-    const fileList = Array.from(event.target.files || [])
-    event.target.value = ''
+  const handleBulkUpload = async (filesOrEvent) => {
+    const isInputEvent = Boolean(filesOrEvent?.target?.files)
+    const fileList = Array.from(isInputEvent ? filesOrEvent.target.files : filesOrEvent || [])
+    if (isInputEvent) filesOrEvent.target.value = ''
     if (!fileList.length) return
     setSelectedFileName(fileList[0].name)
     setUploadFileCount(fileList.length)
@@ -706,6 +708,24 @@ function App() {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
     } finally { setBulkUploading(false) }
+  }
+
+  const handleEmptyDragOver = (event) => {
+    if (isSampleMode) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragging(true)
+  }
+
+  const handleEmptyDragLeave = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false)
+  }
+
+  const handleEmptyDrop = (event) => {
+    if (isSampleMode) return
+    event.preventDefault()
+    setDragging(false)
+    void handleBulkUpload(event.dataTransfer.files)
   }
 
   const confirmContract = async (customerId) => {
@@ -1308,7 +1328,7 @@ function App() {
     const status = c.status || 'open'
     if (status === 'open') {
       return c.verified
-        ? <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); handleAction(c.finding_id, 'approve') }}>Approve</button>
+        ? <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); navigate('opportunities', c.finding_id) }}>Approve</button>
         : <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); navigate('opportunities', c.finding_id) }}>Review</button>
     }
     const labels = {
@@ -1398,7 +1418,12 @@ function App() {
   }
 
   const renderEmptyState = () => (
-    <section className="panel-card empty-hero">
+    <section
+      className={`panel-card empty-hero ${dragging ? 'dragging' : ''}`}
+      onDragOver={handleEmptyDragOver}
+      onDragLeave={handleEmptyDragLeave}
+      onDrop={handleEmptyDrop}
+    >
       <Upload size={28} />
       <h2>Drop your agreements and billing data</h2>
       <p className="muted-copy">Contracts (PDF, DOCX, scans), invoices and usage exports (CSV), or a ZIP of everything. Recoup reads them, matches customers, and finds what you’re owed.</p>

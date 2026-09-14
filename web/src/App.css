@@ -90,7 +90,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .workspace { display: grid; gap: 18px; }
 
 /* Empty state */
-.empty-hero { display: grid; gap: 12px; justify-items: center; margin: 12vh auto 0; max-width: 560px; padding: 44px 34px; text-align: center; }
+.empty-hero { display: grid; gap: 12px; justify-items: center; margin: 12vh auto 0; max-width: 560px; padding: 44px 34px; text-align: center; transition: border-color 0.2s, box-shadow 0.2s; }
+.empty-hero.dragging { border-color: var(--green); border-style: dashed; box-shadow: 0 0 0 2px rgba(47, 191, 131, 0.18), 0 0 28px rgba(47, 191, 131, 0.14); }
 .empty-hero svg { color: var(--green); }
 .empty-hero h2 { font-size: 1.5rem; letter-spacing: -0.02em; margin: 0; }
 .empty-cta { padding: 12px 22px; }
