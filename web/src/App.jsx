@@ -1,20 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
-  Building2,
-  ChevronRight,
+  ChevronDown,
   DollarSign,
   Download,
   FileText,
-  LayoutDashboard,
-  LogIn,
+  FilePlus2,
   LogOut,
   LockKeyhole,
   RefreshCw,
-  Shield,
   ShieldCheck,
-  Sparkles,
+  SlidersHorizontal,
   Upload,
+  X,
   XCircle,
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
@@ -24,16 +22,35 @@ import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, Shield, ShieldCheck, Sparkles, Upload, XCircle, RecoveryActions, RecoveryActionSelect]
+void [AlertCircle, ChevronDown, DollarSign, Download, FileText, FilePlus2, LogOut, LockKeyhole, RefreshCw, ShieldCheck, SlidersHorizontal, Upload, X, XCircle, RecoveryActions, RecoveryActionSelect]
 
-const NAV_ITEMS = [
-  { id: 'overview', title: 'Overview', icon: LayoutDashboard },
-  { id: 'opportunities', title: 'Opportunities', icon: FileText },
-  { id: 'agreements', title: 'Agreements', icon: Upload },
-  { id: 'recoveries', title: 'Recoveries', icon: DollarSign },
-  { id: 'integrations', title: 'Integrations', icon: ShieldCheck },
-  { id: 'settings', title: 'Settings', icon: LockKeyhole },
+const SHELL_LINKS = [
+  { id: 'agreements', title: 'Agreements' },
+  { id: 'integrations', title: 'Integrations' },
+  { id: 'settings', title: 'Settings' },
 ]
+
+const SPINE_TITLES = ['Watch', 'Detect', 'Prove', 'Prioritize', 'Act', 'Approve', 'Recover', 'Verify']
+
+const STAGE_LABEL = {
+  open: 'Prove',
+  approved: 'Act',
+  invoiced: 'Recover',
+  disputed: 'Recover',
+  recovered: 'Verify',
+  rejected: '—',
+  written_off: '—',
+}
+
+const TEMPLATE_LINKS = (
+  <>
+    <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>
+    {' · '}
+    <a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>
+    {' · '}
+    <a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a>
+  </>
+)
 
 const METRIC_TILES = [
   ['potential_recoverable_value', 'Potential recoverable'],
@@ -189,9 +206,9 @@ function buildReviewedContract(draft) {
 }
 
 function normalizeHash() {
-  const raw = (window.location.hash || '#/overview').replace(/^#\/?/, '')
+  const raw = (window.location.hash || '#/workspace').replace(/^#\/?/, '')
   const [screen, id] = raw.split('/')
-  return { screen: screen || 'overview', id: id || null }
+  return { screen: screen || 'workspace', id: id || null }
 }
 
 function App() {
@@ -243,12 +260,26 @@ function App() {
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
   const apiReady = isSampleMode || isAuthenticated
+  const [uploadFileCount, setUploadFileCount] = useState(0)
+  const [showFilters, setShowFilters] = useState(false)
+  const [showPerformance, setShowPerformance] = useState(() => {
+    try { return window.localStorage.getItem('recoup.performance') === '1' } catch { return false }
+  })
   const navItems = useMemo(() => (
     isOperator
-      ? [...NAV_ITEMS, { id: 'admin', title: 'Platform Admin', icon: Shield }]
-      : NAV_ITEMS
+      ? [...SHELL_LINKS, { id: 'admin', title: 'Platform Admin' }]
+      : SHELL_LINKS
   ), [isOperator])
-  const screen = navItems.some((item) => item.id === route.screen) ? route.screen : 'overview'
+  const isDrawerScreen = navItems.some((item) => item.id === route.screen)
+  const drawerScreen = isDrawerScreen ? route.screen : null
+
+  const togglePerformance = () => {
+    setShowPerformance((current) => {
+      const next = !current
+      try { window.localStorage.setItem('recoup.performance', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
@@ -276,6 +307,13 @@ function App() {
       window.location.hash = hash
     }
   }, [])
+
+  useEffect(() => {
+    if (!drawerScreen) return undefined
+    const onKey = (event) => { if (event.key === 'Escape') navigate('workspace') }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerScreen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const apiRequest = useCallback(async (path, options = {}) => {
     const headers = { ...(options.headers || {}) }
@@ -349,10 +387,10 @@ function App() {
   }, [apiRequest, isAuthenticated])
 
   useEffect(() => {
-    if (!isOperator || screen !== 'admin') return
+    if (!isOperator || route.screen !== 'admin') return
     const handle = window.setTimeout(() => void loadAdmin(), 0)
     return () => window.clearTimeout(handle)
-  }, [isOperator, screen, loadAdmin])
+  }, [isOperator, route.screen, loadAdmin])
 
   const loadAdminTenant = async (accountId) => {
     if (!accountId) return
@@ -491,7 +529,7 @@ function App() {
   }, [apiReady, apiRequest])
 
   useEffect(() => {
-    if (!apiReady || screen !== 'agreements') return
+    if (!apiReady || route.screen !== 'agreements') return
     const missing = uploadedContracts.filter((contract) => contract.customer_id && rights[contract.customer_id] === undefined)
     if (!missing.length) return
     const handle = window.setTimeout(() => {
@@ -502,7 +540,7 @@ function App() {
       })
     }, 0)
     return () => window.clearTimeout(handle)
-  }, [apiReady, screen, uploadedContracts, rights, apiRequest])
+  }, [apiReady, route.screen, uploadedContracts, rights, apiRequest])
 
   const loadBillingStatus = useCallback(async () => {
     if (!apiReady) return
@@ -645,6 +683,7 @@ function App() {
     event.target.value = ''
     if (!fileList.length) return
     setSelectedFileName(fileList[0].name)
+    setUploadFileCount(fileList.length)
     setBulkUploading(true); setBulkResult(null)
     try {
       const form = new FormData()
@@ -705,7 +744,8 @@ function App() {
   }
 
   const evaluateAssurance = async () => {
-    const customerId = route.id || uploadedContracts[0]?.customer_id || allFindings[0]?.customer_id || ''
+    const customerId = (route.screen === 'opportunities' ? null : route.id)
+      || uploadedContracts[0]?.customer_id || allFindings[0]?.customer_id || ''
     if (!customerId) {
       setStatusMessage('No customer is available for manual evaluation.')
       return
@@ -942,11 +982,11 @@ function App() {
   }, [commandCenter, filters])
 
   const selectedCase = useMemo(() => {
-    if (screen !== 'opportunities' || !route.id) return null
+    if (route.screen !== 'opportunities' || !route.id) return null
     return (commandCenter?.cases || []).find((c) => c.finding_id === route.id)
       || allFindings.find((f) => f.finding_id === route.id)
       || null
-  }, [screen, route.id, commandCenter, allFindings])
+  }, [route.screen, route.id, commandCenter, allFindings])
 
   const recoveryCases = useMemo(() => allFindings.filter((finding) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(finding.status || 'open')), [allFindings])
   const eventCaseIds = useMemo(() => {
@@ -974,9 +1014,91 @@ function App() {
     return Object.values(map).sort((a, b) => (a.customer_name || '').localeCompare(b.customer_name || ''))
   }, [allFindings])
 
-  const reviewLabel = isSampleMode ? 'Sample data' : firebaseUser?.email || 'Authenticated'
+  const reviewLabel = isSampleMode ? 'Sample data · read-only' : firebaseUser?.email || 'Authenticated'
   const proofLocked = !isSampleMode && Boolean(billing?.configured) && !billing?.card_on_file
   const lockTitle = 'Add a payment method to unlock'
+
+  const ccCases = useMemo(() => commandCenter?.cases || [], [commandCenter])
+  const tenantEmpty = findingsLoaded && ccCases.length === 0
+    && allFindings.length === 0 && uploadedContracts.length === 0
+  const isWorking = bulkUploading || running
+  const workingText = bulkUploading
+    ? `Reading ${uploadFileCount || 'your'} file${uploadFileCount === 1 ? '' : 's'}…`
+    : 'Evaluating…'
+
+  const spineSteps = useMemo(() => {
+    const allActions = ccCases.flatMap((c) => c.recovery_actions || [])
+    const drafted = allActions.filter((a) => ['draft', 'pending_approval'].includes(a.status)).length
+    const actionPending = allActions.filter((a) => a.status === 'pending_approval').length
+    const openCount = ccCases.filter((c) => (c.status || 'open') === 'open').length
+    const pipeline = commandCenter?.pipeline || []
+    const verifiedStage = pipeline.find((s) => s.stage === 'Verified')
+    const recoveryStage = pipeline.find((s) => s.stage === 'In Recovery')
+    const verifiedCount = verifiedStage?.count
+      ?? ccCases.filter((c) => c.verified || !['needs_review', 'potential'].includes(c.status || 'open')).length
+    const mm = commandCenter?.metrics || {}
+    const subs = [
+      `${uploadedContracts.length} agreements · ${(assurance?.sources_monitored || []).length} sources monitored`,
+      `${ccCases.length} discrepancies`,
+      `${verifiedCount} verified`,
+      `${ccCases.length} ranked · ${formatCurrency(mm.potential_recoverable_value)}`,
+      `${drafted} actions drafted`,
+      `${openCount + actionPending} awaiting your approval`,
+      `${recoveryStage?.count ?? ccCases.filter((c) => ['invoiced', 'disputed'].includes(c.status)).length} in recovery · ${formatCurrency(mm.in_recovery)}`,
+      `${formatCurrency(mm.realized_value)} realized`,
+    ]
+    return SPINE_TITLES.map((title, i) => ({
+      n: `0${i + 1}`, title, sub: subs[i], human: i === 5,
+    }))
+  }, [ccCases, commandCenter, assurance, uploadedContracts])
+
+  const nextUp = useMemo(() => {
+    const allActions = ccCases.flatMap((c) => (c.recovery_actions || [])
+      .map((a) => ({ ...a, finding_id: c.finding_id })))
+    const review = ccCases.filter((c) => (c.status || 'open') === 'open' && !c.verified)
+    const readyApprove = ccCases.filter((c) => (c.status || 'open') === 'open' && c.verified)
+    const actionsPending = allActions.filter((a) => a.status === 'pending_approval')
+    const approvedNoAction = ccCases.filter((c) => c.status === 'approved' && !(c.recovery_actions || []).length)
+    const awaiting = allActions.filter((a) => ['sent', 'awaiting_response'].includes(a.status))
+    const inRecovery = ccCases.filter((c) => ['invoiced', 'disputed'].includes(c.status))
+    const realized = Number(commandCenter?.metrics?.realized_value || 0)
+    const plural = (n) => (n === 1 ? '' : 's')
+    if (review.length || reviewQueue.length) {
+      const n = review.length || reviewQueue.length
+      return {
+        text: `${n} item${plural(n)} need${n === 1 ? 's' : ''} your review`,
+        label: 'Review',
+        onClick: () => review[0] && navigate('opportunities', review[0].finding_id),
+      }
+    }
+    const awaitingApproval = readyApprove.length + actionsPending.length
+    if (awaitingApproval) {
+      const target = readyApprove[0] || actionsPending[0]
+      return {
+        text: `${awaitingApproval} case${plural(awaitingApproval)} ready to approve`,
+        label: 'Approve',
+        onClick: () => navigate('opportunities', target.finding_id),
+      }
+    }
+    if (approvedNoAction.length) {
+      return {
+        text: `${approvedNoAction.length} approved case${plural(approvedNoAction.length)} ready for a recovery action`,
+        label: 'Prepare action',
+        onClick: () => navigate('opportunities', approvedNoAction[0].finding_id),
+      }
+    }
+    if (awaiting.length || inRecovery.length) {
+      const n = awaiting.length + inRecovery.length
+      const target = inRecovery[0] || ccCases.find((c) => c.finding_id === awaiting[0]?.finding_id)
+      return {
+        text: `${n} recover${n === 1 ? 'y' : 'ies'} awaiting outcome`,
+        label: 'Record outcome',
+        onClick: () => target && navigate('opportunities', target.finding_id),
+      }
+    }
+    if (realized > 0) return { text: `All caught up — ${formatCurrency(realized)} realized` }
+    return { text: 'No discrepancies found yet — add more billing periods or documents' }
+  }, [ccCases, commandCenter, reviewQueue, navigate])
 
   const startStripeInstall = useCallback(async () => {
     if (isSampleMode) { setConnectorStatus('Sample mode does not connect to Stripe.'); return }
@@ -1087,7 +1209,7 @@ function App() {
         </div>
         <div className="detail-grid detail-grid-two">
           <div className="info-group"><div className="info-label">1. What the agreement says</div>
-            {finding.locked ? <p className="muted-copy">Proof locked — add a payment method.</p> : (
+            {(finding.locked || proofLocked) ? renderGate() : (
               <div className="provenance-box">{evidence.clause_ref || finding.clause_ref || '—'}<br />{evidence.clause_text || finding.clause_text || 'No clause text on file.'}</div>
             )}
           </div>
@@ -1171,44 +1293,181 @@ function App() {
     )
   }
 
-  const renderOpportunities = () => {
+  const renderGate = () => (
+    <div className="pay-gate">
+      <LockKeyhole size={16} />
+      <div>
+        <strong>{lockTitle}</strong>
+        <p className="muted-copy">Add a payment method to unlock clause proof, audit reports and true-up packs. You are only charged 20% of dollars actually recovered — nothing upfront. By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>.</p>
+        <button className="btn-primary" onClick={startBillingSetup}>Add payment method</button>
+      </div>
+    </div>
+  )
+
+  const caseRowAction = (c) => {
+    const status = c.status || 'open'
+    if (status === 'open') {
+      return c.verified
+        ? <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); handleAction(c.finding_id, 'approve') }}>Approve</button>
+        : <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); navigate('opportunities', c.finding_id) }}>Review</button>
+    }
+    const labels = {
+      approved: 'Prepare action', invoiced: 'Record outcome',
+      disputed: 'Record outcome', recovered: 'Record outcome',
+    }
+    const label = labels[status]
+    if (!label) return null
+    return <button className="btn-primary row-action" onClick={(e) => { e.stopPropagation(); navigate('opportunities', c.finding_id) }}>{label}</button>
+  }
+
+  const renderSpine = () => (
+    <section className="spine-block" aria-label="How Recoup works">
+      <div className="spine-head">
+        <ol className="spine">
+          {spineSteps.map((step, i) => (
+            <li
+              key={step.title}
+              className={`spine-step ${isWorking && i < 4 ? 'working' : ''}`}
+              aria-current={isWorking && i === (bulkUploading ? 0 : 1) ? 'step' : undefined}
+              style={isWorking && i < 4 ? { animationDelay: `${i * 0.35}s` } : undefined}
+            >
+              <span className="spine-num">{step.n}</span>
+              <span className="spine-title">{step.title}{step.human && <span className="human-badge">human</span>}</span>
+              <span className="spine-sub">{step.sub}</span>
+            </li>
+          ))}
+        </ol>
+        <div className="spine-tools">
+          <label className="btn-secondary spine-add" aria-label="Add documents">
+            <FilePlus2 size={15} /> Add documents
+            <input type="file" multiple hidden disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
+          </label>
+          <button className="btn-secondary" onClick={runEvaluation} disabled={running}>
+            {running ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />}{running ? ' Evaluating…' : ' Run evaluation'}
+          </button>
+        </div>
+      </div>
+      {isWorking && <p className="spine-status" role="status">{workingText}</p>}
+    </section>
+  )
+
+  const renderQueue = () => {
     const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
-    if (route.id) {
+    return (
+      <section className="panel-card queue-card">
+        <div className="panel-heading">
+          <div><p className="eyebrow">Work queue</p><h2>Ranked cases</h2></div>
+          <div className="review-actions">
+            <span className="hint-pill">{cases.length} cases</span>
+            <button className="btn-secondary" onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
+              <SlidersHorizontal size={14} /> Filter
+            </button>
+          </div>
+        </div>
+        {showFilters && (
+          <div className="cc-filters">
+            <select value={filters.customer} onChange={set('customer')}><option value="">All customers</option>{(commandCenter?.filters?.customers || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+            <select value={filters.status} onChange={set('status')}><option value="">All statuses</option>{(commandCenter?.filters?.statuses || []).map((s) => <option key={s} value={s}>{s}</option>)}</select>
+            <select value={filters.type} onChange={set('type')}><option value="">All types</option>{(commandCenter?.filters?.types || []).map((t) => <option key={t} value={t}>{t}</option>)}</select>
+            <select value={filters.agreement} onChange={set('agreement')}><option value="">All agreements</option>{(commandCenter?.filters?.agreements || []).map((a) => <option key={a} value={a}>{a}</option>)}</select>
+            <select value={filters.period} onChange={set('period')}><option value="">All periods</option>{(commandCenter?.filters?.periods || []).map((p) => <option key={p} value={p}>{p}</option>)}</select>
+            <input type="number" placeholder="Min value" value={filters.minValue} onChange={set('minValue')} />
+            <input type="number" placeholder="Max age (days)" value={filters.maxAge} onChange={set('maxAge')} />
+            <input type="number" step="0.05" min="0" max="1" placeholder="Min confidence" value={filters.minConfidence} onChange={set('minConfidence')} />
+          </div>
+        )}
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Financial right</th><th>Period</th><th>Recoverable</th><th>Confidence</th><th>Stage</th><th>Next action</th></tr></thead><tbody>
+          {cases.map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') navigate('opportunities', c.finding_id) }}>
+            <td title={c.counterparty?.customer_name} className="truncate">{c.counterparty?.customer_name}</td>
+            <td>{c.financial_right?.title || c.financial_right?.type}</td>
+            <td>{c.period || '—'}</td>
+            <td className="money">{formatCurrency(c.recoverable_difference)}</td>
+            <td>{Math.round(Number(c.confidence || 0) * 100)}%</td>
+            <td>{STAGE_LABEL[c.status || 'open'] || c.status}</td>
+            <td>{caseRowAction(c)}</td>
+          </tr>)}
+          {cases.length === 0 && <tr><td colSpan="7" className="muted-copy">No cases match the current filters.</td></tr>}
+        </tbody></table></div>
+        {reviewQueue.length > 0 && (
+          <div className="panel-section"><div className="info-label">Needs review</div>
+            <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason || 'Needs review'}</span><span className="muted-copy">{[item.reason, item.suggested_action, item.next_step].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')}</span></li>)}</ul>
+          </div>
+        )}
+      </section>
+    )
+  }
+
+  const renderEmptyState = () => (
+    <section className="panel-card empty-hero">
+      <Upload size={28} />
+      <h2>Drop your agreements and billing data</h2>
+      <p className="muted-copy">Contracts (PDF, DOCX, scans), invoices and usage exports (CSV), or a ZIP of everything. Recoup reads them, matches customers, and finds what you’re owed.</p>
+      {isSampleMode ? (
+        <button className="btn-primary empty-cta" onClick={runEvaluation} disabled={running}>
+          {running ? 'Running…' : 'Run the sample book'}
+        </button>
+      ) : (
+        <label className="btn-primary empty-cta">
+          {bulkUploading ? 'Uploading…' : 'Choose files'}
+          <input type="file" multiple hidden disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
+        </label>
+      )}
+      <p className="muted-copy">Need an export template? {TEMPLATE_LINKS}</p>
+    </section>
+  )
+
+  const renderWorkspace = () => {
+    if (route.screen === 'opportunities' && route.id) {
       if (selectedCase) return renderOpportunityDetail(selectedCase)
       if (findingsLoaded) {
         return (
           <section className="panel-card opportunity-detail">
-            <div className="panel-heading"><div><p className="eyebrow">Opportunity detail</p><h2>Opportunity not found</h2></div><button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button></div>
-            <p className="muted-copy">No opportunity exists for this link in the current account.</p>
+            <div className="panel-heading"><div><p className="eyebrow">Case detail</p><h2>Case not found</h2></div><button className="btn-secondary" onClick={() => navigate('workspace')}>Back to workspace</button></div>
+            <p className="muted-copy">No case exists for this link in the current account.</p>
           </section>
         )
       }
-      return <section className="panel-card"><p className="muted-copy">Loading selected opportunity…</p></section>
+      return <section className="panel-card"><p className="muted-copy">Loading selected case…</p></section>
     }
+    if (tenantEmpty && !isWorking) return renderEmptyState()
     return (
-      <section className="panel-card">
-        <div className="panel-heading"><div><p className="eyebrow">Opportunities</p><h2>Working queue</h2></div><span className="hint-pill">{cases.length} cases</span></div>
-        <div className="cc-filters">
-          <select value={filters.customer} onChange={set('customer')}><option value="">All customers</option>{(commandCenter?.filters?.customers || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-          <select value={filters.status} onChange={set('status')}><option value="">All statuses</option>{(commandCenter?.filters?.statuses || []).map((s) => <option key={s} value={s}>{s}</option>)}</select>
-          <select value={filters.type} onChange={set('type')}><option value="">All types</option>{(commandCenter?.filters?.types || []).map((t) => <option key={t} value={t}>{t}</option>)}</select>
-          <select value={filters.agreement} onChange={set('agreement')}><option value="">All agreements</option>{(commandCenter?.filters?.agreements || []).map((a) => <option key={a} value={a}>{a}</option>)}</select>
-          <select value={filters.period} onChange={set('period')}><option value="">All periods</option>{(commandCenter?.filters?.periods || []).map((p) => <option key={p} value={p}>{p}</option>)}</select>
-          <input type="number" placeholder="Min value" value={filters.minValue} onChange={set('minValue')} />
-          <input type="number" placeholder="Max age (days)" value={filters.maxAge} onChange={set('maxAge')} />
-          <input type="number" step="0.05" min="0" max="1" placeholder="Min confidence" value={filters.minConfidence} onChange={set('minConfidence')} />
+      <>
+        {renderSpine()}
+        <div className="nextup">
+          <span>{nextUp.text}</span>
+          {nextUp.label && <button className="btn-primary" onClick={nextUp.onClick}>{nextUp.label}</button>}
         </div>
-        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Opportunity</th><th>Value</th><th>Confidence</th><th>Evidence</th><th>Age</th><th>Status</th><th>Next valid action</th></tr></thead><tbody>
-          {cases.map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') navigate('opportunities', c.finding_id) }}>
-            <td title={c.counterparty?.customer_name} className="truncate">{c.counterparty?.customer_name}</td><td>{c.financial_right?.title || c.financial_right?.type}</td><td className="money">{formatCurrency(c.recoverable_difference)}</td><td>{Math.round(Number(c.confidence || 0) * 100)}%</td><td>{Math.round(Number(c.evidence?.completeness || 0) * 100) >= 100 ? 'Complete' : 'Partial'}</td><td>{c.age_days ?? '—'}</td><td>{c.status}</td><td>{c.recommended_next_step}</td>
-          </tr>)}
-          {cases.length === 0 && <tr><td colSpan="8" className="muted-copy">No cases match the current filters.</td></tr>}
-        </tbody></table></div>
-        <div className="panel-section"><div className="info-label">Needs review</div>
-          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason || 'Needs review'}</span><span className="muted-copy">{[item.reason, item.suggested_action, item.next_step].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')}</span></li>)}</ul>}
-        </div>
-        {route.id && <p className="muted-copy">Loading selected opportunity…</p>}
-      </section>
+        {renderQueue()}
+        <section className="perf-collapse">
+          <button className="perf-toggle" onClick={togglePerformance} aria-expanded={showPerformance}>
+            <span>Performance &amp; assurance</span><ChevronDown size={15} className={showPerformance ? 'chev open' : 'chev'} />
+          </button>
+          {showPerformance && <>{renderOverview()}{renderRecoveries()}</>}
+        </section>
+      </>
+    )
+  }
+
+  const renderDrawer = () => {
+    const bodies = {
+      agreements: renderAgreements,
+      integrations: renderIntegrations,
+      settings: renderSettings,
+      admin: renderAdmin,
+    }
+    const Body = bodies[drawerScreen]
+    const title = navItems.find((item) => item.id === drawerScreen)?.title || ''
+    if (!Body) return null
+    return (
+      <div className="drawer-backdrop" onClick={() => navigate('workspace')}>
+        <aside className="drawer" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+          <div className="drawer-head">
+            <button className="link-quiet" onClick={() => navigate('workspace')}>← Back to workspace</button>
+            <button className="icon-btn" onClick={() => navigate('workspace')} aria-label="Close"><X size={16} /></button>
+          </div>
+          <div className="drawer-body"><Body /></div>
+        </aside>
+      </div>
     )
   }
 
@@ -1290,6 +1549,7 @@ function App() {
         <label className="styled-field">Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>
         {trueupCustomers.length === 0 ? <p className="muted-copy">No true-up customers.</p> : trueupCustomers.map((customer) => <div key={customer.customer_id} className="agreement-card"><strong>{customer.customer_name}</strong><div className="muted-copy">{customer.count} finding(s)</div><button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={() => downloadTrueupPdf(customer.customer_id, customer.customer_name)}>Download letter + schedule PDF</button></div>)}
       </div>
+      {proofLocked && renderGate()}
       <div className="review-actions">
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={exportFindings}><Download size={15} /> Export findings CSV</button>
         <button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={openAuditReport}><FileText size={15} /> Audit report</button>
@@ -1407,48 +1667,42 @@ function App() {
   if (!apiReady) {
     return (
       <div className="app-container auth-shell">
+        <header className="auth-top">
+          <span className="wordmark"><span className="glyph">R</span>Recoup</span>
+          <span className="muted-copy">An Odingard Security application</span>
+        </header>
         <div className="panel-card auth-card">
-          <div className="auth-hero"><div className="auth-mark"><Building2 size={28} /></div><div><h1 className="brand-title">Recoup</h1><p className="auth-subtitle">Revenue assurance for contract recovery workflows.</p></div></div>
-          <div className="auth-note"><LockKeyhole size={16} /><span>Firebase Auth is required for real data. Sample data is available explicitly below.</span></div>
-          <div className="auth-actions">
-            <button className="btn-primary auth-button" onClick={handleGoogleLogin}><LogIn size={16} /> Sign in with Google</button>
-            <button className="btn-secondary auth-button" onClick={sampleModeLogin}><Sparkles size={16} /> Try with sample data</button>
-          </div>
-          <a className="back-to-site" href="/">&larr; Recoup</a>
+          <h1 className="auth-headline">Find the revenue you’re already owed.</h1>
+          <p className="auth-sub">Sign in to upload your agreements and billing data and let Recoup find what was missed.</p>
+          <button className="btn-primary auth-button" onClick={handleGoogleLogin}>Continue with Google</button>
+          <button className="link-quiet auth-sample" onClick={sampleModeLogin}>Explore with sample data →</button>
+          <p className="auth-fine">No upfront fee · 20% of realized recovered value · Every recovery action is approved by your team.</p>
         </div>
+        <a className="auth-back" href="/">← Back to recoup.odingard.com</a>
       </div>
     )
   }
 
   return (
     <div className="app-container recoup-shell">
-      <header className="header shell-header">
-        <div><div className="brand-row"><h1 className="brand-title"><Building2 size={28} /> Recoup</h1><span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span></div><p className="subtitle">Revenue recovery workspace</p></div>
-        <div className="header-actions">
-          <div className="period-picker"><label htmlFor="billing-period">Period</label><input id="billing-period" value={billingPeriod} onChange={(event) => setBillingPeriod(event.target.value)} placeholder="YYYY-MM" /></div>
-          <button className="btn-primary" onClick={runEvaluation} disabled={running}>{running ? <RefreshCw className="spin" size={16} /> : <FileText size={16} />}{running ? 'Evaluating…' : 'Run evaluation'}</button>
-          <button className="btn-danger" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
-        </div>
+      <header className="topbar">
+        <button className="wordmark link-quiet" onClick={() => navigate('workspace')} aria-label="Recoup workspace">
+          <span className="glyph">R</span><span>Recoup</span>
+        </button>
+        <nav className="topbar-links" aria-label="Sections">
+          <span className="period-picker"><label htmlFor="billing-period">Period</label><input id="billing-period" value={billingPeriod} onChange={(event) => setBillingPeriod(event.target.value)} placeholder="YYYY-MM" /></span>
+          {navItems.map((item) => (
+            <button key={item.id} type="button" className={`link-quiet topbar-link ${drawerScreen === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}>{item.title}</button>
+          ))}
+          <span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span>
+          <button className="icon-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
+        </nav>
       </header>
-      {isSampleMode && <div className="mode-banner sample-banner"><Sparkles size={16} /> Sample data is active. Requests use synthetic data and are not tied to your account.<button className="btn-secondary" onClick={() => setSessionMode(null)}>Exit sample mode</button></div>}
-      {proofLocked && <div className="mode-banner"><LockKeyhole size={16} /><div><strong>{lockTitle}</strong><p className="muted-copy">Add a payment method to unlock clause proof, audit reports and true-up packs. You are only charged 20% of dollars actually recovered — nothing upfront. By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>.</p></div><button className="btn-primary" onClick={startBillingSetup}>Add payment method</button></div>}
-      <div className="app-grid">
-        <aside className="sidebar-panel">
-          <nav className="stepper-list" aria-label="Primary">
-            {navItems.map((item) => { const Icon = item.icon; const active = screen === item.id; void Icon; return <button key={item.id} type="button" className={`stepper-item ${active ? 'active' : ''}`} onClick={() => navigate(item.id)}><span className="step-icon"><Icon size={16} /></span><span className="step-copy"><span className="step-title">{item.title}</span></span><ChevronRight size={16} /></button> })}
-          </nav>
-        </aside>
-        <main className="step-content">
-          {renderStatus()}
-          {screen === 'overview' && renderOverview()}
-          {screen === 'opportunities' && renderOpportunities()}
-          {screen === 'agreements' && renderAgreements()}
-          {screen === 'recoveries' && renderRecoveries()}
-          {screen === 'integrations' && renderIntegrations()}
-          {screen === 'settings' && renderSettings()}
-          {screen === 'admin' && renderAdmin()}
-        </main>
-      </div>
+      <main className="workspace">
+        {renderStatus()}
+        {renderWorkspace()}
+      </main>
+      {renderDrawer()}
     </div>
   )
 }
