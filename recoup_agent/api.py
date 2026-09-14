@@ -494,7 +494,28 @@ def get_admin_tenant(account_id: str, _user: dict = Depends(require_operator)):
     summary = _tenant_summary(tenant)
     summary["audit_log"] = db.get_audit_log(account_id)[-50:]
     summary["assurance_events"] = db.get_assurance_events(account_id, limit=20)
+    summary["fee_events"] = [e for e in db.get_recovery_events(account_id)
+                              if e.get("fee_status") != "paid"]
     return summary
+
+
+class RetryFeePayload(BaseModel):
+    recovery_event_id: str = ""
+
+
+@app.post("/api/admin/tenants/{account_id}/retry-fee")
+def admin_retry_fee(account_id: str, payload: RetryFeePayload, _user: dict = Depends(require_operator)):
+    if db.get_tenant(account_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+    event = next((e for e in db.get_recovery_events(account_id)
+                  if e.get("recovery_event_id") == payload.recovery_event_id), None)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Recovery event not found.")
+    result = recoup_billing.retry_success_fee(account_id, event)
+    db.update_recovery_event_fields(account_id, payload.recovery_event_id, {
+        "fee_status": result.get("status"), "fee_retry_count": result.get("fee_retry_count", event.get("fee_retry_count", 0)),
+        "fee_last_retry_at": datetime.now(timezone.utc).isoformat(), "fee_charge": result}, "success_fee_retry")
+    return result
 
 
 @app.post("/api/admin/tenants/{account_id}/demo")
@@ -990,12 +1011,16 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
             account_id, finding, event)
         if fee_charge:
             fee_status = fee_charge.get("status") or "error"
-            if fee_status not in ("paid", "pending", "error",
-                                  "needs_config"):
+            if fee_status not in ("paid", "pending", "error", "needs_config",
+                                  "terms_missing", "payment_failed", "uncollectible",
+                                  "disputed", "dispute_lost", "collection_hold"):
                 fee_status = "unbilled"
+            fee_fields = {"fee_status": fee_status, "fee_charge": fee_charge}
+            if fee_charge.get("invoice_id"):
+                fee_fields["fee_invoice_id"] = fee_charge["invoice_id"]
             db.update_recovery_event_fields(
                 account_id, event.recovery_event_id,
-                {"fee_status": fee_status, "fee_charge": fee_charge},
+                fee_fields,
                 "success_fee_charge")
             event.fee_status = fee_status
             event.fee_charge = fee_charge
@@ -1580,21 +1605,45 @@ def get_recovery_metrics(user: dict = Depends(verify_token)):
         db.get_recovery_actions(account_id))
 
 
+@app.post("/api/billing/stripe/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="Stripe-Signature")):
+    from .billing import stripe_webhook as webhook
+    if not os.getenv("RECOUP_STRIPE_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=503, detail="Stripe webhook secret is not configured.")
+    return webhook.construct_and_handle(await request.body(), stripe_signature)
+
+
 @app.get("/api/billing/status")
 def get_billing_status(user: dict = Depends(verify_token)):
     account_id = _account_id(user)
     if account_id is None:
         return {"configured": recoup_billing.is_configured(),
-                "card_on_file": True, "sample": True, "success_fee_pct": 0.20}
+                "card_on_file": True, "sample": True, "success_fee_pct": 0.20,
+                "terms_accepted": {"version": recoup_billing.TERMS_VERSION, "accepted_at": None}}
     return recoup_billing.billing_status(account_id)
 
 
+class BillingSetupPayload(BaseModel):
+    accept_terms: bool = False
+    terms_version: str | None = None
+
+
 @app.post("/api/billing/setup-session")
-def start_billing_setup(request: Request, user: dict = Depends(verify_token)):
+def start_billing_setup(payload: BillingSetupPayload, request: Request, user: dict = Depends(verify_token)):
     """Hosted Stripe Checkout (setup mode) to place a card on file."""
     account_id = _account_id(user)
     if account_id is None:
-        return _needs_review_payload("Sample mode has no billing account.")
+        return {"status": "mode", "mode": "sample"}
+    if not payload.accept_terms or payload.terms_version != recoup_billing.TERMS_VERSION:
+        raise HTTPException(status_code=400, detail="Accept the current Terms of Service before adding a payment method.")
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    ip = forwarded.split(",", 1)[0].strip() or (request.client.host if request.client else None)
+    recoup_billing._db.record_terms_acceptance(account_id, {
+        "version": payload.terms_version,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+        "actor_email": user.get("email"), "ip": ip,
+        "user_agent": request.headers.get("User-Agent"),
+    })
     base = os.getenv("RECOUP_WEB_BASE_URL") or str(request.base_url).rstrip("/")
     return recoup_billing.create_setup_checkout_url(account_id, user.get("email"), base)
 
@@ -1607,7 +1656,7 @@ class SetupComplete(BaseModel):
 def finish_billing_setup(payload: SetupComplete, user: dict = Depends(verify_token)):
     account_id = _account_id(user)
     if account_id is None:
-        return _needs_review_payload("Sample mode has no billing account.")
+        return {"status": "mode", "mode": "sample"}
     return recoup_billing.complete_setup_session(account_id, payload.session_id)
 
 
@@ -1618,9 +1667,20 @@ def sync_recoveries(user: dict = Depends(verify_token)):
     account_id = _account_id(user)
     if account_id is None:
         return _needs_review_payload("Sample mode has no Stripe connector.")
+
+    retry_results = []
+    for finding in db.get_all_findings(account_id):
+        for event in db.get_recovery_events(account_id, finding.get("finding_id")):
+            if event.get("fee_status") in {"payment_failed", "error", "pending", "unbilled"}:
+                retry = recoup_billing.retry_success_fee(account_id, event)
+                retry_results.append({"recovery_event_id": event.get("recovery_event_id"), **retry})
+                db.update_recovery_event_fields(account_id, event["recovery_event_id"], {
+                    "fee_status": retry.get("status"), "fee_retry_count": retry.get("fee_retry_count", event.get("fee_retry_count", 0)),
+                    "fee_last_retry_at": datetime.now(timezone.utc).isoformat(), "fee_charge": retry}, "success_fee_retry")
+
     tenant_key = resolve_connector_key(account_id)
     if not tenant_key:
-        return {"status": "needs_connector", "checked": 0}
+        return {"status": "needs_connector", "checked": 0, "retry_results": retry_results}
 
     import stripe
     checked = 0
@@ -1661,7 +1721,23 @@ def sync_recoveries(user: dict = Depends(verify_token)):
         except Exception as exc:
             errors.append({"finding_id": f.get("finding_id"), "error": str(exc)})
     return {"status": "success", "checked": checked, "recovered": recovered,
-            "fee_charges": fee_charges, "errors": errors}
+            "fee_charges": fee_charges, "retry_results": retry_results, "errors": errors}
+
+
+@app.post("/api/billing/retry-fee")
+def retry_fee(payload: RetryFeePayload, user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"status": "mode", "mode": "sample"}
+    event = next((e for e in db.get_recovery_events(account_id)
+                  if e.get("recovery_event_id") == payload.recovery_event_id), None)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Recovery event not found.")
+    result = recoup_billing.retry_success_fee(account_id, event)
+    db.update_recovery_event_fields(account_id, payload.recovery_event_id, {
+        "fee_status": result.get("status"), "fee_retry_count": result.get("fee_retry_count", event.get("fee_retry_count", 0)),
+        "fee_last_retry_at": datetime.now(timezone.utc).isoformat(), "fee_charge": result}, "success_fee_retry")
+    return result
 
 
 @app.post("/api/billing/charge-success-fee")

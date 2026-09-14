@@ -106,6 +106,24 @@ tickets, or chat.
 Stripe → Settings → Team → *Invite member* (role: Developer or Analyst; use
 Administrator only for whoever owns payouts). This cannot be done from GCP.
 
+### 10. Stripe webhooks & fee collection
+Create the endpoint in Stripe Dashboard → Developers → Webhooks:
+`https://recoup.odingard.com/api/billing/stripe/webhook`. Subscribe to
+`invoice.paid`, `invoice.payment_succeeded`, `invoice.payment_failed`,
+`invoice.voided`, `invoice.marked_uncollectible`, `charge.dispute.created`,
+`charge.dispute.closed`, `credit_note.created`, `setup_intent.succeeded`, and
+`payment_method.detached`. Store the signing secret in Secret Manager as
+`recoup-stripe-webhook-secret`; do not put the value in source or environment
+files. The deploy workflow mounts it as `RECOUP_STRIPE_WEBHOOK_SECRET`.
+
+Webhook delivery is idempotent by Stripe event id. Payment failures mark the
+account card status failed and fee events become retryable. Operators can use
+Settings to update the card, or Platform Admin → tenant detail → Retry for a
+specific fee event. `/api/billing/sync-recoveries` also attempts each retryable
+event once per call, up to three cumulative attempts. After three failed
+attempts the event enters `collection_hold`; contact the customer and resolve
+the card or invoice in Stripe before any further collection action.
+
 ## In-app Platform Admin
 Operators listed in `RECOUP_OPERATOR_EMAILS` see a **Platform Admin** nav item
 in `/app`. The console provides tenant list/detail, the signup toggle and invited

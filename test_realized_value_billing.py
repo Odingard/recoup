@@ -90,6 +90,12 @@ def _wire(monkeypatch, store, *, billing_card=True, paid_status="paid",
     monkeypatch.setattr(api.db, "get_account_billing", lambda _a: billing)
     monkeypatch.setattr(recoup_billing._db, "get_account_billing",
                         lambda _a: billing)
+    monkeypatch.setattr(recoup_billing._db, "get_terms_acceptance",
+                        lambda _a: {"version": recoup_billing.TERMS_VERSION,
+                                    "accepted_at": "2026-09-01T00:00:00+00:00"})
+    monkeypatch.setattr(api.db, "get_terms_acceptance",
+                        lambda _a: {"version": recoup_billing.TERMS_VERSION,
+                                    "accepted_at": "2026-09-01T00:00:00+00:00"})
 
     def get_finding(a, fid):
         f = store.findings.get((a, fid))

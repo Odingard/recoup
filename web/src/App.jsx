@@ -213,6 +213,7 @@ function App() {
   const [connectorConnection, setConnectorConnection] = useState(null)
   const [renewals, setRenewals] = useState([])
   const [billing, setBilling] = useState(null)
+  const [termsAccepted, setTermsAccepted] = useState(false)
   const [syncingRecoveries, setSyncingRecoveries] = useState(false)
   const [reviewQueue, setReviewQueue] = useState([])
   const [assurance, setAssurance] = useState(null)
@@ -420,6 +421,17 @@ function App() {
       console.error(error)
       setStatusMessage(failureMessage('Could not update demo flag', error))
     }
+  }
+
+  const retryAdminFee = async (event) => {
+    const accountId = adminSelected?.account_id
+    if (!accountId) return
+    try {
+      await apiRequest(`/admin/tenants/${encodeURIComponent(accountId)}/retry-fee`, {
+        method: 'POST', body: { recovery_event_id: event.recovery_event_id },
+      })
+      setAdminSelected(await apiRequest(`/admin/tenants/${encodeURIComponent(accountId)}`))
+    } catch (error) { setStatusMessage(failureMessage('Fee retry failed', error)) }
   }
 
   const resetAdminTenant = async () => {
@@ -951,7 +963,10 @@ function App() {
 
   const startBillingSetup = async () => {
     try {
-      const result = await apiRequest('/billing/setup-session', { method: 'POST' })
+      const result = await apiRequest('/billing/setup-session', { method: 'POST', body: {
+        accept_terms: Boolean(termsAccepted || billing?.terms_accepted),
+        terms_version: '2026-09',
+      } })
       if (result?.status === 'success' && result.url) { window.location.assign(result.url); return }
       setStatusMessage(result?.message || 'Could not start card setup.')
     } catch (error) {
@@ -1390,7 +1405,8 @@ function App() {
       <div>
         <strong>{lockTitle}</strong>
         <p className="muted-copy">Add a payment method to unlock clause proof, audit reports and true-up packs. You are only charged 20% of dollars actually recovered — nothing upfront. By adding a card you agree to the <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a>.</p>
-        <button className="btn-primary" onClick={startBillingSetup}>Add payment method</button>
+        {!billing?.terms_accepted && <label className="terms-check"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /> I agree to the Terms of Service (v2026-09)</label>}
+        <button className="btn-primary" disabled={!billing?.terms_accepted && !termsAccepted} onClick={startBillingSetup}>Add payment method</button>
       </div>
     </div>
   )
@@ -1722,6 +1738,10 @@ function App() {
               {(adminSelected.assurance_events || []).length === 0 ? <p className="muted-copy">No assurance events.</p> : <ul className="upload-history">{adminSelected.assurance_events.map((entry, index) => <li key={entry.event_id || index} className="upload-history-item"><span>{entry.trigger || entry.event_type || 'event'}{entry.customer_id ? ` · ${entry.customer_id}` : ''}</span><span className="muted-copy">{formatDate(entry.received_at || entry.ts)}</span></li>)}</ul>}
             </div>
           </div>
+          <div className="panel-section">
+            <div className="info-label">Fee events needing attention</div>
+            {(adminSelected.fee_events || []).length === 0 ? <p className="muted-copy">No unpaid or failed fee events.</p> : <ul className="upload-history">{adminSelected.fee_events.map((event) => <li key={event.recovery_event_id} className="upload-history-item"><span>{event.recovery_event_id} · {event.fee_status || 'unbilled'}</span>{['payment_failed', 'error', 'pending', 'unbilled'].includes(event.fee_status) && <button className="btn-secondary" onClick={() => retryAdminFee(event)}>Retry</button>}</li>)}</ul>}
+          </div>
           <div className="panel-section review-actions">
             <button className="btn-secondary" onClick={() => setAdminDemo(adminSelected, !adminSelected.demo)}>{adminSelected.demo ? 'Remove demo flag' : 'Mark as demo'}</button>
           </div>
@@ -1747,8 +1767,11 @@ function App() {
       <div className="panel-heading"><div><p className="eyebrow">Settings</p><h2>Settings</h2></div></div>
       <div className="panel-section"><div className="info-label">Billing</div>
         <p className="muted-copy">Card on file: {billing?.card_on_file ? `${billing.card_brand || ''} •••• ${billing.card_last4 || ''}` : 'None'}</p>
+        {billing?.card_status === 'failed' && <p className="status-message error">Your last fee payment failed — update your card</p>}
         <p className="muted-copy">Recoup charges 20% of net realized recovered value. <a href="/terms.html" target="_blank" rel="noreferrer">Terms of Service</a></p>
-        <button className="btn-primary" onClick={startBillingSetup}>Add payment method</button>
+        {billing?.terms_accepted && <p className="muted-copy">Terms accepted {formatDate(billing.terms_accepted.accepted_at)}</p>}
+        {!billing?.terms_accepted && <label className="terms-check"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /> I agree to the Terms of Service (v2026-09)</label>}
+        <button className="btn-primary" disabled={!billing?.terms_accepted && !termsAccepted} onClick={startBillingSetup}>Add payment method</button>
       </div>
       <div className="panel-section"><div className="info-label">Account</div>
         <p className="muted-copy">{firebaseUser?.email || 'sample@recoup.local'}</p>

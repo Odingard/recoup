@@ -113,7 +113,7 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          SECRETS_LIST="RECOUP_REPORT_SHARE_SECRET=recoup-report-share-secret:latest,RECOUP_STRIPE_APP_CLIENT_ID=recoup-stripe-app-client-id:latest,RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest"
+          SECRETS_LIST="RECOUP_REPORT_SHARE_SECRET=recoup-report-share-secret:latest,RECOUP_STRIPE_APP_CLIENT_ID=recoup-stripe-app-client-id:latest,RECOUP_STRIPE_APP_SECRET=recoup-stripe-app-secret:latest,RECOUP_STRIPE_APP_STATE_SECRET=recoup-stripe-state-secret:latest,RECOUP_STRIPE_WEBHOOK_SECRET=recoup-stripe-webhook-secret:latest,FIREBASE_SERVICE_ACCOUNT_JSON=firebase-sa-json:latest"
           if gcloud secrets describe recoup-billing-stripe-key --project=$PROJECT_ID &>/dev/null; then
             SECRETS_LIST="RECOUP_BILLING_STRIPE_API_KEY=recoup-billing-stripe-key:latest,$SECRETS_LIST"
           fi
