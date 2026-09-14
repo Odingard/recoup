@@ -56,6 +56,7 @@ const EMPTY_FILTERS = {
 }
 
 const ACTIONABLE_REALIZATION_STATUSES = ['approved', 'invoiced', 'disputed']
+const REVERSIBLE_FINDING_STATUSES = ['approved', 'invoiced', 'disputed', 'recovered']
 
 const LEGAL_NEXT_ACTIONS = {
   open: ['approve', 'reject'],
@@ -918,7 +919,7 @@ function App() {
             <li key={event.recovery_event_id} className="upload-history-item event-row">
               <span>{event.event_type?.replace(/_/g, ' ') || 'event'} · {event.recovery_basis?.replace(/_/g, ' ')} · {formatCurrency(event.event_type === 'reversal' ? event.reversal_amount : event.realized_value)}</span>
               <span className="muted-copy">{event.external_reference || event.reversal_reference || '—'} · {formatDate(event.realized_at || event.created_at)}</span>
-              {event.event_type === 'realization' && ACTIONABLE_REALIZATION_STATUSES.includes(finding.status) && (
+              {event.event_type === 'realization' && REVERSIBLE_FINDING_STATUSES.includes(finding.status) && (
                 <button className="btn-secondary" onClick={() => { setReverseForm({ finding_id: finding.finding_id, event_id: event.recovery_event_id }); setReverseFields({ amount: '', reference: '', reason: '' }) }}>Reverse</button>
               )}
             </li>
