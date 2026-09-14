@@ -29,7 +29,7 @@ export function RecoveryActionSelect({ findingId, apiRequest, value, onChange })
       .then((list) => { if (on) setActions(list) })
       .catch(() => {})
     return () => { on = false }
-  }, [findingId]) // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
+  }, [findingId]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!actions.length) return null
   return (
     <label>

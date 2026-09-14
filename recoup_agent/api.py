@@ -2181,15 +2181,16 @@ class AssuranceEvaluatePayload(BaseModel):
 def get_assurance_status(user: dict = Depends(verify_token)):
     """Continuous-assurance status for the authenticated tenant."""
     account_id = _account_id(user)
+    from .assurance import TRIGGERS, account_status
+    monitored = [trigger for trigger in TRIGGERS if trigger != "new_payment"]
     if account_id is None:
         return {"mode": "sample", "last_evaluated_at": None, "last_trigger": None,
-                "next_evaluation": "on next event",
                 "sources_monitored": ["contracts", "invoices", "usage"],
+                "triggers_monitored": monitored,
                 "open_discrepancies": 0, "needs_review": 0,
                 "events_total": 0, "events_needs_review": 0,
                 "recent_events": []}
-    from .assurance import account_status
-    return account_status(account_id)
+    return {**account_status(account_id), "triggers_monitored": monitored}
 
 
 @app.get("/api/assurance/events")
@@ -2216,6 +2217,18 @@ def post_assurance_evaluate(payload: AssuranceEvaluatePayload,
         {"customer_id": payload.customer_id, "period": payload.period,
          "minute": minute})
     return assurance.evaluate_event(account_id, event)
+
+
+@app.post("/api/contracts/{customer_id}/confirm")
+def confirm_contract(customer_id: str, user: dict = Depends(verify_token)):
+    """Persist a human confirmation of extracted agreement terms."""
+    account_id = _account_id(user)
+    if account_id is None:
+        return {"mode": "sample", "status": "not_persisted", "customer_id": customer_id}
+    contract = db.confirm_contract(account_id, customer_id, user.get("email"))
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    return {"status": "confirmed", "contract": contract}
 
 
 @app.get("/api/contracts")
