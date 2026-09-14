@@ -1,8 +1,11 @@
 import os
+import time
 from datetime import datetime, timezone
 from google.cloud import firestore
 
 _client = None
+_platform_settings_cache: dict = {"at": 0.0, "value": None}
+_tenant_touch_cache: dict[str, float] = {}
 
 
 class FindingNotFound(Exception):
@@ -458,3 +461,94 @@ def get_outcome_record(account_id: str, finding_id: str) -> dict | None:
     doc = _collection(db, account_id, "outcome_records").document(
         finding_id).get()
     return doc.to_dict() if doc.exists else None
+
+
+# --- PLATFORM ADMIN (platform-level data, outside tenant accounts/) ---
+
+def _platform_document(db, name: str):
+    return db.collection("platform").document(name)
+
+
+def _platform_tenants(db):
+    return _platform_document(db, "tenants").collection("accounts")
+
+
+def _platform_admin_audit(db):
+    return _platform_document(db, "admin").collection("audit")
+
+
+def get_platform_settings() -> dict:
+    now = time.time()
+    cached = _platform_settings_cache.get("value")
+    if cached is not None and now - _platform_settings_cache["at"] < 30:
+        return dict(cached)
+    doc = _platform_document(get_client(), "settings").get()
+    data = doc.to_dict() if doc.exists else {}
+    value = {
+        "signup_enabled": bool(data.get("signup_enabled", True)),
+        "invited_emails": list(data.get("invited_emails") or []),
+    }
+    _platform_settings_cache.update({"at": now, "value": value})
+    return dict(value)
+
+
+def set_platform_settings(settings: dict) -> dict:
+    value = {
+        "signup_enabled": bool(settings.get("signup_enabled", True)),
+        "invited_emails": list(settings.get("invited_emails") or []),
+    }
+    _platform_document(get_client(), "settings").set(value, merge=True)
+    _platform_settings_cache.update({"at": time.time(), "value": value})
+    return dict(value)
+
+
+def touch_tenant(account_id: str, email: str | None) -> None:
+    now = time.time()
+    last = _tenant_touch_cache.get(account_id)
+    if last is not None and now - last < 600:
+        return
+    ref = _platform_tenants(get_client()).document(account_id)
+    snap = ref.get()
+    existing = snap.to_dict() if snap.exists else {}
+    seen_at = datetime.now(timezone.utc).isoformat()
+    ref.set({
+        "account_id": account_id,
+        "email": email,
+        "first_seen": existing.get("first_seen") or seen_at,
+        "last_seen": seen_at,
+        "demo": bool(existing.get("demo", False)),
+    }, merge=True)
+    _tenant_touch_cache[account_id] = now
+
+
+def list_tenants() -> list[dict]:
+    docs = [doc.to_dict() for doc in _platform_tenants(get_client()).stream()]
+    docs.sort(key=lambda d: (d.get("last_seen") or "", d.get("account_id") or ""),
+              reverse=True)
+    return docs
+
+
+def get_tenant(account_id: str) -> dict | None:
+    doc = _platform_tenants(get_client()).document(account_id).get()
+    return doc.to_dict() if doc.exists else None
+
+
+def set_tenant_demo(account_id: str, demo: bool, **fields) -> dict:
+    data = {"account_id": account_id, "demo": bool(demo), **fields}
+    ref = _platform_tenants(get_client()).document(account_id)
+    ref.set(data, merge=True)
+    _tenant_touch_cache.pop(account_id, None)
+    doc = ref.get()
+    return doc.to_dict() if doc.exists else data
+
+
+def append_admin_audit(entry: dict) -> dict:
+    data = {"at": datetime.now(timezone.utc).isoformat(), **entry}
+    _platform_admin_audit(get_client()).document().set(data)
+    return data
+
+
+def list_admin_audit(limit: int = 100) -> list[dict]:
+    docs = [doc.to_dict() for doc in _platform_admin_audit(get_client()).stream()]
+    docs.sort(key=lambda e: e.get("at") or "", reverse=True)
+    return docs[:limit]

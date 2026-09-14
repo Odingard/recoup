@@ -11,6 +11,7 @@ import {
   LogOut,
   LockKeyhole,
   RefreshCw,
+  Shield,
   ShieldCheck,
   Sparkles,
   Upload,
@@ -23,7 +24,7 @@ import './App.css'
 
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '')
 const DEFAULT_PERIOD = '2026-06'
-void [AlertCircle, Building2, ChevronRight, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, ShieldCheck, Sparkles, Upload, XCircle, RecoveryActions, RecoveryActionSelect]
+void [AlertCircle, Building2, ChevronRight, DollarSign, Download, FileText, LayoutDashboard, LogIn, LogOut, LockKeyhole, RefreshCw, Shield, ShieldCheck, Sparkles, Upload, XCircle, RecoveryActions, RecoveryActionSelect]
 
 const NAV_ITEMS = [
   { id: 'overview', title: 'Overview', icon: LayoutDashboard },
@@ -229,11 +230,25 @@ function App() {
   const [reverseForm, setReverseForm] = useState(null)
   const [reverseFields, setReverseFields] = useState({ amount: '', reference: '', reason: '' })
   const [confirmingCustomer, setConfirmingCustomer] = useState('')
+  const [isOperator, setIsOperator] = useState(false)
+  const [adminSettings, setAdminSettings] = useState(null)
+  const [adminInviteText, setAdminInviteText] = useState('')
+  const [adminTenants, setAdminTenants] = useState([])
+  const [adminAudit, setAdminAudit] = useState([])
+  const [adminSelected, setAdminSelected] = useState(null)
+  const [adminLoading, setAdminLoading] = useState(false)
+  const [adminSaving, setAdminSaving] = useState(false)
+  const [adminResetConfirm, setAdminResetConfirm] = useState('')
 
   const isSampleMode = sessionMode === 'sample'
   const isAuthenticated = sessionMode === 'auth' && Boolean(firebaseUser)
   const apiReady = isSampleMode || isAuthenticated
-  const screen = NAV_ITEMS.some((item) => item.id === route.screen) ? route.screen : 'overview'
+  const navItems = useMemo(() => (
+    isOperator
+      ? [...NAV_ITEMS, { id: 'admin', title: 'Platform Admin', icon: Shield }]
+      : NAV_ITEMS
+  ), [isOperator])
+  const screen = navItems.some((item) => item.id === route.screen) ? route.screen : 'overview'
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
@@ -299,6 +314,111 @@ function App() {
     }
     return fetch(`${API_BASE}${path}`, { ...options, headers })
   }, [firebaseUser, isSampleMode])
+
+  const loadAdmin = useCallback(async () => {
+    if (!isOperator) return
+    setAdminLoading(true)
+    try {
+      const [settings, tenants, audit] = await Promise.all([
+        apiRequest('/admin/settings'),
+        apiRequest('/admin/tenants'),
+        apiRequest('/admin/audit'),
+      ])
+      setAdminSettings(settings)
+      setAdminInviteText((settings?.invited_emails || []).join('\n'))
+      setAdminTenants(Array.isArray(tenants) ? tenants : [])
+      setAdminAudit(Array.isArray(audit) ? audit : [])
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Platform admin load failed', error))
+    } finally {
+      setAdminLoading(false)
+    }
+  }, [apiRequest, isOperator])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      const handle = window.setTimeout(() => setIsOperator(false), 0)
+      return () => window.clearTimeout(handle)
+    }
+    let cancelled = false
+    apiRequest('/admin/me')
+      .then((result) => { if (!cancelled) setIsOperator(Boolean(result?.operator)) })
+      .catch(() => { if (!cancelled) setIsOperator(false) })
+    return () => { cancelled = true }
+  }, [apiRequest, isAuthenticated])
+
+  useEffect(() => {
+    if (!isOperator || screen !== 'admin') return
+    const handle = window.setTimeout(() => void loadAdmin(), 0)
+    return () => window.clearTimeout(handle)
+  }, [isOperator, screen, loadAdmin])
+
+  const loadAdminTenant = async (accountId) => {
+    if (!accountId) return
+    try {
+      setAdminSelected(await apiRequest(`/admin/tenants/${encodeURIComponent(accountId)}`))
+      setAdminResetConfirm('')
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Could not load tenant', error))
+    }
+  }
+
+  const saveAdminSettings = async (next = {}) => {
+    setAdminSaving(true)
+    try {
+      const invited = (next.invitedText ?? adminInviteText)
+        .split(/\n+/).map((email) => email.trim()).filter(Boolean)
+      const settings = await apiRequest('/admin/settings', {
+        method: 'PUT',
+        body: {
+          signup_enabled: next.signupEnabled ?? adminSettings?.signup_enabled ?? true,
+          invited_emails: invited,
+        },
+      })
+      setAdminSettings(settings)
+      setAdminInviteText((settings.invited_emails || []).join('\n'))
+      setAdminAudit(await apiRequest('/admin/audit'))
+      setStatusMessage('Platform settings saved.')
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Could not save platform settings', error))
+    } finally { setAdminSaving(false) }
+  }
+
+  const setAdminDemo = async (tenant, demo) => {
+    try {
+      const updated = await apiRequest(`/admin/tenants/${encodeURIComponent(tenant.account_id)}/demo`, { method: 'POST', body: { demo } })
+      setAdminTenants((current) => current.map((item) => item.account_id === tenant.account_id ? { ...item, ...updated } : item))
+      setAdminSelected((current) => current?.account_id === tenant.account_id ? { ...current, ...updated } : current)
+      setAdminAudit(await apiRequest('/admin/audit'))
+      setStatusMessage(demo ? 'Tenant marked as demo.' : 'Tenant demo flag removed.')
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Could not update demo flag', error))
+    }
+  }
+
+  const resetAdminTenant = async () => {
+    const accountId = adminSelected?.account_id
+    if (!accountId) return
+    setAdminSaving(true)
+    try {
+      const result = await apiRequest(`/admin/tenants/${encodeURIComponent(accountId)}/reset`, {
+        method: 'POST',
+        body: { confirm_account_id: adminResetConfirm },
+      })
+      const deleted = Object.entries(result?.deleted || {}).map(([name, count]) => `${name}: ${count}`).join(', ')
+      setStatusMessage(`Demo tenant reset.${deleted ? ` Deleted ${deleted}.` : ''}`)
+      setAdminSelected(null)
+      setAdminResetConfirm('')
+      await loadAdmin()
+    } catch (error) {
+      console.error(error)
+      setStatusMessage(failureMessage('Demo tenant reset failed', error))
+    } finally { setAdminSaving(false) }
+  }
 
   const loadConnectorStatus = useCallback(async () => {
     if (!apiReady) return
@@ -491,6 +611,9 @@ function App() {
       setEvents({}); setEventsLoading({})
       setStatusMessage('')
       setConnectorConnection(null); setMetrics(null); setConnectorStatus('')
+      setIsOperator(false); setAdminSettings(null); setAdminInviteText('')
+      setAdminTenants([]); setAdminAudit([]); setAdminSelected(null)
+      setAdminResetConfirm('')
     }
   }
 
@@ -1193,6 +1316,73 @@ function App() {
     </section>
   )
 
+  const renderAdmin = () => (
+    <section className="panel-card">
+      <div className="panel-heading">
+        <div><p className="eyebrow">Platform Admin</p><h2>Operator console</h2></div>
+        <button className="btn-secondary" onClick={loadAdmin} disabled={adminLoading}>{adminLoading ? 'Refreshing…' : 'Refresh'}</button>
+      </div>
+      <div className="metric-grid admin-grid">
+        <div className="metric-card"><span className="metric-label">Tenants</span><strong className="metric-value">{adminTenants.length}</strong></div>
+        <div className="metric-card"><span className="metric-label">Signups</span>
+          <label className="admin-toggle"><input type="checkbox" checked={Boolean(adminSettings?.signup_enabled)} disabled={!adminSettings || adminSaving} onChange={(event) => saveAdminSettings({ signupEnabled: event.target.checked })} /> Pilot signups enabled</label>
+        </div>
+      </div>
+      <div className="panel-section">
+        <div className="info-label">Invited emails</div>
+        <textarea className="admin-invites" rows={5} value={adminInviteText} onChange={(event) => setAdminInviteText(event.target.value)} placeholder={'one email per line'} />
+        <div className="panel-footer"><button className="btn-primary" onClick={() => saveAdminSettings()} disabled={!adminSettings || adminSaving}>{adminSaving ? 'Saving…' : 'Save invitations'}</button></div>
+      </div>
+      <div className="panel-section">
+        <div className="info-label">Tenants</div>
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Email</th><th>Account</th><th>First seen</th><th>Last seen</th><th>Demo</th><th>Open</th><th>Approved</th><th>Recovered</th><th>Potential</th><th>Realized</th><th>Fee billed</th><th>Card</th><th>Evaluated</th></tr></thead><tbody>
+          {adminTenants.map((tenant) => {
+            const counts = tenant.findings_by_status || {}
+            return <tr key={tenant.account_id} onClick={() => loadAdminTenant(tenant.account_id)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') loadAdminTenant(tenant.account_id) }}>
+              <td className="truncate" title={tenant.email}>{tenant.email || '—'}</td>
+              <td><button className="link-button" title={tenant.account_id} onClick={(event) => { event.stopPropagation(); navigator.clipboard?.writeText(tenant.account_id || '') }}>{(tenant.account_id || '').slice(0, 10)}…</button></td>
+              <td>{formatDate(tenant.first_seen)}</td><td>{formatDate(tenant.last_seen)}</td>
+              <td>{tenant.demo ? <span className="status-pill status-approved">demo</span> : '—'}</td>
+              <td>{counts.open || 0}</td><td>{counts.approved || 0}</td><td>{counts.recovered || 0}</td>
+              <td className="money">{formatCurrency(tenant.potential_value)}</td><td className="money">{formatCurrency(tenant.realized_value)}</td><td className="money">{formatCurrency(tenant.fee_billed)}</td>
+              <td>{tenant.billing?.card_on_file ? 'Yes' : 'No'}</td><td>{tenant.error ? <span className="muted-copy">{tenant.error}</span> : formatDate(tenant.assurance_last_evaluated)}</td>
+            </tr>
+          })}
+          {adminTenants.length === 0 && <tr><td colSpan="13" className="muted-copy">No tenants have signed in yet.</td></tr>}
+        </tbody></table></div>
+      </div>
+      {adminSelected && (
+        <div className="panel-section admin-detail">
+          <div className="panel-heading"><div><p className="eyebrow">Tenant detail</p><h3>{adminSelected.email || adminSelected.account_id}</h3><p className="muted-copy">{adminSelected.account_id}</p></div><button className="btn-secondary" onClick={() => setAdminSelected(null)}>Close</button></div>
+          {adminSelected.error && <p className="status-message error">{adminSelected.error}</p>}
+          <div className="detail-grid detail-grid-two">
+            <div className="info-group"><div className="info-label">Recent tenant audit</div>
+              {(adminSelected.audit_log || []).length === 0 ? <p className="muted-copy">No tenant audit entries.</p> : <ul className="upload-history">{adminSelected.audit_log.map((entry, index) => <li key={index} className="upload-history-item"><span>{entry.event || 'event'}{entry.finding_id ? ` · ${entry.finding_id}` : ''}</span><span className="muted-copy">{formatDate(entry.ts)}</span></li>)}</ul>}
+            </div>
+            <div className="info-group"><div className="info-label">Recent assurance events</div>
+              {(adminSelected.assurance_events || []).length === 0 ? <p className="muted-copy">No assurance events.</p> : <ul className="upload-history">{adminSelected.assurance_events.map((entry, index) => <li key={entry.event_id || index} className="upload-history-item"><span>{entry.trigger || entry.event_type || 'event'}{entry.customer_id ? ` · ${entry.customer_id}` : ''}</span><span className="muted-copy">{formatDate(entry.received_at || entry.ts)}</span></li>)}</ul>}
+            </div>
+          </div>
+          <div className="panel-section review-actions">
+            <button className="btn-secondary" onClick={() => setAdminDemo(adminSelected, !adminSelected.demo)}>{adminSelected.demo ? 'Remove demo flag' : 'Mark as demo'}</button>
+          </div>
+          <div className="panel-section">
+            <div className="info-label">Reset demo tenant</div>
+            <p className="muted-copy">Type the full account id to confirm. Only demo tenants can be reset from this console.</p>
+            <div className="review-actions">
+              <input className="admin-confirm" value={adminResetConfirm} onChange={(event) => setAdminResetConfirm(event.target.value)} placeholder={adminSelected.account_id} disabled={!adminSelected.demo} />
+              <button className="btn-danger" disabled={!adminSelected.demo || adminResetConfirm !== adminSelected.account_id || adminSaving} onClick={resetAdminTenant}>{adminSaving ? 'Resetting…' : 'Reset demo tenant'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="panel-section">
+        <div className="info-label">Admin audit</div>
+        {adminAudit.length === 0 ? <p className="muted-copy">No admin actions recorded.</p> : <ul className="upload-history">{adminAudit.map((entry, index) => <li key={index} className="upload-history-item"><span>{entry.action}{entry.target_account_id ? ` · ${entry.target_account_id}` : ''}</span><span className="muted-copy">{entry.operator_email || '—'} · {formatDate(entry.at)}</span></li>)}</ul>}
+      </div>
+    </section>
+  )
+
   const renderSettings = () => (
     <section className="panel-card">
       <div className="panel-heading"><div><p className="eyebrow">Settings</p><h2>Settings</h2></div></div>
@@ -1245,7 +1435,7 @@ function App() {
       <div className="app-grid">
         <aside className="sidebar-panel">
           <nav className="stepper-list" aria-label="Primary">
-            {NAV_ITEMS.map((item) => { const Icon = item.icon; const active = screen === item.id; void Icon; return <button key={item.id} type="button" className={`stepper-item ${active ? 'active' : ''}`} onClick={() => navigate(item.id)}><span className="step-icon"><Icon size={16} /></span><span className="step-copy"><span className="step-title">{item.title}</span></span><ChevronRight size={16} /></button> })}
+            {navItems.map((item) => { const Icon = item.icon; const active = screen === item.id; void Icon; return <button key={item.id} type="button" className={`stepper-item ${active ? 'active' : ''}`} onClick={() => navigate(item.id)}><span className="step-icon"><Icon size={16} /></span><span className="step-copy"><span className="step-title">{item.title}</span></span><ChevronRight size={16} /></button> })}
           </nav>
         </aside>
         <main className="step-content">
@@ -1256,6 +1446,7 @@ function App() {
           {screen === 'recoveries' && renderRecoveries()}
           {screen === 'integrations' && renderIntegrations()}
           {screen === 'settings' && renderSettings()}
+          {screen === 'admin' && renderAdmin()}
         </main>
       </div>
     </div>

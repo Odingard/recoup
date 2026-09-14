@@ -143,6 +143,35 @@ invoices, contracts, anything else present), the account root document, and
 the tenant's connector secret in Secret Manager. Returns per-collection
 counts. Wrong confirmation returns 400.
 
+## Platform Admin
+
+Set `RECOUP_OPERATOR_EMAILS` to a comma-separated, case-insensitive allowlist
+of Google/Firebase emails. Operators see the **Platform Admin** screen in `/app`.
+Sample-mode identities are never operators.
+
+Platform data is stored outside tenant `accounts/` trees in the `platform`
+namespace: the `settings` document, the `tenants` registry, and the
+`admin_audit` subcollection. The registry records account id, email,
+first/last seen, and demo state; operator mutations append audit entries.
+
+Endpoints:
+
+- `GET /api/admin/me` — reports whether the signed-in identity is an operator.
+- `GET|PUT /api/admin/settings` — controls `signup_enabled` and
+  `invited_emails`.
+- `GET /api/admin/tenants` and `GET /api/admin/tenants/{account_id}` — tenant
+  summaries, recent tenant audit entries, and assurance events.
+- `POST /api/admin/tenants/{account_id}/demo` — marks a tenant as demo.
+- `POST /api/admin/tenants/{account_id}/reset` — deletes tenant data only when
+  the registry marks it `demo`; production customer data still requires the
+  customer's own Settings deletion flow.
+- `GET /api/admin/audit` — recent operator actions.
+
+When signups are disabled, unknown users must be invited or already present in
+the tenant registry; operators always pass. If the platform settings lookup
+fails, the signup gate fails open so a Firestore outage does not lock every
+customer out.
+
 ## 6. Billing gate & fee collection
 
 Recoup charges the operator 20% of dollars actually recovered, collected against a
