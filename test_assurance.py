@@ -190,6 +190,36 @@ def test_state_preserved(fake_db):
     assert fake_db.findings[other]["status"] == "recovered"
 
 
+def test_changed_same_period_invoice_reevaluates_and_identical_is_duplicate(fake_db):
+    fake_db.save_contract("acct", _contract("B"))
+    fake_db.save_usage("acct", _usage("B", "2026-06"))
+    user = {"account_id": "acct", "email": "u@example.com"}
+
+    first = api.ingest_invoice(api.InvoicePayload(**_invoice("B", "2026-06", 500.0)), user)
+    assert [e["trigger"] for e in first["assurance"]["events"]] == [
+        "new_invoice", "new_billing_period"]
+    fid = next(iter(fake_db.findings))
+    fake_db.findings[fid]["status"] = "approved"
+
+    changed = _invoice("B", "2026-06", 400.0)
+    changed["invoice_id"] = "in_corrected"
+    changed["uploaded_at"] = "later"
+    second = api.ingest_invoice(api.InvoicePayload(**changed), user)
+    events = second["assurance"]["events"]
+    assert [e["trigger"] for e in events] == ["new_invoice"]
+    assert events[0]["status"] == "evaluated"
+    assert fake_db.findings[fid]["status"] == "approved"
+    assert fake_db.findings[fid]["actual_value"] == 400.0
+    assert fake_db.findings[fid]["monthly_recoverable"] == 600.0
+
+    identical = api.ingest_invoice(api.InvoicePayload(**changed), user)
+    assert identical["assurance"]["events"] == []
+    assert len(fake_db.events) == 3
+
+    metadata_only = {**changed, "invoice_id": "in_new", "uploaded_at": "newer"}
+    assert assurance.classify_invoice_event(changed, metadata_only) == []
+
+
 def test_ambiguous_fails_to_review(fake_db):
     out = assurance.evaluate_event("acct", _event(cid="ghost"))
     assert out["status"] == "needs_review"
@@ -229,6 +259,8 @@ def test_classify_contract_event():
     assert assurance.classify_contract_event(same, incoming) == "agreement_amendment"
     pricing = {**same, "committed_minimum_monthly": 1500.0}
     assert assurance.classify_contract_event(same, pricing) == "pricing_change"
+    amended_effective = {**same, "escalator_effective_date": "2027-01-01"}
+    assert assurance.classify_contract_event(same, amended_effective) == "pricing_change"
     renewed = {**same, "term_end": "2030-01-01"}
     old = {**same, "term_end": "2027-01-01"}
     assert assurance.classify_contract_event(old, renewed) == "contract_renewal"

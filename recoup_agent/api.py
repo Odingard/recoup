@@ -44,7 +44,12 @@ from .billing.stripe_oauth import (
     parse_oauth_state,
 )
 from .ingest_bulk import ingest_files
-from .ingestion_doc import ContractEntitlements, extract_entitlements
+from .ingestion_doc import (
+    ContractEntitlements,
+    UNREADABLE_DOCUMENT_MESSAGE,
+    UnreadableDocumentError,
+    extract_entitlements,
+)
 from .normalizer import normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .rights_graph import RightsGraphService
@@ -1953,6 +1958,8 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
         try:
             normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path)
+        except UnreadableDocumentError:
+            raise HTTPException(status_code=422, detail=UNREADABLE_DOCUMENT_MESSAGE)
         except Exception:
             return _needs_review_payload("Could not extract terms; please confirm manually.")
 

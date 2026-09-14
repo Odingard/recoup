@@ -36,6 +36,19 @@ _PRICING_FIELDS = ("committed_minimum_monthly", "minimum_schedule", "included_un
 # Real normalized contract keys for the agreement end date.
 _END_KEYS = ("term_end", "end_date", "term_end_date")
 
+# Invoice content that can change the expected-vs-actual calculation. Identifiers,
+# provenance, and received/upload timestamps are intentionally excluded.
+_INVOICE_MONEY_FIELDS = (
+    "base_charge", "overage_charge", "discounts_applied", "amount_billed",
+    "amount", "total", "total_billed", "credits_applied", "tax_excluded",
+    "prorated", "proration_amount", "units", "quantity", "lines", "line_items",
+    "items", "currency",
+)
+
+
+def _invoice_money_payload(invoice: dict) -> dict:
+    return {field: invoice.get(field) for field in _INVOICE_MONEY_FIELDS}
+
 
 @dataclass
 class ChangeEvent:
@@ -109,6 +122,9 @@ def classify_invoice_event(existing: dict | None, incoming: dict) -> list[str]:
     triggers: list[str] = []
     if existing is None:
         triggers += ["new_invoice", "new_billing_period"]
+    elif payload_hash(_invoice_money_payload(existing)) != payload_hash(
+            _invoice_money_payload(incoming)):
+        triggers.append("new_invoice")
     if (existing or {}).get("credits_applied") != incoming.get("credits_applied") \
             and incoming.get("credits_applied"):
         if "new_credit_refund" not in triggers:

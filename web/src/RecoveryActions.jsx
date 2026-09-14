@@ -90,7 +90,7 @@ export default function RecoveryActions({ finding, apiRequest, onChanged }) {
 
   const post = (id, path, body) => apiRequest(`/recovery-actions/${id}${path}`, {
     method: 'POST',
-    body: JSON.stringify(body || {}),
+    body: body || {},
   })
 
   const actionable = ['approved', 'invoiced', 'disputed'].includes(finding?.status)
@@ -234,8 +234,7 @@ export default function RecoveryActions({ finding, apiRequest, onChanged }) {
             onClick={() => run(async () => {
               await apiRequest(`/findings/${findingId}/recovery-actions`, {
                 method: 'POST',
-                body: JSON.stringify({ action_type: actionType,
-                                       draft_mode: draftMode }),
+                body: { action_type: actionType, draft_mode: draftMode },
               })
             }, 'Draft created')}>
             Create draft</button>

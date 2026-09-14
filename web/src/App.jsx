@@ -258,7 +258,13 @@ function App() {
       throw new Error(detail)
     }
     const text = await res.text()
-    return text ? JSON.parse(text) : null
+    const parsed = text ? JSON.parse(text) : null
+    const method = (options.method || 'GET').toUpperCase()
+    if (method !== 'GET' && parsed?.status === 'needs_review' && Array.isArray(parsed.fields)) {
+      const fieldMessages = parsed.fields.map((field) => field?.message || field?.field).filter(Boolean).join('; ')
+      throw new Error([parsed.message, fieldMessages].filter(Boolean).join(' '))
+    }
+    return parsed
   }, [firebaseUser, isSampleMode])
 
   const authenticatedFetch = useCallback(async (path, options = {}) => {
@@ -880,7 +886,7 @@ function App() {
     return (
       <section className="panel-card opportunity-detail">
         <div className="panel-heading">
-          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2></div>
+          <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2><div className="detail-counterparty">{finding.counterparty?.customer_name || finding.customer_name || 'Unknown counterparty'} · {finding.counterparty?.customer_id || finding.customer_id || '—'}</div></div>
           <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
         </div>
         <div className="detail-grid detail-grid-two">
@@ -992,7 +998,7 @@ function App() {
           {cases.length === 0 && <tr><td colSpan="8" className="muted-copy">No cases match the current filters.</td></tr>}
         </tbody></table></div>
         <div className="panel-section"><div className="info-label">Needs review</div>
-          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason}</span><span className="muted-copy">{item.reason || item.suggested_action}</span></li>)}</ul>}
+          {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason || 'Needs review'}</span><span className="muted-copy">{[item.reason, item.suggested_action, item.next_step].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')}</span></li>)}</ul>}
         </div>
         {route.id && <p className="muted-copy">Loading selected opportunity…</p>}
       </section>
@@ -1061,7 +1067,7 @@ function App() {
       </div>
       <div className="panel-section"><div className="info-label">Recovery cases</div>
         <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
-          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name || c.customer_name || '—'}{c.counterparty?.customer_id || c.customer_id ? ` · ${c.counterparty?.customer_id || c.customer_id}` : ''}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
           {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).length === 0 && <tr><td colSpan="5" className="muted-copy">No recovery cases yet — approve an opportunity first.</td></tr>}
         </tbody></table></div>
       </div>

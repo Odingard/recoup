@@ -1,3 +1,4 @@
+import logging
 import mimetypes
 import os
 import zipfile
@@ -6,6 +7,20 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+
+logger = logging.getLogger(__name__)
+
+UNREADABLE_DOCUMENT_MESSAGE = (
+    "We couldn't read this file. Make sure it's a valid PDF, DOCX, or "
+    "scanned image and try again."
+)
+
+
+class UnreadableDocumentError(Exception):
+    """The document or document provider could not read the uploaded file."""
+
+    def __init__(self):
+        super().__init__(UNREADABLE_DOCUMENT_MESSAGE)
 
 _MIME_OVERRIDES = {
     ".png": "image/png",
@@ -47,58 +62,62 @@ class ContractEntitlements(BaseModel):
 
 def extract_entitlements(file_path: str) -> ContractEntitlements:
     """Extracts structured billing entitlements from a document of any format."""
-    suffix = os.path.splitext(file_path)[1].lower()
-    mime_type, _ = mimetypes.guess_type(file_path)
-    mime_type = _MIME_OVERRIDES.get(suffix, mime_type) or "application/octet-stream"
+    try:
+        suffix = os.path.splitext(file_path)[1].lower()
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = _MIME_OVERRIDES.get(suffix, mime_type) or "application/octet-stream"
 
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
 
-    if suffix == ".docx":
-        # Gemini cannot read OOXML; convert to plain text first (stdlib only).
-        file_bytes = _docx_to_text(file_path)
-        mime_type = "text/plain"
+        if suffix == ".docx":
+            # Gemini cannot read OOXML; convert to plain text first (stdlib only).
+            file_bytes = _docx_to_text(file_path)
+            mime_type = "text/plain"
 
-    # Assume we use vertex based on the environment variables defined in README
-    client = genai.Client()
+        # Assume we use vertex based on the environment variables defined in README
+        client = genai.Client()
 
-    document = types.Part.from_bytes(
-        data=file_bytes,
-        mime_type=mime_type,
-    )
+        document = types.Part.from_bytes(
+            data=file_bytes,
+            mime_type=mime_type,
+        )
 
-    prompt = (
-        "Extract all billing entitlements and financial terms from this contract document. "
-        "Look for committed monthly minimums, included units, overage rates, promotional discounts, and annual escalators. "
-        "If a value is not found, do not include it. Ensure provenance includes the exact quote from the document. "
-        "Rules: (1) If an amendment or addendum changes a term (e.g. lowers the committed minimum), emit BOTH the "
-        "original and the amended value as separate entitlements, each with its own effective_date. (2) For discounts "
-        "and promotions, put the promo name in label, when it begins in start_date and when it ends in end_date; "
-        "never in effective_date. (3) Emit included_units whenever the base fee 'includes' a quantity of units. "
-        "(4) Only report overage_rate for a per-unit charge that applies ABOVE an included quantity; a per-unit "
-        "list price that is simply billed per unit is not an overage rate. (5) provenance must be the verbatim clause text. "
-        "(6) If overage pricing is tiered (different per-unit rates for different volume bands above the included "
-        "quantity), emit one overage_tier entitlement per band with value = that band's per-unit rate and "
-        "tier_up_to = the band's upper bound in units above the included quantity (null for the last band), "
-        "instead of a single overage_rate. "
-        "(7) Emit term_start and term_end for the initial term's start and end dates (value=0, date in "
-        "effective_date). (8) Emit auto_renewal when the contract renews automatically (value = renewal "
-        "term length in months, 0 if unstated) and renewal_notice_days for the notice period required to "
-        "cancel before renewal. (9) For per-seat pricing, emit committed_seats (the seat/user/license "
-        "count) and seat_price (the monthly price per seat)."
-    )
+        prompt = (
+            "Extract all billing entitlements and financial terms from this contract document. "
+            "Look for committed monthly minimums, included units, overage rates, promotional discounts, and annual escalators. "
+            "If a value is not found, do not include it. Ensure provenance includes the exact quote from the document. "
+            "Rules: (1) If an amendment or addendum changes a term (e.g. lowers the committed minimum), emit BOTH the "
+            "original and the amended value as separate entitlements, each with its own effective_date. (2) For discounts "
+            "and promotions, put the promo name in label, when it begins in start_date and when it ends in end_date; "
+            "never in effective_date. (3) Emit included_units whenever the base fee 'includes' a quantity of units. "
+            "(4) Only report overage_rate for a per-unit charge that applies ABOVE an included quantity; a per-unit "
+            "list price that is simply billed per unit is not an overage rate. (5) provenance must be the verbatim clause text. "
+            "(6) If overage pricing is tiered (different per-unit rates for different volume bands above the included "
+            "quantity), emit one overage_tier entitlement per band with value = that band's per-unit rate and "
+            "tier_up_to = the band's upper bound in units above the included quantity (null for the last band), "
+            "instead of a single overage_rate. "
+            "(7) Emit term_start and term_end for the initial term's start and end dates (value=0, date in "
+            "effective_date). (8) Emit auto_renewal when the contract renews automatically (value = renewal "
+            "term length in months, 0 if unstated) and renewal_notice_days for the notice period required to "
+            "cancel before renewal. (9) For per-seat pricing, emit committed_seats (the seat/user/license "
+            "count) and seat_price (the monthly price per seat)."
+        )
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=[document, prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ContractEntitlements,
-            temperature=0.0,
-        ),
-    )
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[document, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ContractEntitlements,
+                temperature=0.0,
+            ),
+        )
 
-    if not response.text:
-        return ContractEntitlements(customer_name="Unknown", entitlements=[])
+        if not response.text:
+            return ContractEntitlements(customer_name="Unknown", entitlements=[])
 
-    return ContractEntitlements.model_validate_json(response.text)
+        return ContractEntitlements.model_validate_json(response.text)
+    except Exception as exc:
+        logger.exception("document extraction failed for %s", file_path)
+        raise UnreadableDocumentError() from exc
