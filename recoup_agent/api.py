@@ -65,8 +65,6 @@ from .templates import TEMPLATES
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
-_platform_gate_down_until = 0.0
-_tenant_registry_down_until = 0.0
 
 SAMPLE_HEADER = "X-Recoup-Sample"
 
@@ -149,9 +147,7 @@ def verify_token(authorization: str | None = Header(default=None),
     uid = decoded.get("uid")
     email = decoded.get("email")
     account_id = decoded.get("account_id") or uid
-    global _platform_gate_down_until, _tenant_registry_down_until
-    now = time.monotonic()
-    if now >= _platform_gate_down_until:
+    if os.getenv("GOOGLE_CLOUD_PROJECT"):
         try:
             settings = db.get_platform_settings()
             email_l = (email or "").lower()
@@ -167,14 +163,11 @@ def verify_token(authorization: str | None = Header(default=None),
         except HTTPException:
             raise
         except Exception:
-            _platform_gate_down_until = now + 30
             logger.warning("platform signup gate unavailable; allowing sign-in",
                            exc_info=True)
-    if now >= _tenant_registry_down_until:
         try:
             db.touch_tenant(account_id, email)
         except Exception:
-            _tenant_registry_down_until = now + 600
             logger.warning("tenant registry update failed for %s", account_id,
                            exc_info=True)
     return {"uid": uid, "email": email, "account_id": account_id}

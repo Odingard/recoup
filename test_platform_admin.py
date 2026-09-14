@@ -9,9 +9,8 @@ from recoup_agent import api
 def admin_state(monkeypatch):
     monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
     monkeypatch.setenv("RECOUP_OPERATOR_EMAILS", "Ops@Example.com")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "recoup-test")
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
-    api._platform_gate_down_until = 0.0
-    api._tenant_registry_down_until = 0.0
 
     state = {
         "settings": {"signup_enabled": True, "invited_emails": []},
@@ -129,6 +128,19 @@ def test_operator_allowlist_and_sample_mode(admin_state):
     assert client.get("/api/admin/me",
                       headers={"X-Recoup-Sample": "1"}).json() == {
         "operator": False}
+
+
+def test_signup_gate_skipped_without_firestore_project(admin_state, monkeypatch):
+    _state, client = admin_state
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("platform db should not be called")
+
+    monkeypatch.setattr(api.db, "get_platform_settings", forbidden)
+    monkeypatch.setattr(api.db, "touch_tenant", forbidden)
+    response = client.get("/api/findings", headers=auth("tenant"))
+    assert response.status_code == 200
 
 
 def test_signup_gate_matrix(admin_state):

@@ -1,8 +1,8 @@
 # Recoup Operator Runbook
 
-Who this is for: the Odingard operator running supervised pilots. Recoup has no
-in-app platform-admin role yet (see "Roadmap"), so every operator task below is
-done in the Google Cloud / Firebase consoles or the Stripe dashboard.
+Who this is for: the Odingard operator running supervised pilots. Operators
+listed in `RECOUP_OPERATOR_EMAILS` can use the in-app Platform Admin console;
+the Google Cloud / Firebase and Stripe procedures below remain the fallback.
 
 Sign in to all Google consoles as the account that holds `roles/owner` on the
 projects (currently `andrebyrd87@gmail.com`).
@@ -27,16 +27,18 @@ Console entry points (replace `PROJECT`):
 
 ## How accounts work today
 
-- Sign-in is **Google only** (`Sign in with Google` on `/app`). The first sign-in
-  creates the Firebase user; there is no invite, allowlist, or approval step.
+- Sign-in is **Google only** (`Sign in with Google` on `/app`). When signups are
+  enabled the first sign-in creates the Firebase user; when disabled, new users
+  must be invited or already present in the tenant registry.
 - One tenant per Google identity: `account_id` = Firebase `uid`. All tenant data
   lives under `accounts/{uid}/...` in Firestore (`contracts`, `findings`,
   `audit_log`, `assurance_events`, `candidate_rights`, `compiled_rights`,
   recovery actions, realization events, billing status).
 - **Sample mode** (`/app?sample=1`, or the button on the sign-in screen) is
   read-only synthetic data with no login and no Stripe. It is the built-in demo.
-- Roles do not exist: every signed-in user is the sole owner of their own tenant.
-  Nobody, including the operator, can see another tenant from inside the app.
+- Tenant roles do not exist: every signed-in user is the sole owner of their own
+  tenant. Only emails in `RECOUP_OPERATOR_EMAILS` can see the cross-tenant
+  Platform Admin console.
 
 ## Operator tasks
 
@@ -72,9 +74,11 @@ or **Delete account** (then delete `accounts/{uid}` in Firestore, or ask the use
 to run Settings → Delete account data first).
 
 ### 5. Stop new signups (invite-only pilots)
-Firebase Auth → Settings → **User actions** → uncheck *Enable create (sign-up)*.
-Existing users still sign in; new Google identities are rejected. Re-enable to
-let a new pilot in, or pre-create the user with their email first.
+The signup toggle in `/app` → **Platform Admin** is the preferred control.
+Firebase Auth → Settings → **User actions** → uncheck *Enable create (sign-up)*
+is the console fallback. Existing users still sign in; new Google identities are
+rejected. Re-enable to let a new pilot in, or pre-create the user with their
+email first.
 
 ### 6. Check billing / fees
 - App side: Settings → Billing shows card status and realized/fee totals.
@@ -102,8 +106,8 @@ tickets, or chat.
 Stripe → Settings → Team → *Invite member* (role: Developer or Analyst; use
 Administrator only for whoever owns payouts). This cannot be done from GCP.
 
-## Roadmap: in-app Platform Admin
-Planned (not built, not part of the frozen `d40604d` product): an operator
-console gated by an allowlist of operator emails that lists tenants, shows each
-tenant's findings/billing/assurance status, can disable signup, and can reset
-demo tenants. Until then this runbook is the admin surface.
+## In-app Platform Admin
+Operators listed in `RECOUP_OPERATOR_EMAILS` see a **Platform Admin** nav item
+in `/app`. The console provides tenant list/detail, the signup toggle and invited
+emails, the demo flag, demo-only tenant reset, and the admin audit. The console
+procedures in this runbook remain the fallback.
