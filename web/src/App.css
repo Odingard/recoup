@@ -59,8 +59,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* Top bar */
 .topbar { align-items: center; backdrop-filter: blur(12px); background: rgba(11, 15, 20, 0.85); border-bottom: 1px solid var(--border); display: flex; gap: 18px; justify-content: space-between; margin: 0 -22px 22px; padding: 12px 22px; position: sticky; top: 0; z-index: 20; }
 .topbar .wordmark { background: none; border: 0; padding: 0; }
-.topbar-links { align-items: center; display: flex; gap: 16px; }
-.topbar-link { color: var(--text-muted); }
+.topbar-links { align-items: center; display: flex; gap: 16px; min-width: 0; }
+.topbar-link { color: var(--text-muted); white-space: nowrap; }
 .topbar-link:hover, .topbar-link.active { color: var(--text); }
 .topbar-action { align-items: center; display: inline-flex; gap: 4px; }
 .topbar-action:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -69,9 +69,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .link-quiet:hover { color: var(--text); }
 .icon-btn { background: none; color: var(--text-muted); padding: 8px; }
 .icon-btn:hover { color: var(--text); }
-.period-picker { align-items: center; display: inline-flex; gap: 8px; }
+.period-picker { align-items: center; display: inline-flex; flex-shrink: 1; gap: 8px; min-width: 0; }
 .period-picker label, .period-picker span { color: var(--text-muted); font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
-.period-picker input { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 7px 9px; width: 104px; }
+.period-picker input { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); min-width: 0; padding: 7px 9px; width: 104px; }
 
 .header { align-items: center; display: flex; gap: 16px; justify-content: space-between; margin-bottom: 18px; }
 .header-actions, .brand-row, .review-actions, .chip-row, .exec-strip, .cc-pipeline { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
@@ -215,7 +215,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 @media (max-width: 900px) {
   .topbar { align-items: flex-start; flex-direction: column; }
-  .topbar-links { flex-wrap: wrap; }
+  .topbar-links { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; }
+  .topbar-action .topbar-link-label { display: none; }
+  .period-picker input { width: 76px; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .upload-grid, .detail-grid, .detail-grid-two { grid-template-columns: 1fr; }
   .app-container { padding: 0 14px 32px; }

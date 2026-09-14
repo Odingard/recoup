@@ -48,9 +48,13 @@ const TRIGGER_LABELS = {
   contract_renewal: 'Renewal', term_expiration: 'Term expired', pricing_change: 'Pricing change',
 }
 
-const STAGE_LABEL = {
-  open: 'Prove', approved: 'Act', invoiced: 'Recover', disputed: 'Recover',
-  recovered: 'Verify', rejected: '—', written_off: '—',
+function caseStageLabel(caseItem) {
+  const status = caseItem?.status || 'open'
+  if (status === 'open') return caseItem?.verified ? 'Approve' : 'Prove'
+  if (status === 'approved') return 'Act'
+  if (status === 'invoiced' || status === 'disputed') return 'Recover'
+  if (status === 'recovered') return 'Verify'
+  return status
 }
 
 function triggerLabel(trigger) {
@@ -693,7 +697,7 @@ function App() {
     const seed = async () => {
       try {
         const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
-        appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} agreements for ${billingPeriod}`)
+        appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} findings for ${billingPeriod}`)
         const latestFindings = await apiRequest('/findings')
         appendActivity((Array.isArray(latestFindings) ? latestFindings : []).map((finding) => {
           const customer = finding.customer_name || finding.customer_id || 'counterparty'
@@ -846,7 +850,7 @@ function App() {
       const result = await apiRequest(`/reconcile?period=${billingPeriod}`, { method: 'POST' })
       setReviewQueue(result?.needs_review || [])
       setStatusMessage(`Evaluation complete: ${result.findings_found} findings.` + (result?.needs_review_count ? ` ${result.needs_review_count} item(s) need review.` : ''))
-      appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} agreements for ${billingPeriod}`)
+      appendActivity(`Evaluated ${result?.agreements_evaluated ?? result?.contracts_evaluated ?? result?.findings_found ?? 0} findings for ${billingPeriod}`)
       await refreshAll()
       const latestFindings = await apiRequest('/findings')
       appendActivity((Array.isArray(latestFindings) ? latestFindings : []).map((finding) => {
@@ -1533,7 +1537,7 @@ function App() {
             <td>{c.period || '—'}</td>
             <td className="money">{formatCurrency(c.recoverable_difference)}</td>
             <td>{Math.round(Number(c.confidence || 0) * 100)}%</td>
-            <td>{STAGE_LABEL[c.status || 'open'] || c.status}</td>
+            <td>{caseStageLabel(c)}</td>
             <td>{caseRowAction(c)}</td>
           </tr>)}
           {cases.length === 0 && <tr><td colSpan="7" className="muted-copy">No cases match the current filters.</td></tr>}
@@ -1851,11 +1855,11 @@ function App() {
             <button key={item.id} type="button" className={`link-quiet topbar-link ${drawerScreen === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}>{item.title}</button>
           ))}
           <label className="topbar-link topbar-action" aria-label="Add documents">
-            ＋ Add documents
+            <span className="topbar-icon" aria-hidden="true">＋</span><span className="topbar-link-label">Add documents</span>
             <input type="file" multiple hidden disabled={bulkUploading} accept=".pdf,.docx,.txt,.md,.csv,.zip,.png,.jpg,.jpeg" onChange={handleBulkUpload} />
           </label>
-          <button type="button" className="link-quiet topbar-link topbar-action" onClick={runEvaluation} disabled={running}>
-            {running ? <RefreshCw className="spin" size={13} /> : '↻'} {running ? 'Evaluating…' : 'Run evaluation'}
+          <button type="button" className="link-quiet topbar-link topbar-action" onClick={runEvaluation} disabled={running} aria-label="Run evaluation">
+            <span className="topbar-icon" aria-hidden="true">{running ? <RefreshCw className="spin" size={13} /> : '↻'}</span><span className="topbar-link-label">{running ? 'Evaluating…' : 'Run evaluation'}</span>
           </button>
           <span className={`session-pill ${isSampleMode ? 'sample' : 'auth'}`}>{reviewLabel}</span>
           <button className="icon-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
