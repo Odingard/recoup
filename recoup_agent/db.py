@@ -173,9 +173,18 @@ def save_invoice(account_id: str, payload: dict):
     doc_id = f"{payload['customer_id']}_{payload['period']}"
     _collection(db, account_id, "invoices").document(doc_id).set(payload, merge=True)
 
+def _contract_write_payload(payload: dict) -> dict:
+    # Re-uploading a contract must not inherit a prior version's human
+    # confirmation; only an explicit confirmed flag survives the write.
+    if "confirmed" in payload:
+        return payload
+    return {**payload, "confirmed": False, "confirmed_by": None, "confirmed_at": None}
+
+
 def save_contract(account_id: str, payload: dict):
     db = get_client()
-    _collection(db, account_id, "contracts").document(payload["customer_id"]).set(payload, merge=True)
+    _collection(db, account_id, "contracts").document(payload["customer_id"]).set(
+        _contract_write_payload(payload), merge=True)
 
 def get_all_usage(account_id: str) -> list[dict]:
     db = get_client()
