@@ -883,7 +883,7 @@ function App() {
           <div><p className="eyebrow">Opportunity detail</p><h2>{finding.financial_right?.title || finding.title || finding.finding_id}</h2></div>
           <button className="btn-secondary" onClick={() => navigate('opportunities')}>Back to queue</button>
         </div>
-        <div className="detail-grid">
+        <div className="detail-grid detail-grid-two">
           <div className="info-group"><div className="info-label">1. What the agreement says</div>
             {finding.locked ? <p className="muted-copy">Proof locked — add a payment method.</p> : (
               <div className="provenance-box">{evidence.clause_ref || finding.clause_ref || '—'}<br />{evidence.clause_text || finding.clause_text || 'No clause text on file.'}</div>
@@ -893,8 +893,8 @@ function App() {
             <div><span className="muted-copy">Expected: </span><strong className="money">{formatCurrency(finding.expected_value)}</strong></div>
             <div><span className="muted-copy">Actual: </span><strong className="money">{formatCurrency(finding.actual_value)}</strong></div>
           </div>
-          <div className="info-group"><div className="info-label">3. Financial discrepancy</div>
-            <div className="metric-value money">{formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}</div>
+          <div className="info-group discrepancy-hero"><div className="info-label">3. Financial discrepancy</div>
+            <div className="discrepancy-amount money">{formatCurrency(finding.recoverable_difference ?? finding.monthly_recoverable)}</div>
             <div className="muted-copy">Confidence {Math.round(Number(finding.confidence || finding.confidence_score || 0) * 100)}% · period {finding.period || '—'} · {finding.currency || 'USD'}</div>
           </div>
           <div className="info-group"><div className="info-label">4. Calculation / evidence chain</div>
@@ -902,16 +902,16 @@ function App() {
             <div className="muted-copy">{evidence.provenance || finding.provenance || '—'}</div>
             {(finding.evidence_refs || []).map((ref) => <span key={ref} className="file-chip">{ref}</span>)}
           </div>
-          <div className="info-group"><div className="info-label">5. Status and audit history</div>
-            <span className={`status-pill status-${finding.status}`}>{String(finding.status || 'open').replace(/_/g, ' ')}</span>
-            <ul className="upload-history">
-              {(finding.recovery_history || []).map((h, i) => <li key={i}><span>{h.event}{h.decision ? ` · ${h.decision}` : ''}</span><span className="muted-copy">{h.ts}</span></li>)}
-            </ul>
-          </div>
-          <div className="info-group"><div className="info-label">6. Allowed next action</div>
-            {legal.length === 0 ? <p className="muted-copy">No legal actions remain for this status.</p> : <div className="review-actions">{legal.map((action) => <span key={action}>{actionButton(action, detailFinding)}</span>)}</div>}
-            {renderRealizationForm(detailFinding)}
-          </div>
+        </div>
+        <div className="info-group"><div className="info-label">5. Status and audit history</div>
+          <span className={`status-pill status-${finding.status}`}>{String(finding.status || 'open').replace(/_/g, ' ')}</span>
+          <ul className="upload-history">
+            {(finding.recovery_history || []).map((h, i) => <li key={i}><span>{h.event}{h.decision ? ` · ${h.decision}` : ''}</span><span className="muted-copy">{h.ts}</span></li>)}
+          </ul>
+        </div>
+        <div className="info-group"><div className="info-label">6. Allowed next action</div>
+          {legal.length === 0 ? <p className="muted-copy">No legal actions remain for this status.</p> : <div className="review-actions">{legal.map((action) => <span key={action}>{actionButton(action, detailFinding)}</span>)}</div>}
+          {renderRealizationForm(detailFinding)}
         </div>
         {['approved', 'invoiced', 'disputed'].includes(finding.status) && (
           <RecoveryActions finding={detailFinding} apiRequest={apiRequest} onChanged={refreshFindings} />
@@ -971,6 +971,7 @@ function App() {
 
   const renderOpportunities = () => {
     const set = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }))
+    if (route.id && selectedCase) return renderOpportunityDetail(selectedCase)
     return (
       <section className="panel-card">
         <div className="panel-heading"><div><p className="eyebrow">Opportunities</p><h2>Working queue</h2></div><span className="hint-pill">{cases.length} cases</span></div>
@@ -984,7 +985,7 @@ function App() {
           <input type="number" placeholder="Max age (days)" value={filters.maxAge} onChange={set('maxAge')} />
           <input type="number" step="0.05" min="0" max="1" placeholder="Min confidence" value={filters.minConfidence} onChange={set('minConfidence')} />
         </div>
-        <div className="table-wrap"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Opportunity</th><th>Value</th><th>Confidence</th><th>Evidence</th><th>Age</th><th>Status</th><th>Next valid action</th></tr></thead><tbody>
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Opportunity</th><th>Value</th><th>Confidence</th><th>Evidence</th><th>Age</th><th>Status</th><th>Next valid action</th></tr></thead><tbody>
           {cases.map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') navigate('opportunities', c.finding_id) }}>
             <td title={c.counterparty?.customer_name} className="truncate">{c.counterparty?.customer_name}</td><td>{c.financial_right?.title || c.financial_right?.type}</td><td className="money">{formatCurrency(c.recoverable_difference)}</td><td>{Math.round(Number(c.confidence || 0) * 100)}%</td><td>{Math.round(Number(c.evidence?.completeness || 0) * 100) >= 100 ? 'Complete' : 'Partial'}</td><td>{c.age_days ?? '—'}</td><td>{c.status}</td><td>{c.recommended_next_step}</td>
           </tr>)}
@@ -993,7 +994,7 @@ function App() {
         <div className="panel-section"><div className="info-label">Needs review</div>
           {reviewQueue.length === 0 ? <p className="muted-copy">No needs-review items.</p> : <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason}</span><span className="muted-copy">{item.reason || item.suggested_action}</span></li>)}</ul>}
         </div>
-        {selectedCase && renderOpportunityDetail(selectedCase)}
+        {route.id && <p className="muted-copy">Loading selected opportunity…</p>}
       </section>
     )
   }
@@ -1009,6 +1010,9 @@ function App() {
           {bulkResult?.files?.length > 0 && <ul className="upload-history">{bulkResult.files.map((f, i) => <li key={`${f.name}-${i}`} className="upload-history-item"><span className="upload-file-name">{f.name}</span><span className="file-chip">{f.kind} · {f.status}{f.message ? ` — ${f.message}` : ''}</span></li>)}</ul>}
           <p className="muted-copy">Export templates: <a href={`${API_BASE}/templates/quickbooks/invoices.csv`} download>QuickBooks</a>{' · '}<a href={`${API_BASE}/templates/xero/invoices.csv`} download>Xero</a>{' · '}<a href={`${API_BASE}/templates/stripe/invoices.csv`} download>Stripe</a></p>
         </div>
+      </div>
+      <details className="manual-entry">
+        <summary>Enter terms manually</summary>
         <div className="contract-form-grid">
           <label>Customer name<input value={contractDraft.customer_name} onChange={(event) => handleContractField('customer_name', event.target.value)} /></label>
           <label>Customer ID<input value={contractDraft.customer_id} onChange={(event) => handleContractField('customer_id', event.target.value)} placeholder="acme" /></label>
@@ -1022,14 +1026,14 @@ function App() {
           <label>Discount expires<input type="date" value={contractDraft.discount_expires} onChange={(event) => handleContractField('discount_expires', event.target.value)} /></label>
           <label>Discount applies to<input value={contractDraft.discount_applies_to} onChange={(event) => handleContractField('discount_applies_to', event.target.value)} /></label>
         </div>
-      </div>
-      <div className="clause-grid">
-        <label>Committed minimum clause quote<textarea value={contractDraft.clauses.committed_minimum} onChange={(event) => handleClauseField('committed_minimum', event.target.value)} rows={3} /></label>
-        <label>Overage clause quote<textarea value={contractDraft.clauses.overage} onChange={(event) => handleClauseField('overage', event.target.value)} rows={3} /></label>
-        <label>Discount clause quote<textarea value={contractDraft.clauses.discount} onChange={(event) => handleClauseField('discount', event.target.value)} rows={3} /></label>
-        <label>Escalator clause quote<textarea value={contractDraft.clauses.escalator} onChange={(event) => handleClauseField('escalator', event.target.value)} rows={3} /></label>
-      </div>
-      <div className="panel-footer"><button className="btn-primary" onClick={submitContract} disabled={contractSubmitting}>{contractSubmitting ? 'Uploading…' : 'Upload contract'}</button></div>
+        <div className="clause-grid">
+          <label>Committed minimum clause quote<textarea value={contractDraft.clauses.committed_minimum} onChange={(event) => handleClauseField('committed_minimum', event.target.value)} rows={3} /></label>
+          <label>Overage clause quote<textarea value={contractDraft.clauses.overage} onChange={(event) => handleClauseField('overage', event.target.value)} rows={3} /></label>
+          <label>Discount clause quote<textarea value={contractDraft.clauses.discount} onChange={(event) => handleClauseField('discount', event.target.value)} rows={3} /></label>
+          <label>Escalator clause quote<textarea value={contractDraft.clauses.escalator} onChange={(event) => handleClauseField('escalator', event.target.value)} rows={3} /></label>
+        </div>
+        <div className="panel-footer"><button className="btn-primary" onClick={submitContract} disabled={contractSubmitting}>{contractSubmitting ? 'Uploading…' : 'Upload contract'}</button></div>
+      </details>
       <div className="panel-section"><div className="info-label">Agreement list</div>
         {uploadedContracts.length === 0 ? <p className="muted-copy">No agreements uploaded yet.</p> : uploadedContracts.map((contract) => (
           <div key={contract.customer_id} className="agreement-card">
@@ -1056,15 +1060,16 @@ function App() {
         {[['recovered_to_date', 'Recovered to date'], ['recovered_this_month', 'Recovered this month'], ['success_fee_to_date', 'Success fee to date'], ['success_fee_this_month', 'Success fee this month'], ['invoiced_awaiting_payment', 'Invoiced awaiting payment'], ['written_off', 'Written off'], ['potential_monthly_recoverable', 'Potential monthly recoverable']].map(([key, label]) => <div key={key} className="metric-card"><span className="metric-label">{label}</span><strong className="metric-value money">{formatCurrency(metrics?.[key])}</strong></div>)}
       </div>
       <div className="panel-section"><div className="info-label">Recovery cases</div>
-        <div className="table-wrap"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
+        <div className="table-scroll"><table className="cc-table"><thead><tr><th>Counterparty</th><th>Status</th><th>Realized</th><th>Outstanding</th><th>Action</th></tr></thead><tbody>
           {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).map((c) => <tr key={c.finding_id} onClick={() => navigate('opportunities', c.finding_id)}><td>{c.counterparty?.customer_name}</td><td>{c.status}</td><td className="money">{formatCurrency(c.ledger?.realized_value)}</td><td className="money">{formatCurrency(c.ledger?.outstanding_value)}</td><td>{c.recommended_next_step}</td></tr>)}
+          {(commandCenter?.cases || []).filter((c) => ['approved', 'invoiced', 'disputed', 'recovered', 'written_off'].includes(c.status)).length === 0 && <tr><td colSpan="5" className="muted-copy">No recovery cases yet — approve an opportunity first.</td></tr>}
         </tbody></table></div>
       </div>
       <div className="panel-section"><div className="info-label">Record realized value</div>
         {recoveryCases.length === 0 ? <p className="muted-copy">No recovery cases are open.</p> : recoveryCases.map((finding) => <div key={finding.finding_id} className="agreement-card"><strong>{finding.customer_name || finding.customer_id}</strong><div className="muted-copy">{finding.status} · {finding.monthly_recoverable != null ? formatCurrency(finding.monthly_recoverable) : '—'}</div><button className="btn-primary" onClick={() => openRealizationForm(finding)}>Record realized value</button>{renderRealizationForm(finding)}{renderEvents(finding)}</div>)}
       </div>
       <div className="panel-section"><div className="info-label">True-up letters</div>
-        <label>Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>
+        <label className="styled-field">Sender<input value={trueupSender} onChange={(e) => setTrueupSender(e.target.value)} /></label>
         {trueupCustomers.length === 0 ? <p className="muted-copy">No true-up customers.</p> : trueupCustomers.map((customer) => <div key={customer.customer_id} className="agreement-card"><strong>{customer.customer_name}</strong><div className="muted-copy">{customer.count} finding(s)</div><button className="btn-secondary" disabled={proofLocked} title={proofLocked ? lockTitle : ''} onClick={() => downloadTrueupPdf(customer.customer_id, customer.customer_name)}>Download letter + schedule PDF</button></div>)}
       </div>
       <div className="review-actions">
@@ -1132,7 +1137,7 @@ function App() {
         <div className="header-actions">
           <div className="period-picker"><label htmlFor="billing-period">Period</label><input id="billing-period" value={billingPeriod} onChange={(event) => setBillingPeriod(event.target.value)} placeholder="YYYY-MM" /></div>
           <button className="btn-primary" onClick={runEvaluation} disabled={running}>{running ? <RefreshCw className="spin" size={16} /> : <FileText size={16} />}{running ? 'Evaluating…' : 'Run evaluation'}</button>
-          <button className="btn-danger" onClick={handleLogout} title="Sign out"><LogOut size={16} /></button>
+          <button className="btn-danger" onClick={handleLogout} title="Sign out" aria-label="Sign out"><LogOut size={16} /></button>
         </div>
       </header>
       {isSampleMode && <div className="mode-banner sample-banner"><Sparkles size={16} /> Sample data is active. Requests use synthetic data and are not tied to your account.<button className="btn-secondary" onClick={() => setSessionMode(null)}>Exit sample mode</button></div>}
