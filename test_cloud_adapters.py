@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from google.api_core.exceptions import AlreadyExists, PermissionDenied
+from google.cloud import documentai_v1 as documentai
 from pydantic import BaseModel, ValidationError
 from reportlab.pdfgen.canvas import Canvas
 
@@ -129,6 +130,45 @@ def test_document_selection_and_explicit_gemini_rollback(monkeypatch):
     monkeypatch.setenv("RECOUP_DOCAI_PROCESSOR", " ")
     with pytest.raises(ProviderConfigurationError):
         get_document_adapter()
+
+
+@pytest.mark.parametrize("confidence", [0.62, 0.97])
+def test_documentai_protobuf_confidence_reaches_verification(remote, confidence):
+    _, result = remote
+    result["content"] = '{"results":[{"index":0,"verdict":"supports"},{"index":1,"verdict":"supports"}]}'
+    notice = "Renewal notice must be given sixty days before term end."
+    seats = "Customer is licensed for 240 active user seats."
+    text = notice + "\n" + seats
+    document = documentai.Document(text=text, pages=[{
+        "layout": {"text_anchor": {"text_segments": [{"end_index": len(text)}]}},
+        "blocks": [
+            {"layout": {"confidence": confidence, "text_anchor": {
+                "text_segments": [{"end_index": len(notice)}]}}},
+            {"layout": {"confidence": 0.99, "text_anchor": {
+                "text_segments": [{"start_index": len(notice) + 1, "end_index": len(text)}]}}},
+        ],
+        "tokens": [{"layout": {"confidence": score}} for score in (0.7, 0.8, 0.9)],
+    }])
+    client = SimpleNamespace(
+        process_document=lambda request: documentai.ProcessResponse(document=document))
+    pages = DocumentAiOcr("projects/p/locations/us/processors/p", client=client).page_texts(
+        b"scanned-document", "application/pdf")
+    assert pages[0].text == text
+    assert [block.text for block in pages[0].blocks] == [notice, seats]
+    assert pages[0].blocks[0].confidence == pytest.approx(confidence)
+    assert pages[0].ocr_confidence == pytest.approx(0.8)
+    terms = [
+        PageAnchoredEntitlement(term_type="renewal_notice_days", value=60, page=1,
+                                provenance=notice, confidence_score=0.95),
+        PageAnchoredEntitlement(term_type="committed_seats", value=240, page=1,
+                                provenance=seats, confidence_score=0.95),
+    ]
+    verified = verify(SimpleNamespace(entitlements=terms), pages)
+    assert verified[0].verification["ocr_confidence"] == pytest.approx(confidence)
+    assert verified[0].verification["ocr_gate"] is (confidence < 0.85)
+    assert verified[0].confidence_score == (0.7 if confidence < 0.85 else 0.95)
+    assert verified[1].verification["ocr_gate"] is False
+    assert verified[1].confidence_score == 0.95
 
 
 @pytest.mark.parametrize(("variable", "factory"), [
