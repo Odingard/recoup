@@ -37,6 +37,7 @@ jobs:
             artifactregistry.googleapis.com \
             secretmanager.googleapis.com \
             aiplatform.googleapis.com \
+            documentai.googleapis.com \
             --project $PROJECT_ID
 
       - name: Configure Docker for Artifact Registry
@@ -150,7 +151,7 @@ jobs:
       - name: Grant Vertex AI and Cloud permissions to runtime SA
         run: |
           RUNTIME_SA="recoup-backend@${PROJECT_ID}.iam.gserviceaccount.com"
-          for role in roles/aiplatform.user roles/datastore.user; do
+          for role in roles/aiplatform.user roles/datastore.user roles/documentai.apiUser; do
             gcloud projects add-iam-policy-binding $PROJECT_ID \
               --member="serviceAccount:$RUNTIME_SA" \
               --role="$role" \

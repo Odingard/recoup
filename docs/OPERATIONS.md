@@ -27,7 +27,7 @@ See `recoup_agent/.env.example`. Nothing is hardcoded — set these at deploy ti
 | `RECOUP_BILLING_STRIPE_API_KEY` | Dedicated Stripe key used only for Recoup success-fee billing |
 | `RECOUP_REPORT_SHARE_SECRET` | HMAC key that signs public report share links; deploy generates it once per project in Secret Manager (`recoup-report-share-secret`). Unset → `POST /api/report/share` returns 503 and sharing is disabled |
 | `RECOUP_BILLING_SOURCE` | `stripe` to reconcile from Stripe instead of the synthetic/Firestore book |
-| `RECOUP_DOCAI_PROCESSOR` | Document AI processor resource name (`projects/…/locations/{loc}/processors/…`) for scanned-PDF OCR. Returns per-block/token confidence; unset → Gemini OCR fallback (no confidence signal) |
+| `RECOUP_DOCAI_PROCESSOR` | Document AI processor resource name (`projects/…/locations/{loc}/processors/…`) for scanned-PDF OCR — in the same GCP project, so the deploy workflow enables `documentai.googleapis.com` and grants the runtime SA `roles/documentai.apiUser` itself. Returns per-block/token confidence; unset → Gemini OCR fallback (no confidence signal) |
 | `RECOUP_OCR_CONFIDENCE_GATE` | Min OCR confidence for a cited quote to count as verified (default `0.85`). Below it, the term's final confidence is capped at 0.7 and the UI shows "Low OCR confidence" instead of "Verified quote" |
 | `PORT` | Server port (Cloud Run injects this) |
 

@@ -246,6 +246,12 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             needs_review, contract, conflict.get("term"),
             f"Conflicting values for {label}: {cands} \u2014 choose which governs",
             extra={"term_conflicts": [conflict]})
+    # A conflicting term boundary means we cannot tell whether the contract
+    # was even in force for this period — fail closed like the prorated
+    # early-out: review only, no findings.
+    if conflicted_terms & {"term_start", "term_end"}:
+        _surface_credits()
+        return findings
 
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")

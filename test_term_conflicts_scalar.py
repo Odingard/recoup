@@ -118,6 +118,30 @@ def test_reconcile_seat_conflict_single_review_no_finding():
                    and "missing" in r["reason"] for r in needs_review)
 
 
+def test_term_boundary_conflict_suppresses_all_findings():
+    contract = _conflicted_seat_contract()
+    contract["term_conflicts"] = [{
+        "term": "term_end", "effective_date": None,
+        "candidates": [
+            {"value": "2026-12-31", "page": 9, "section_ref": "9.1"},
+            {"value": "2027-12-31", "page": 12, "section_ref": "Exhibit A"}]}]
+    contract["committed_minimum_monthly"] = 15000.0
+    contract["minimum_schedule"] = [
+        {"amount": 15000.0, "effective_date": "2026-01-01"}]
+    contract["term_meta"]["committed_minimum_monthly"] = {
+        "confidence": 0.95, "provenance": "$15,000/mo minimum"}
+    needs_review = []
+    findings = reconcile(
+        contract, {},
+        {"customer_id": "scalar", "period": "2026-06",
+         "base_charge": 12000.0, "amount_billed": 12000.0},
+        "2026-06", needs_review=needs_review)
+    assert findings == []
+    end_reviews = [r for r in needs_review if r["term"] == "term_end"]
+    assert len(end_reviews) == 1
+    assert "choose which governs" in end_reviews[0]["reason"]
+
+
 def _auth_client(monkeypatch):
     monkeypatch.delenv("RECOUP_SAMPLE_MODE", raising=False)
     monkeypatch.setattr(api, "_ensure_firebase_app", lambda: None)
