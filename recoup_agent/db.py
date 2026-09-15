@@ -179,7 +179,11 @@ def _contract_write_payload(payload: dict) -> dict:
     # confirmation; only an explicit confirmed flag survives the write.
     if "confirmed" in payload:
         return payload
-    return {**payload, "confirmed": False, "confirmed_by": None, "confirmed_at": None}
+    return {**payload, "confirmed": False, "confirmed_by": None,
+            "confirmed_at": None,
+            "term_conflicts": payload.get("term_conflicts", []),
+            "unresolved_terms": payload.get("unresolved_terms", []),
+            "term_resolutions": payload.get("term_resolutions")}
 
 
 def save_contract(account_id: str, payload: dict):

@@ -228,6 +228,13 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
         _append_bundle(result, bundle)
 
     resolver = CustomerResolver(existing_contracts + result.contracts)
+    party_ids = {c.get("customer_id") for c in resolver.contracts
+                 if c.get("customer_id")}
+    default_customer = None
+    if len(party_ids) == 1:
+        only = next(c for c in resolver.contracts
+                    if c.get("customer_id") == next(iter(party_ids)))
+        default_customer = only.get("customer_name") or only["customer_id"]
     for name, content in flat:
         suffix = Path(name).suffix.lower()
         if suffix in CONTRACT_SUFFIXES:
@@ -254,11 +261,16 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 result.files.append({"name": name, "kind": "invoices", "status": "success",
                                      "message": f"{len(invoices)} invoice periods", "count": len(invoices)})
             elif kind == "usage":
-                usage, nr = load_usage_csv(Path(temp.name), resolver)
+                usage, nr = load_usage_csv(Path(temp.name), resolver,
+                                           default_customer=default_customer)
                 result.usage.extend(usage)
                 result.needs_review.extend(nr)
+                message = f"{len(usage)} usage periods"
+                if usage and all(r.get("customer_inferred") for r in usage):
+                    message = (f"usage · {len(usage)} periods · attributed to "
+                               f"{default_customer} (only counterparty)")
                 result.files.append({"name": name, "kind": "usage", "status": "success",
-                                     "message": f"{len(usage)} usage periods", "count": len(usage)})
+                                     "message": message, "count": len(usage)})
             else:
                 result.files.append({"name": name, "kind": "csv", "status": "error",
                                      "message": "Could not classify CSV (need an amount or units column)."})

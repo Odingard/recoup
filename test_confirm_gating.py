@@ -96,6 +96,7 @@ def _auth_client(monkeypatch):
 
 def test_confirm_endpoint_returns_assurance_block(monkeypatch):
     client = _auth_client(monkeypatch)
+    monkeypatch.setattr(api.db, "get_all_contracts", lambda _a: [_contract()])
     monkeypatch.setattr(api.db, "confirm_contract", lambda *args: {
         "customer_id": "acme",
         "confirmed": True,

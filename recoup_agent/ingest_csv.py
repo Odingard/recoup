@@ -251,13 +251,24 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
     return list(invoices.values()), needs_review
 
 
-def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[dict]]:
-    """Metering export -> internal usage dicts + needs_review."""
+def load_usage_csv(path, resolver: CustomerResolver,
+                   *, default_customer: str | None = None) -> tuple[list[dict], list[dict]]:
+    """Metering export -> internal usage dicts + needs_review.
+
+    When the CSV has no customer column and ``default_customer`` names the
+    tenant's only counterparty, every row is attributed to it and flagged
+    ``customer_inferred``. Without a default the file fails closed."""
     where = str(path)
     header, rows = _read_rows(path, where=where)
-    cols = resolve_columns(header, required=["customer", "units"],
-                           optional=["period", "period_start", "metric"],
+    cols = resolve_columns(header, required=["units"],
+                           optional=["customer", "period", "period_start", "metric"],
                            where=where)
+    if "customer" not in cols and default_customer is None:
+        parties = {c.get("customer_id") for c in resolver.contracts
+                   if c.get("customer_id")}
+        raise IngestError(
+            f"{where}: No customer column and this account has "
+            f"{len(parties)} counterparties — add a customer column")
     if "period" not in cols and "period_start" not in cols:
         raise IngestError(
             f"{where}: missing required column for usage period. Found columns: {header}. "
@@ -271,7 +282,8 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
     duped_rows: set[tuple] = set()
 
     for idx, row in enumerate(rows, start=2):
-        label = (row.get(cols["customer"]) or "").strip()
+        label = ((row.get(cols["customer"]) if "customer" in cols else None)
+                 or default_customer or "").strip()
         cid = resolver.resolve(label)
         if cid is None:
             if label not in seen_unresolved:
@@ -307,6 +319,8 @@ def load_usage_csv(path, resolver: CustomerResolver) -> tuple[list[dict], list[d
             per_customer_metrics.setdefault(cid, set()).add(metric)
         rec = usage.setdefault((cid, period), {
             "customer_id": cid, "period": period, "units": 0.0, "_metrics": {}})
+        if "customer" not in cols:
+            rec["customer_inferred"] = True
         rec["units"] += units
         rec["_metrics"][metric] = rec["_metrics"].get(metric, 0.0) + units
 

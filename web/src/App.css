@@ -140,6 +140,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 /* Payment gate */
 .terms-check { align-items: center; display: flex; font-size: 0.78rem; gap: 8px; margin: 10px 0; }
+.resolution-panel { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; margin-top: 10px; padding: 10px 12px; }
+.resolution-group { margin: 8px 0; }
+.resolution-group .terms-check { margin: 4px 0; }
+.resolution-panel .btn-primary { margin-top: 8px; }
 .pay-gate { align-items: flex-start; background: var(--surface-2); border: 1px solid rgba(228, 176, 74, 0.4); border-radius: 10px; display: flex; gap: 12px; margin-top: 12px; padding: 14px; }
 .pay-gate svg { color: var(--gold); flex-shrink: 0; margin-top: 2px; }
 .pay-gate .btn-primary { margin-top: 8px; }
