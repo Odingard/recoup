@@ -30,6 +30,10 @@ def _account_root(db, account_id: str):
     return db.collection("accounts").document(account_id)
 
 
+STALE_WITHDRAWAL_REASON = ("Superseded: re-evaluation with complete billing "
+                           "and usage data no longer reproduces this discrepancy")
+
+
 def _collection(db, account_id: str, name: str):
     return _account_root(db, account_id).collection(name)
 
@@ -74,6 +78,18 @@ def save_findings(account_id: str, findings: list[dict]):
         }
         if not existing.exists:
             data["status"] = status
+        elif (existing_data.get("status") == "rejected"
+              and (existing_data.get("withdrawn_by") == "system"
+                   or (existing_data.get("withdrawal_reason") == STALE_WITHDRAWAL_REASON
+                       and not existing_data.get("rejected_by")))):
+            # A finding the system withdrew as stale is re-detected: reopen it.
+            # Human rejections (rejected_by / ui_rejection) are never reopened.
+            data.update({"status": "open", "withdrawal_reason": None,
+                         "withdrawn_by": None, "withdrawn_at": None,
+                         "reopened_at": now})
+            batch.set(_collection(db, account_id, "audit_log").document(), {
+                "finding_id": f.get("finding_id"), "event": "assurance_reopened",
+                "decision": "open", "ts": now})
         batch.set(doc_ref, data, merge=True)
     
     batch.commit()

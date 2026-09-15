@@ -409,3 +409,136 @@ def test_status_endpoint_sample_mode(monkeypatch):
                       headers={"X-Recoup-Sample": "1"})
     assert resp.status_code == 200
     assert resp.json()["mode"] == "sample"
+
+
+# --- Reopen of system-withdrawn findings (db.save_findings) ---------------
+
+class _Snap:
+    def __init__(self, data):
+        self.exists = data is not None
+        self._data = data
+
+    def to_dict(self):
+        return dict(self._data) if self._data is not None else None
+
+
+class _FakeColl:
+    def __init__(self, docs, name):
+        self._docs = docs
+        self._name = name
+        self._seq = 0
+
+    def document(self, doc_id=None):
+        if doc_id is None:
+            self._seq += 1
+            doc_id = f"{self._name}-{self._seq}"
+        return _FakeDocRef(self._docs, doc_id)
+
+
+class _FakeDocRef:
+    def __init__(self, docs, doc_id):
+        self._docs = docs
+        self.id = doc_id
+
+    def get(self, transaction=None):
+        return _Snap(self._docs.get(self.id))
+
+
+class _FakeRootDoc:
+    def __init__(self):
+        self._cols = {}
+
+    def collection(self, name):
+        return self._cols.setdefault(name, _FakeColl({}, name))
+
+
+class _FakeBatch:
+    def __init__(self):
+        self._ops = []
+
+    def set(self, ref, data, merge=False):
+        self._ops.append((ref, data, merge))
+
+    def update(self, ref, data):
+        self._ops.append((ref, data, True))
+
+    def commit(self):
+        for ref, data, merge in self._ops:
+            if merge:
+                ref._docs.setdefault(ref.id, {}).update(data)
+            else:
+                ref._docs[ref.id] = dict(data)
+        self._ops = []
+
+
+class _FakeFirestore:
+    def __init__(self):
+        self._accounts = {}
+
+    def collection(self, name):
+        assert name == "accounts"
+        return self
+
+    def document(self, account_id):
+        return self._accounts.setdefault(account_id, _FakeRootDoc())
+
+    def batch(self):
+        return _FakeBatch()
+
+
+def _fake_findings_db(monkeypatch, stored):
+    from recoup_agent import db as db_module
+    fake = _FakeFirestore()
+    root = fake.document("acct")
+    for fid, doc in stored.items():
+        root.collection("findings")._docs[fid] = dict(doc)
+    monkeypatch.setattr(db_module, "get_client", lambda: fake)
+    return root
+
+
+_FRESH = {"finding_id": "F-1", "customer_id": "X", "period": "2026-06",
+          "type": "unenforced_minimum", "monthly_recoverable": 2500.0}
+
+
+def test_system_withdrawn_finding_reopens_on_redetect(monkeypatch):
+    from recoup_agent import db as db_module
+    root = _fake_findings_db(monkeypatch, {
+        "F-1": {"status": "rejected",
+                "withdrawal_reason": db_module.STALE_WITHDRAWAL_REASON,
+                "withdrawn_by": "system",
+                "withdrawn_at": "2026-09-15T00:00:00+00:00",
+                "created_at": "2026-09-15T00:00:00+00:00"}})
+    db_module.save_findings("acct", [dict(_FRESH)])
+    saved = root.collection("findings")._docs["F-1"]
+    assert saved["status"] == "open"
+    assert saved["withdrawal_reason"] is None
+    assert saved["withdrawn_by"] is None
+    assert saved["withdrawn_at"] is None
+    assert saved["reopened_at"]
+    audits = list(root.collection("audit_log")._docs.values())
+    assert any(a["event"] == "assurance_reopened" and a["finding_id"] == "F-1"
+               for a in audits)
+
+
+def test_human_rejected_finding_stays_rejected(monkeypatch):
+    from recoup_agent import db as db_module
+    root = _fake_findings_db(monkeypatch, {
+        "F-1": {"status": "rejected", "rejected_by": "owner@example.com",
+                "created_at": "2026-09-15T00:00:00+00:00"}})
+    db_module.save_findings("acct", [dict(_FRESH)])
+    saved = root.collection("findings")._docs["F-1"]
+    assert saved["status"] == "rejected"
+    assert "reopened_at" not in saved
+    assert root.collection("audit_log")._docs == {}
+
+
+def test_stale_withdrawal_records_system_actor(fake_db):
+    finding = {"finding_id": "F-X-202606-MIN", "customer_id": "X",
+               "period": "2026-06", "type": "unenforced_minimum",
+               "status": "open", "monthly_recoverable": 1000.0}
+    _seed_complete_assurance_book(fake_db, finding)
+    _evaluate_usage_event(fake_db)
+    stored = fake_db.findings[finding["finding_id"]]
+    assert stored["status"] == "rejected"
+    assert stored["withdrawn_by"] == "system"
+    assert stored["withdrawn_at"]
