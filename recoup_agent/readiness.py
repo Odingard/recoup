@@ -76,14 +76,22 @@ def dependency_checks(deep: bool) -> dict[str, dict]:
                           or _env_set("RECOUP_STRIPE_APP_CLIENT_ID"))
                       else "no connector credential configured",
         },
-        "vertex_config": {
-            "ok": _env_set("GOOGLE_GENAI_USE_VERTEXAI") and _env_set("GOOGLE_CLOUD_LOCATION"),
-            "detail": "vertex env configured"
-                      if (_env_set("GOOGLE_GENAI_USE_VERTEXAI")
-                          and _env_set("GOOGLE_CLOUD_LOCATION"))
-                      else "GOOGLE_GENAI_USE_VERTEXAI/GOOGLE_CLOUD_LOCATION missing",
-        },
     }
+    provider = os.getenv("RECOUP_MODEL_PROVIDER", "google").strip().lower()
+    if provider == "google":
+        configured = _env_set("GOOGLE_GENAI_USE_VERTEXAI") and _env_set("GOOGLE_CLOUD_LOCATION")
+        checks["vertex_config"] = {
+            "ok": configured,
+            "detail": "vertex env configured" if configured
+                      else "GOOGLE_GENAI_USE_VERTEXAI/GOOGLE_CLOUD_LOCATION missing",
+        }
+    else:
+        configured = provider == "remote" and _env_set("RECOUP_MODEL_URL") and _env_set("RECOUP_REMOTE_MODEL")
+        checks["model_config"] = {
+            "ok": configured,
+            "detail": "remote model configured" if configured
+                      else "model provider disabled, unsupported or missing configuration",
+        }
     if _env_set("RECOUP_GIT_SHA"):
         checks["version_stamped"] = {"ok": True, "detail": "RECOUP_GIT_SHA set"}
     else:

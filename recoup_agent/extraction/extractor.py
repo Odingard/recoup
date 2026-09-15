@@ -11,9 +11,11 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
+from ..cloud.models import GenerationConfig, get_model_adapter
+from .ocr import get_ocr_adapter
 from .chunker import Chunk, chunk_pages
 from .ontology import FINANCIAL_RIGHT_TYPES, families
-from .pages import Page
+from .pages import Page, load_pages
 
 SYSTEM = """You are extracting contractual financial entitlements for a revenue-recovery audit. You only report terms that are stated in the document text provided. Every entitlement must carry: the exact verbatim quote as provenance, the page number from the [[PAGE n]] marker where that quote appears, and the section reference if the document has one. Never infer, estimate, or normalise a number that is not written in the text. If an amendment, addendum, order form, or exhibit changes a term, emit both the original and the changed value as separate entitlements, each with its own effective_date. Where the document uses a defined term (for example "Committed Volume" or "Fees"), resolve it using the document's own definitions section and cite both pages in provenance. Percentages are decimals (0.05 for 5%). Dates are ISO YYYY-MM-DD. If you are not certain a term is stated, set confidence_score below 0.6 rather than omitting or guessing.\n"""
 
@@ -69,10 +71,7 @@ class ExtractionResult:
 
 
 def _client():
-    from google import genai
-    from google.genai import types
-    timeout = int(os.getenv("RECOUP_EXTRACTION_TIMEOUT_MS", "120000"))
-    return genai.Client(http_options=types.HttpOptions(timeout=timeout))
+    return get_model_adapter()
 
 
 def _transient(exc: Exception) -> bool:
@@ -109,7 +108,7 @@ def _amendment_number(profile: DocumentProfile, file_name: str | None, first_pag
     return None
 
 
-def _classify(client, types, model: str, *, text: str, cached_content=None,
+def _classify(client, model: str, *, text: str, cached_content=None,
               file_name: str | None, first_page_text: str) -> DocumentProfile:
     try:
         kwargs = {"response_mime_type": "application/json", "response_schema": DocumentProfile,
@@ -118,7 +117,7 @@ def _classify(client, types, model: str, *, text: str, cached_content=None,
             kwargs["cached_content"] = cached_content
         response = _call(client, model,
                          CLASSIFY_PROMPT if cached_content else f"{CLASSIFY_PROMPT}\n\n{text[:60000]}",
-                         types.GenerateContentConfig(**kwargs))
+                         GenerationConfig(**kwargs))
         parsed = getattr(response, "parsed", None)
         if parsed is None:
             raw = getattr(response, "text", response)
@@ -137,7 +136,7 @@ def _call(client, model: str, contents, config):
     last = None
     for attempt in range(3):
         try:
-            return client.models.generate_content(model=model, contents=contents, config=config)
+            return get_model_adapter(client).generate(model=model, contents=contents, config=config)
         except Exception as exc:
             last = exc
             if attempt == 2 or not _transient(exc):
@@ -146,11 +145,11 @@ def _call(client, model: str, contents, config):
     raise last
 
 
-def _config(types, *, cached_content=None):
+def _config(*, cached_content=None):
     kwargs = {"response_mime_type": "application/json", "response_schema": ChunkExtraction, "temperature": 0.0}
     if cached_content:
         kwargs["cached_content"] = cached_content
-    return types.GenerateContentConfig(**kwargs)
+    return GenerationConfig(**kwargs)
 
 
 def _parse_response(response) -> ChunkExtraction:
@@ -182,7 +181,7 @@ def _family_prompt(term_types, signals) -> str:
 
 def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: str | None = None,
                   file_name: str | None = None) -> ExtractionResult:
-    client = client or _client()
+    client = get_model_adapter(client) if client is not None else _client()
     model = model or os.getenv("RECOUP_EXTRACTION_MODEL", "gemini-2.5-pro")
     chunks = chunk_pages(pages)
     full_text = "\n\n".join(chunk.text for chunk in chunks)
@@ -191,18 +190,17 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
     cached = False
     profile: DocumentProfile = DocumentProfile()
     first_page_text = pages[0].text if pages else ""
-    from google.genai import types
     if len(full_text) > 200_000:
         cache = None
         try:
-            cache = client.caches.create(model=model, config=types.CreateCachedContentConfig(contents=[full_text], system_instruction=SYSTEM, ttl="1800s"))
+            cache = client.create_cache(model=model, text=full_text, system=SYSTEM, ttl="1800s")
             cached = True
-            profile = _classify(client, types, model, text=chunks[0].text if chunks else "",
-                                cached_content=cache.name, file_name=file_name,
+            profile = _classify(client, model, text=chunks[0].text if chunks else "",
+                                cached_content=cache, file_name=file_name,
                                 first_page_text=first_page_text)
             for family, term_types in families().items():
                 signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
-                response = _call(client, model, _family_prompt(term_types, signals), _config(types, cached_content=cache.name))
+                response = _call(client, model, _family_prompt(term_types, signals), _config(cached_content=cache))
                 parsed = _parse_response(response)
                 extracted.extend(parsed.entitlements)
                 if parsed.customer_name and customer_name == "Unknown":
@@ -213,15 +211,15 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
         finally:
             if cache is not None:
                 try:
-                    client.caches.delete(name=cache.name)
+                    client.delete_cache(cache)
                 except Exception:
                     pass
     if not cached:
         if chunks:
-            profile = _classify(client, types, model, text=chunks[0].text,
+            profile = _classify(client, model, text=chunks[0].text,
                                 file_name=file_name, first_page_text=first_page_text)
         for chunk in chunks:
-            response = _call(client, model, f"{ALL_FAMILIES}\n{chunk.text}", _config(types))
+            response = _call(client, model, f"{ALL_FAMILIES}\n{chunk.text}", _config())
             parsed = _parse_response(response)
             extracted.extend(parsed.entitlements)
             if parsed.customer_name and customer_name == "Unknown":
@@ -240,7 +238,7 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
                     for chunk in chunks:
                         response = _call(client, model,
                                          f"{_family_prompt(term_types, signals)}\n{chunk.text}",
-                                         _config(types))
+                                         _config())
                         parsed = _parse_response(response)
                         extracted.extend(parsed.entitlements)
                         if parsed.customer_name and customer_name == "Unknown":
@@ -252,8 +250,6 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
 
 
 def extract(file_path: str, *, pages: list[Page] | None = None, source_kind: str | None = None, client=None, model: str | None = None) -> ExtractionResult:
-    from .ocr import get_ocr_adapter
-    from .pages import load_pages
     if pages is None or source_kind is None:
         pages, source_kind = load_pages(file_path)
     if source_kind in {"scanned", "image"}:

@@ -9,6 +9,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+
+from ..cloud.models import GenerationConfig, get_model_adapter
+from ..ingestion_doc import _docx_to_text
 
 from ..rights_graph.ids import stable_id
 from .models import CandidateFinancialRight, CandidateStatus
@@ -22,15 +26,12 @@ def _norm_ws(text: str) -> str:
 
 
 def _default_client():
-    from google import genai
-    return genai.Client()
+    return get_model_adapter()
 
 
 def document_text_from_file(path: str) -> tuple[str | None, str | None]:
     """-> (text, error). text/markdown and .docx supported; PDF is skipped with
     a clear reason (PDF extraction lives on the legacy ingest path)."""
-    import os.path
-    from ..ingestion_doc import _docx_to_text
     suffix = os.path.splitext(path)[1].lower()
     if suffix in {".txt", ".md"}:
         with open(path, "rb") as fh:
@@ -45,22 +46,21 @@ def document_text_from_file(path: str) -> tuple[str | None, str | None]:
 
 
 def _call(client, system: str, contents: str, schema, model: str):
-    import time
-    from google.genai import types as genai_types
     last_exc = None
     for attempt in range(4):
         try:
-            resp = client.models.generate_content(
+            resp = get_model_adapter(client).generate(
                 model=model,
                 contents=contents,
-                config=genai_types.GenerateContentConfig(
+                config=GenerationConfig(
                     system_instruction=system,
                     response_mime_type="application/json",
                     response_schema=schema,
                     temperature=0.0,
                 ),
             )
-            return schema.model_validate_json(resp.text)
+            return (schema.model_validate(resp.parsed) if resp.parsed is not None
+                    else schema.model_validate_json(resp.text))
         except Exception as exc:  # transient quota/demand errors retry; permanent ones fail
             last_exc = exc
             status = getattr(exc, "status_code", None) or getattr(exc, "code", None)

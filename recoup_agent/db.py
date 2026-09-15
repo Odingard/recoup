@@ -1,8 +1,6 @@
-import os
 import time
 from datetime import datetime, timezone
-from google.cloud import firestore
-from google.api_core.exceptions import AlreadyExists
+from .cloud.storage import DocumentStore, get_storage_adapter
 
 _client = None
 _platform_settings_cache: dict = {"at": 0.0, "value": None}
@@ -18,11 +16,10 @@ class IllegalTransition(Exception):
         self.current, self.new = current, new
         super().__init__(f"Illegal transition: {current} -> {new}")
 
-def get_client():
+def get_client() -> DocumentStore:
     global _client
     if _client is None:
-        project = os.getenv("GOOGLE_CLOUD_PROJECT")
-        _client = firestore.Client(project=project) if project else firestore.Client()
+        _client = get_storage_adapter().client()
     return _client
 
 
@@ -96,7 +93,7 @@ def save_findings(account_id: str, findings: list[dict]):
 
 def get_pending_findings(account_id: str) -> list[dict]:
     db = get_client()
-    docs = _collection(db, account_id, "findings").where(filter=firestore.FieldFilter("status", "==", "open")).stream()
+    docs = get_storage_adapter().equal(_collection(db, account_id, "findings"), "status", "open")
     findings = [{"finding_id": doc.id, **doc.to_dict()} for doc in docs]
     
     # Sort descending by recoverable amount
@@ -126,7 +123,6 @@ def transition_finding_status(account_id: str, finding_id: str, new_status: str,
     doc_ref = _collection(db, account_id, "findings").document(finding_id)
     transaction = db.transaction()
 
-    @firestore.transactional
     def _run(txn):
         snap = doc_ref.get(transaction=txn)
         if not snap.exists:
@@ -150,7 +146,7 @@ def transition_finding_status(account_id: str, finding_id: str, new_status: str,
         txn.set(_collection(db, account_id, "audit_log").document(), entry)
         return {"finding_id": finding_id, **(snap.to_dict() or {}), **update_fields}
 
-    return _run(transaction)
+    return get_storage_adapter().transact(transaction, _run)
 
 
 def update_finding_status(account_id: str, finding_id: str, status: str, event_name: str,
@@ -594,12 +590,9 @@ def save_stripe_webhook_event(event_id: str, summary: dict) -> bool:
     """Create-only idempotency record; returns False when already processed."""
     db = get_client()
     ref = _webhook_events(db).document(event_id)
-    try:
-        ref.create({"stripe_event_id": event_id,
-                    "processed_at": datetime.now(timezone.utc).isoformat(), **summary})
-    except AlreadyExists:
-        return False
-    return True
+    return get_storage_adapter().create_once(
+        ref, {"stripe_event_id": event_id,
+              "processed_at": datetime.now(timezone.utc).isoformat(), **summary})
 
 
 def find_recovery_event_by_fee_invoice(invoice_id: str) -> tuple[str, dict] | None:

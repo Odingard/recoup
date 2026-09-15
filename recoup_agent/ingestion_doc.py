@@ -6,8 +6,8 @@ import xml.etree.ElementTree as ET
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
+from .cloud import models as genai
+from .cloud.models import BinaryPart, GenerationConfig, get_model_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +81,8 @@ def _extract_single_shot(file_path: str) -> ContractEntitlements:
             file_bytes = _docx_to_text(file_path)
             mime_type = "text/plain"
 
-        # Assume we use vertex based on the environment variables defined in README
-        client = genai.Client()
-
-        document = types.Part.from_bytes(
+        client = get_model_adapter(genai.Client())
+        document = BinaryPart(
             data=file_bytes,
             mime_type=mime_type,
         )
@@ -110,16 +108,18 @@ def _extract_single_shot(file_path: str) -> ContractEntitlements:
             "count) and seat_price (the monthly price per seat)."
         )
 
-        response = client.models.generate_content(
+        response = client.generate(
             model='gemini-2.5-flash',
             contents=[document, prompt],
-            config=types.GenerateContentConfig(
+            config=GenerationConfig(
                 response_mime_type="application/json",
                 response_schema=ContractEntitlements,
                 temperature=0.0,
             ),
         )
 
+        if response.parsed is not None:
+            return ContractEntitlements.model_validate(response.parsed)
         if not response.text:
             return ContractEntitlements(customer_name="Unknown", entitlements=[])
 
