@@ -6,6 +6,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from .extractor import PageAnchoredEntitlement, _client as extraction_client, _transient
@@ -16,13 +18,18 @@ VERIFY_PROMPT = """For each item, you are given the text of one contract page an
 
 class VerificationItem(BaseModel):
     index: int
-    verdict: str
+    verdict: Literal["supports", "contradicts", "unclear"]
     reason: str = ""
 
-    @field_validator("verdict")
+    @field_validator("verdict", mode="before")
     @classmethod
-    def _lower_verdict(cls, value: str) -> str:
-        return (value or "").strip().lower()
+    def _map_verdict(cls, value) -> str:
+        text = str(value or "").strip().lower()
+        if "contradict" in text:
+            return "contradicts"
+        if "support" in text:
+            return "supports"
+        return "unclear"
 
 
 class VerificationBatch(BaseModel):
@@ -103,6 +110,8 @@ def verify(result, pages: list[Page], *, client=None, model: str | None = None) 
             items = [VerificationItem(index=index, verdict="unclear",
                                       reason=f"model verification unavailable: {exc}")
                      for index, _ent, _found in batch]
+        logger.info("verifier verdicts: %s",
+                    [(i.index, i.verdict) for i in items])
         for item in items:
             checks[item.index] = item
 
