@@ -51,7 +51,7 @@ from .ingestion_doc import (
     UnreadableDocumentError,
     extract_entitlements,
 )
-from .normalizer import normalize_contract_entitlements
+from .normalizer import minimum_term_meta, normalize_contract_entitlements
 from .pipeline import _load_book, compute_findings_and_review, run_book
 from .platform_admin import is_operator, operator_emails
 from .rights_graph import RightsGraphService
@@ -2613,7 +2613,8 @@ def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
         entry = {"amount": float(amount), "effective_date": eff}
         if source:
             entry.update({k: source[k] for k in
-                          ("provenance", "page", "section_ref", "source_file")
+                          ("provenance", "page", "section_ref", "source_file",
+                           "verification", "confidence")
                           if source.get(k) is not None})
         rebuilt.append(entry)
 
@@ -2623,6 +2624,9 @@ def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
     contract["committed_minimum_monthly"] = (
         min(rebuilt, key=lambda e: e["effective_date"])["amount"]
         if rebuilt else contract.get("committed_minimum_monthly"))
+    if rebuilt:
+        contract.setdefault("term_meta", {})["committed_minimum_monthly"] = (
+            minimum_term_meta(rebuilt))
     contract["term_conflicts"] = []
     contract["unresolved_terms"] = []
     contract["term_resolutions"] = {
