@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from . import db
+from .document_quality import LowConfidenceGateException, NEEDS_VERIFICATION, require_verified_contracts
 from .billing.connector_keys import (
     delete_connector_key,
     get_connector_status,
@@ -201,6 +202,12 @@ async def _lifespan(_app):
 app = FastAPI(title="Recoup API", description="API for the Recoup Revenue Recovery platform",
               lifespan=_lifespan)
 assert_key_separation()
+
+
+@app.exception_handler(LowConfidenceGateException)
+async def document_gate_handler(_request: Request, exc: LowConfidenceGateException):
+    return JSONResponse(status_code=409, content={
+        "status": NEEDS_VERIFICATION, "detail": str(exc), "needs_review": [exc.payload()]})
 
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv("RECOUP_ALLOWED_ORIGINS", "").split(",") if o.strip()] or [
     "https://recoup.odingard.com",
@@ -774,7 +781,8 @@ def _extract_and_normalize_contract(file_path: str, filename: str | None = None)
     from .ingestion_doc import Entitlement as _Ent
     normalized = normalize_contract_entitlements(ContractEntitlements(
         customer_name=extracted.customer_name,
-        entitlements=[_Ent(**e) for e in source]))
+        entitlements=[_Ent(**e) for e in source],
+        structural_verification=extracted.structural_verification))
     if not normalized.get("customer_name") or normalized.get("customer_name") == "Unknown":
         return None, [], "Could not extract terms; please confirm manually."
     normalized["file_name"] = file_name
@@ -872,6 +880,8 @@ def trigger_reconciliation(period: str = DEFAULT_PERIOD, user: dict = Depends(ve
         if needs_review:
             response["needs_review"] = needs_review
         return response
+    except LowConfidenceGateException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1350,6 +1360,7 @@ def _get_action_or_404(account_id: str, action_id: str) -> dict:
     if action is None:
         raise HTTPException(status_code=404,
                             detail="Recovery action not found.")
+    require_verified_contracts(db.get_all_contracts(account_id), action.get("customer_id"))
     return action
 
 
@@ -1364,6 +1375,7 @@ def create_recovery_action(finding_id: str, body: RecoveryActionCreate,
         return {"status": "not_persisted", "mode": "sample",
                 "message": "Sample mode is read-only; recovery actions are not recorded."}
     finding = _get_finding_or_404(account_id, finding_id)
+    require_verified_contracts(db.get_all_contracts(account_id), finding.get("customer_id"))
     if (finding.get("status") or "open") not in models.ACTIONABLE_FINDING_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -2265,6 +2277,14 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
 
         try:
             normalized, needs_review, error_message = _extract_and_normalize_contract(temp_path, filename)
+        except LowConfidenceGateException as exc:
+            hold = {**exc.payload(), "document_id": hashlib.sha256(content).hexdigest(),
+                    "file_name": filename}
+            if account_id is not None:
+                hold = db.hold_document(account_id, hold)
+            return {"status": NEEDS_VERIFICATION, "state": NEEDS_VERIFICATION,
+                    "saved": account_id is not None, "needs_review": [hold],
+                    "needs_review_count": 1, "message": str(exc)}
         except DocumentTooLargeError as exc:
             return _needs_review_payload(str(exc))
         except UnreadableDocumentError:
@@ -2276,6 +2296,7 @@ def _ingest_contract_bytes(account_id: str | None, filename: str, content: bytes
             return _needs_review_payload(error_message or "Could not extract terms; please confirm manually.")
 
         saved = account_id is not None
+        normalized["document_id"] = hashlib.sha256(content).hexdigest()
         assurance_events = _save_contract_if_needed(account_id, normalized)
 
         message = ("Contract extracted from scanned PDF (OCR); verify amounts against the original"
@@ -2395,6 +2416,14 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
     prior_invoices = db.get_all_invoices(account_id)
     prior_usage = db.get_all_usage(account_id)
     result = ingest_files(items, prior_contracts, extract_entitlements)
+    if result.verification_holds:
+        for hold in result.verification_holds:
+            db.hold_document(account_id, hold)
+        return {
+            "status": NEEDS_VERIFICATION, "state": NEEDS_VERIFICATION,
+            "files": result.files, "contracts": 0, "invoices": 0, "usage": 0,
+            "needs_review": result.needs_review, "periods": [], "contract_records": [],
+        }
 
     from .assurance import classify_contract_event, classify_invoice_event
     assurance_events: list[dict] = []
@@ -2705,6 +2734,8 @@ def confirm_contract(customer_id: str, payload: ConfirmPayload | None = None,
                      user: dict = Depends(verify_token)):
     """Persist a human confirmation of extracted agreement terms."""
     account_id = _account_id(user)
+    if account_id is not None:
+        require_verified_contracts(db.get_all_contracts(account_id), customer_id)
     if account_id is None:
         return {"mode": "sample", "status": "not_persisted", "customer_id": customer_id}
     stored = next((c for c in db.get_all_contracts(account_id)

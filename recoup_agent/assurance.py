@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 
 from . import db
+from .document_quality import LowConfidenceGateException, NEEDS_VERIFICATION, require_verified_contracts
 from .pipeline import compute_findings_and_review
 
 logger = logging.getLogger(__name__)
@@ -344,6 +345,7 @@ def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
         if db.assurance_event_exists(account_id, event.event_id):
             return {**base, "status": "duplicate"}
         contracts = db.get_all_contracts(account_id)
+        require_verified_contracts(contracts, event.customer_id)
         usage_list = db.get_all_usage(account_id)
         invoices_list = db.get_all_invoices(account_id)
         scope = impacted_scope(account_id, event, contracts, usage_list, invoices_list)
@@ -398,6 +400,12 @@ def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
                 "periods": periods, "findings_upserted": len(all_findings),
                 "findings_withdrawn": withdrawn,
                 "needs_review_count": len(all_review)}
+    except LowConfidenceGateException as exc:
+        db.save_assurance_event(account_id, {
+            **asdict(event), "status": NEEDS_VERIFICATION,
+            "needs_review": [exc.payload()], "evaluated_at": _now()})
+        _refresh_status(account_id)
+        return {**base, "status": NEEDS_VERIFICATION, "needs_review_count": 1}
     except Exception as exc:
         logger.warning("assurance event %s failed", event.event_id, exc_info=True)
         try:
@@ -430,14 +438,19 @@ def _refresh_status(account_id: str) -> dict:
     events = db.get_assurance_events(account_id, limit=50)
     findings = db.get_all_findings(account_id)
     latest_evaluated = next((e for e in events if e.get("evaluated_at")), None)
+    verification_queue = [
+        c["structural_verification"] for c in db.get_all_contracts(account_id)
+        if c.get("verification_scope") and c.get("verification_state") == NEEDS_VERIFICATION]
     status = {
+        "state": NEEDS_VERIFICATION if verification_queue else "Ready",
+        "verification_queue": verification_queue,
         "last_evaluated_at": (latest_evaluated or {}).get("evaluated_at"),
         "last_trigger": events[0].get("trigger") if events else None,
         "next_evaluation": "on next event",
         "sources_monitored": _sources_monitored(account_id),
         "open_discrepancies": sum(1 for f in findings if f.get("status") == "open"),
         "needs_review": sum(len(e.get("needs_review") or []) for e in events[:10])
-                        + int(prev.get("last_ingest_needs_review") or 0),
+                        + int(prev.get("last_ingest_needs_review") or 0) + len(verification_queue),
         "events_total": len(events),
         "events_needs_review": sum(1 for e in events
                                    if e.get("status") == "needs_review"),
