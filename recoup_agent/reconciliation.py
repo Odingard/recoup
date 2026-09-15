@@ -224,6 +224,29 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             parts.append(f"p.{cand['page']}")
         return " ".join(parts) or "extracted term"
 
+    # Non-minimum scalar conflicts: fail closed to review, one entry each;
+    # the corresponding rules skip because the field is None.
+    SCALAR_CONFLICT_LABELS = {
+        "committed_seats": "committed seats", "seat_price": "seat price",
+        "included_units": "included units", "overage_rate": "overage rate",
+        "escalator": "escalator", "term_start": "term start",
+        "term_end": "term end", "auto_renewal": "auto-renewal",
+        "renewal_notice_days": "renewal notice",
+    }
+    other_conflicts = [c for c in contract.get("term_conflicts") or []
+                       if c.get("term") != "committed_minimum"]
+    conflicted_terms = {c.get("term") for c in other_conflicts}
+    for conflict in other_conflicts:
+        label = SCALAR_CONFLICT_LABELS.get(conflict.get("term"),
+                                         str(conflict.get("term")).replace("_", " "))
+        cands = " vs ".join(
+            f"{cand.get('value')} ({_loc(cand)})"
+            for cand in conflict.get("candidates") or [])
+        _needs_review(
+            needs_review, contract, conflict.get("term"),
+            f"Conflicting values for {label}: {cands} \u2014 choose which governs",
+            extra={"term_conflicts": [conflict]})
+
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
@@ -288,12 +311,13 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     elif used is not None and used < 0:
         _needs_review(needs_review, contract, "included_units/overage", "negative usage quantity")
     elif included is None or (rate is None and not tiers) or used is None or billed_overage is None or min(included_conf, rate_conf) < CONFIDENCE_THRESHOLD:
-        _needs_review(
-            needs_review,
-            contract,
-            f"included_units/{rate_term}",
-            f"missing or low-confidence included units/overage rate (confidence={min(included_conf, rate_conf):.2f})",
-        )
+        if not (conflicted_terms & {"included_units", "overage_rate"}):
+            _needs_review(
+                needs_review,
+                contract,
+                f"included_units/{rate_term}",
+                f"missing or low-confidence included units/overage rate (confidence={min(included_conf, rate_conf):.2f})",
+            )
     else:
         overage_units = max(0, used - included)
         if tiers:

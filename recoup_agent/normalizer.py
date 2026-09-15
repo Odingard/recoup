@@ -8,6 +8,15 @@ def _slugify(value: str) -> str:
     return canonical_key(value) or "unknown"
 
 
+SCALAR_TERM_FIELDS = {  # term_type -> (contract field, coercion)
+    "included_units": ("included_units", int), "overage_rate": ("overage_rate", float),
+    "escalator": ("annual_escalator_pct", float), "seat_price": ("seat_price", float),
+    "committed_seats": ("committed_seats", int), "auto_renewal": ("auto_renew_months", int),
+    "renewal_notice_days": ("renewal_notice_days", int),
+    "term_start": ("term_start", None), "term_end": ("term_end", None),  # value comes from effective_date
+}
+
+
 def _term_meta(ent: Entitlement) -> dict:
     meta = {
         "confidence": float(ent.confidence_score),
@@ -25,6 +34,7 @@ def _term_meta(ent: Entitlement) -> dict:
 
 
 def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
+    candidates: dict[str, list[Entitlement]] = {}
     normalized = {
         "customer_name": contract.customer_name,
         "customer_id": _slugify(contract.customer_name),
@@ -62,12 +72,8 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
                 **({"source_file": ent.source_file} if ent.source_file else {}),
                 **({"verification": ent.verification} if getattr(ent, "verification", None) else {}),
             })
-        elif ent.term_type == "included_units":
-            normalized["included_units"] = int(ent.value)
-            normalized["term_meta"]["included_units"] = meta
-        elif ent.term_type == "overage_rate":
-            normalized["overage_rate"] = ent.value
-            normalized["term_meta"]["overage_rate"] = meta
+        elif ent.term_type in SCALAR_TERM_FIELDS:
+            candidates.setdefault(ent.term_type, []).append(ent)
         elif ent.term_type == "overage_tier":
             normalized.setdefault("_overage_tiers", []).append({
                 "up_to": ent.tier_up_to,
@@ -99,27 +105,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             normalized["discounts"].append(discount)
             discount_confidences.append(float(ent.confidence_score))
             discount_provenance.append(ent.provenance)
-        elif ent.term_type == "escalator":
-            normalized["annual_escalator_pct"] = ent.value
-            normalized["escalator_effective_date"] = ent.effective_date
-            normalized["term_meta"]["annual_escalator_pct"] = meta
-            normalized["term_meta"]["escalator_effective_date"] = meta
-        elif ent.term_type in ("term_start", "term_end"):
-            normalized[ent.term_type] = ent.effective_date
-            normalized["term_meta"][ent.term_type] = meta
-        elif ent.term_type == "auto_renewal":
-            normalized["auto_renew_months"] = int(ent.value)
-            normalized["term_meta"]["auto_renew_months"] = meta
-        elif ent.term_type == "renewal_notice_days":
-            normalized["renewal_notice_days"] = int(ent.value)
-            normalized["term_meta"]["renewal_notice_days"] = meta
-        elif ent.term_type == "committed_seats":
-            normalized["committed_seats"] = int(ent.value)
-            normalized["term_meta"]["committed_seats"] = meta
-        elif ent.term_type == "seat_price":
-            normalized["seat_price"] = ent.value
-            normalized["term_meta"]["seat_price"] = meta
-
+    resolve_scalar_terms(normalized, candidates)
     detect_term_conflicts(normalized)
 
     if normalized["minimum_schedule"]:
@@ -153,6 +139,85 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         })
 
     return normalized
+
+
+def _scalar_candidate_ref(ent: Entitlement) -> dict:
+    ref = {"value": ent.effective_date
+           if _term_type_of(ent) in ("term_start", "term_end") else ent.value}
+    for key in ("page", "section_ref", "source_file", "provenance",
+                "verification", "confidence_score", "effective_date"):
+        if getattr(ent, key, None) is not None:
+            ref["confidence" if key == "confidence_score" else key] = getattr(ent, key)
+    return ref
+
+
+def _term_type_of(ent: Entitlement) -> str:
+    return ent.term_type
+
+
+def resolve_scalar_terms(normalized: dict, candidates: dict[str, list]) -> None:
+    """Assign scalar contract fields from extraction candidates, failing
+    closed when an agreement states two different values for the same term
+    with the same effective date (e.g. 240 seats in §4.1 and 200 seats in
+    Exhibit A). Latest-dated wins when dates differ; identical duplicates
+    dedupe; conflicting same-date values are flagged on term_conflicts and
+    the field stays None so reconciliation skips deterministically."""
+    for term_type, ents in candidates.items():
+        field, coerce = SCALAR_TERM_FIELDS[term_type]
+        meta_by_ent = {id(e): _term_meta(e) for e in ents}
+        values = []
+        for ent in ents:
+            value = ent.effective_date if term_type in ("term_start", "term_end") else ent.value
+            values.append((value, ent.effective_date, ent))
+        # Dedupe identical (value, effective_date)
+        seen = set()
+        distinct = []
+        for item in values:
+            key = (item[0], item[1])
+            if key not in seen:
+                seen.add(key)
+                distinct.append(item)
+        distinct_values = {item[0] for item in distinct}
+        if len(distinct_values) == 1:
+            _v, _e, ent = max(distinct, key=lambda item: (
+                item[1] is not None, item[1] or ""))
+            _assign_scalar(normalized, field, coerce, _v, term_type, ent, meta_by_ent)
+            continue
+        if term_type not in ("term_start", "term_end"):
+            # Amendment precedence: every entry dated differently → latest wins.
+            dated = [item for item in distinct if item[1] is not None]
+            dates = {item[1] for item in dated}
+            if len(dates) == len(distinct) and len(dates) > 1:
+                value, eff, ent = max(dated, key=lambda item: item[1])
+                _assign_scalar(normalized, field, coerce, value, term_type, ent, meta_by_ent)
+                continue
+        # term_start/term_end carry their boundary in effective_date, so any
+        # two distinct values disagree with no amendment date to order them —
+        # same for same-date/undated scalars. Fail closed.
+        eff = distinct[0][1]
+        normalized.setdefault("term_conflicts", []).append({
+            "term": term_type,
+            "effective_date": eff,
+            "candidates": [_scalar_candidate_ref(ent)
+                           for _v, _e, ent in distinct],
+        })
+        normalized["term_meta"][field] = {
+            "confidence": 0.0,
+            "provenance": meta_by_ent[id(distinct[0][2])].get("provenance"),
+            "conflict": True,
+        }
+
+
+def _assign_scalar(normalized: dict, field: str, coerce, value, term_type: str,
+                   ent: Entitlement, meta_by_ent: dict) -> None:
+    if coerce is None:
+        normalized[field] = value
+    else:
+        normalized[field] = coerce(value)
+    normalized["term_meta"][field] = meta_by_ent[id(ent)]
+    if term_type == "escalator":
+        normalized["escalator_effective_date"] = ent.effective_date
+        normalized["term_meta"]["escalator_effective_date"] = meta_by_ent[id(ent)]
 
 
 def minimum_term_meta(schedule: list[dict]) -> dict:
@@ -227,5 +292,11 @@ def detect_term_conflicts(contract: dict) -> None:
         keep.extend(entries)
 
     contract["minimum_schedule"] = keep
-    contract["term_conflicts"] = conflicts
-    contract["unresolved_terms"] = unresolved
+    # Extend, not overwrite: scalar-term conflicts found during normalization
+    # must be preserved; only committed_minimum entries are replaced here.
+    contract["term_conflicts"] = [
+        c for c in contract.get("term_conflicts") or []
+        if c.get("term") != "committed_minimum"] + conflicts
+    contract["unresolved_terms"] = [
+        u for u in contract.get("unresolved_terms") or []
+        if u.get("term") != "committed_minimum"] + unresolved

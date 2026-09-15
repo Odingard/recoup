@@ -27,7 +27,22 @@ See `recoup_agent/.env.example`. Nothing is hardcoded — set these at deploy ti
 | `RECOUP_BILLING_STRIPE_API_KEY` | Dedicated Stripe key used only for Recoup success-fee billing |
 | `RECOUP_REPORT_SHARE_SECRET` | HMAC key that signs public report share links; deploy generates it once per project in Secret Manager (`recoup-report-share-secret`). Unset → `POST /api/report/share` returns 503 and sharing is disabled |
 | `RECOUP_BILLING_SOURCE` | `stripe` to reconcile from Stripe instead of the synthetic/Firestore book |
+| `RECOUP_DOCAI_PROCESSOR` | Document AI processor resource name (`projects/…/locations/{loc}/processors/…`) for scanned-PDF OCR. Returns per-block/token confidence; unset → Gemini OCR fallback (no confidence signal) |
+| `RECOUP_OCR_CONFIDENCE_GATE` | Min OCR confidence for a cited quote to count as verified (default `0.85`). Below it, the term's final confidence is capped at 0.7 and the UI shows "Low OCR confidence" instead of "Verified quote" |
 | `PORT` | Server port (Cloud Run injects this) |
+
+### OCR confidence gate
+
+Scanned agreements go through OCR before extraction. The Document AI adapter
+(`RECOUP_DOCAI_PROCESSOR`) returns per-block and per-token `layout.confidence`;
+the verifier compares the confidence of the blocks overlapping each cited quote
+(falling back to the page's mean token confidence) against
+`RECOUP_OCR_CONFIDENCE_GATE` (default 0.85). A degraded page that transcribed a
+number wrong is therefore capped at 0.7 confidence and surfaces as "Low OCR
+confidence" in the Agreements panel instead of "Verified quote". The Gemini OCR
+path returns no confidence signal and is unaffected. To disable the gate's
+confidence signal entirely, unset `RECOUP_DOCAI_PROCESSOR` — OCR falls back to
+the Gemini adapter.
 
 Per-tenant connector OAuth credentials live in **Secret Manager** under
 `recoup-connector-{account_id}`. The stored payload includes the access token,
