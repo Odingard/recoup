@@ -212,6 +212,3 @@ def detect_term_conflicts(contract: dict) -> None:
     contract["minimum_schedule"] = keep
     contract["term_conflicts"] = conflicts
     contract["unresolved_terms"] = unresolved
-    if keep:
-        latest = max(keep, key=lambda e: e.get("effective_date") or "")
-        contract["committed_minimum_monthly"] = latest["amount"]
