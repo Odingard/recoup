@@ -102,6 +102,8 @@ def _contract_money_payload(contract: dict) -> dict:
                            or contract.get("seats"),
         "seat_price": contract.get("seat_price"),
         "currency": contract.get("currency"),
+        "confirmed_at": contract.get("confirmed_at"),
+        "resolved_at": (contract.get("term_resolutions") or {}).get("resolved_at"),
     }
     return _canonical(payload)
 
