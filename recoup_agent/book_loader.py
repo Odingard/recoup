@@ -127,6 +127,9 @@ def normalize_contract(raw: dict) -> dict:
                 })
         if len(schedule) > 1:
             contract["minimum_schedule"] = schedule
+    if contract.get("minimum_schedule"):
+        from .normalizer import detect_term_conflicts
+        detect_term_conflicts(contract)
     return contract
 
 

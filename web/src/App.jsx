@@ -245,7 +245,10 @@ function App() {
   const [stageFilter, setStageFilter] = useState(null)
   const [pulseStep, setPulseStep] = useState(0)
   const [activity, setActivity] = useState([])
+  const [termChoices, setTermChoices] = useState({})
   const sampleSeeded = useRef(false)
+  const contractsRef = useRef([])
+  const commandCenterRef = useRef(null)
   const [showFilters, setShowFilters] = useState(false)
   const [showPerformance, setShowPerformance] = useState(() => {
     try { return window.localStorage.getItem('recoup.performance') === '1' } catch { return false }
@@ -464,10 +467,13 @@ function App() {
     setActivity((current) => [...current, ...entries].slice(-50))
   }, [])
 
+  useEffect(() => { contractsRef.current = uploadedContracts }, [uploadedContracts])
+  useEffect(() => { commandCenterRef.current = commandCenter }, [commandCenter])
+
   const formatAssuranceActivity = useCallback((event) => {
     if (!event || event.status === 'duplicate') return null
-    const customer = uploadedContracts.find((contract) => contract.customer_id === event.customer_id)?.customer_name
-      || commandCenter?.filters?.customers?.find((item) => item.id === event.customer_id)?.name
+    const customer = contractsRef.current.find((contract) => contract.customer_id === event.customer_id)?.customer_name
+      || commandCenterRef.current?.filters?.customers?.find((item) => item.id === event.customer_id)?.name
       || event.customer_id
       || 'counterparty'
     const period = event.period || 'all periods'
@@ -478,7 +484,7 @@ function App() {
     const withdrawn = Array.isArray(event.findings_withdrawn) ? event.findings_withdrawn.length : Number(event.findings_withdrawn || 0)
     const review = Array.isArray(event.needs_review) ? event.needs_review.length : Number(event.needs_review_count || 0)
     return `${label} · ${customer} · ${period} → ${updated} discrepanc${updated === 1 ? 'y' : 'ies'} updated${withdrawn ? `, ${withdrawn} withdrawn` : ''}${review ? `, ${review} sent to review` : ''}`
-  }, [uploadedContracts, commandCenter])
+  }, [])
 
   const loadConnectorStatus = useCallback(async () => {
     if (!apiReady) return
@@ -759,12 +765,16 @@ function App() {
     void handleBulkUpload(event.dataTransfer.files)
   }
 
-  const confirmContract = async (customerId) => {
+  const confirmContract = async (customerId, resolutions = null) => {
     setConfirmingCustomer(customerId)
     try {
-      const result = await apiRequest(`/contracts/${encodeURIComponent(customerId)}/confirm`, { method: 'POST' })
+      const result = await apiRequest(`/contracts/${encodeURIComponent(customerId)}/confirm`, {
+        method: 'POST',
+        ...(resolutions ? { body: { resolutions } } : {}),
+      })
       if (result?.status === 'confirmed' || result?.contract?.confirmed) {
-        setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, confirmed: true, confirmed_by: result.contract?.confirmed_by, confirmed_at: result.contract?.confirmed_at } : item))
+        setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, ...result.contract, confirmed: true } : item))
+        setTermChoices((current) => ({ ...current, [customerId]: {} }))
         setStatusMessage('Contract terms confirmed.')
         await refreshAll()
       } else {
@@ -1291,7 +1301,7 @@ function App() {
     const clauseSection = clauseMeta.section_ref || joined.section_ref
     const clausePage = clauseMeta.page || joined.page
     const sourceFileName = clauseMeta.source_file || fileName
-    const verifiedQuote = clauseMeta.verification?.quote_found && clauseMeta.verification?.model_check === 'supports'
+    const verifiedQuote = clauseMeta.verification?.quote_found && String(clauseMeta.verification?.model_check || '').toLowerCase() === 'supports'
     const gated = joined.locked || proofLocked
     return (
       <section className="panel-card opportunity-detail">
@@ -1625,9 +1635,51 @@ function App() {
             <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : needsReview ? 'status-review' : 'status-read'}`}>{contract.confirmed ? `Confirmed by ${shortActor(contract.confirmed_by)}` : needsReview ? 'Needs your review' : 'Read by Recoup'}</span></div>
             {(contract.documents || []).length > 0 && <div className="term-chips doc-chips">{contract.documents.map((doc, i) => <span key={`${doc.file_name}-${i}`} className="term-chip">{docRoleLabel(doc)} · {doc.file_name}{doc.effective_date ? ` · eff. ${doc.effective_date}` : ''}</span>)}</div>}
             <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
-            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && meta.verification?.model_check === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{termHistoryNote(contract, key) ? ` · ${termHistoryNote(contract, key)}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
+            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && String(meta.verification?.model_check || '').toLowerCase() === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{termHistoryNote(contract, key) ? ` · ${termHistoryNote(contract, key)}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
             {provenances.length === 1 && <div className="muted-copy source-line">Source: {provenances[0]}</div>}
-            {needsReview && !contract.confirmed && <><button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm as read'}</button><span className="muted-copy review-note">Recoup wasn't sure about the amber terms — confirm or re-upload a clearer copy.</span></>}
+            {(() => {
+              const conflicts = (contract.term_conflicts || []).filter((c) => c.term === 'committed_minimum')
+              const unresolved = (contract.unresolved_terms || []).filter((u) => u.term === 'committed_minimum')
+              if (!conflicts.length && !unresolved.length) return null
+              const choices = termChoices[contract.customer_id] || {}
+              const setChoice = (key, value) => setTermChoices((current) => ({ ...current, [contract.customer_id]: { ...(current[contract.customer_id] || {}), [key]: value } }))
+              const conflictsDone = conflicts.every((c) => choices[`c:${c.effective_date}`] != null)
+              const unresolvedDone = unresolved.every((u, i) => Boolean(choices[`u:${i}:month`]) || choices[`u:${i}:dismiss`])
+              const resolutions = {
+                committed_minimum: [
+                  ...conflicts.map((c) => ({ effective_date: c.effective_date, amount: choices[`c:${c.effective_date}`] })),
+                  ...unresolved.map((u, i) => choices[`u:${i}:month`] ? { effective_date: choices[`u:${i}:month`], amount: u.amount } : null).filter(Boolean),
+                ],
+                dismissed: unresolved.map((u, i) => choices[`u:${i}:dismiss`] ? { term: 'committed_minimum', amount: u.amount, page: u.page } : null).filter(Boolean),
+              }
+              return (
+                <div className="resolution-panel">
+                  <div className="info-label">Which term governs?</div>
+                  {conflicts.map((c) => (
+                    <div key={c.effective_date} className="resolution-group">
+                      <div className="muted-copy">Minimum for periods from {c.effective_date}</div>
+                      {(c.candidates || []).map((cand) => (
+                        <label key={cand.amount} className="terms-check" title={cand.provenance || undefined}>
+                          <input type="radio" name={`${contract.customer_id}-conflict-${c.effective_date}`}
+                            checked={choices[`c:${c.effective_date}`] === cand.amount}
+                            onChange={() => setChoice(`c:${c.effective_date}`, cand.amount)} />
+                          {`$${Number(cand.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} · ${cand.section_ref || '—'} · p. ${cand.page ?? '—'}`}
+                        </label>
+                      ))}
+                    </div>
+                  ))}
+                  {unresolved.map((u, i) => (
+                    <div key={`u-${i}`} className="resolution-group">
+                      <div className="muted-copy">Undated amendment: ${Number(u.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} · p. {u.page ?? '—'}</div>
+                      <label className="terms-check">applies from <input type="month" value={choices[`u:${i}:month`] || ''} disabled={Boolean(choices[`u:${i}:dismiss`])} onChange={(event) => setChoice(`u:${i}:month`, event.target.value)} /></label>
+                      <label className="terms-check"><input type="checkbox" checked={Boolean(choices[`u:${i}:dismiss`])} onChange={(event) => setChoice(`u:${i}:dismiss`, event.target.checked)} /> Dismiss</label>
+                    </div>
+                  ))}
+                  {!contract.confirmed && <button className="btn-primary" disabled={!conflictsDone || !unresolvedDone || confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id, resolutions)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm with these terms'}</button>}
+                </div>
+              )
+            })()}
+            {needsReview && !contract.confirmed && !(contract.term_conflicts?.length || contract.unresolved_terms?.length) && <><button className="btn-primary" disabled={confirmingCustomer === contract.customer_id} onClick={() => confirmContract(contract.customer_id)}>{confirmingCustomer === contract.customer_id ? 'Confirming…' : 'Confirm as read'}</button><span className="muted-copy review-note">Recoup wasn't sure about the amber terms — confirm or re-upload a clearer copy.</span></>}
             <details><summary>Financial rights</summary>
               {rights[contract.customer_id]?.length ? <ul className="upload-history">{rights[contract.customer_id].map((right) => <li key={right.right_id || right.candidate_id}><span>{right.right_type || right.type}</span><span className="muted-copy">{right.status || right.candidate_status || '—'}</span></li>)}</ul> : <p className="muted-copy">{rights[contract.customer_id] === undefined ? 'Loading rights…' : 'No additional rights discovered'}</p>}
             </details>

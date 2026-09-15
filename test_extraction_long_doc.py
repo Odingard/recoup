@@ -115,6 +115,24 @@ def test_verification_confidence_math_and_quote_search(monkeypatch):
     assert verified[0].confidence_score == 0.5
 
 
+def test_verifier_normalizes_uppercase_verdicts():
+    ent = PageAnchoredEntitlement(term_type="committed_minimum", value=50000,
+                                  confidence_score=0.95,
+                                  provenance="The minimum fee is $50,000.", page=1)
+    pages = [Page(1, "The minimum fee is $50,000.")]
+    upper = verify(SimpleNamespace(entitlements=[ent]), pages,
+                   client=FakeClient([FakeResponse(
+                       '{"results":[{"index":0,"verdict":"SUPPORTS"}]}')]))
+    assert upper[0].verification["model_check"] == "supports"
+    assert upper[0].confidence_score == 0.95
+
+    contra = verify(SimpleNamespace(entitlements=[ent]), pages,
+                    client=FakeClient([FakeResponse(
+                        '{"results":[{"index":0,"verdict":"CONTRADICTS"}]}')]))
+    assert contra[0].verification["model_check"] == "contradicts"
+    assert contra[0].confidence_score == pytest.approx(0.2)
+
+
 def test_model_check_failure_marks_unclear_not_fatal(monkeypatch):
     import time as _time
     monkeypatch.setattr(_time, "sleep", lambda _: None)

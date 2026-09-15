@@ -2535,12 +2535,115 @@ def post_assurance_evaluate(payload: AssuranceEvaluatePayload,
     return assurance.evaluate_event(account_id, event)
 
 
+class ConfirmPayload(BaseModel):
+    resolutions: dict | None = None
+
+
+def _norm_eff_date(value) -> str | None:
+    """Accept YYYY-MM or YYYY-MM-DD; normalize to an ISO date (first of month)."""
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if len(value) == 7 and value[4] == "-":
+        return value + "-01"
+    try:
+        from datetime import date as _d
+        return _d.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
+                           resolutions: dict, user: dict) -> None:
+    """Fail-closed: conflicting/undated committed_minimum terms must all be
+    resolved (or dismissed) before the contract may be confirmed."""
+    conflicts = [c for c in contract.get("term_conflicts") or []
+                 if c.get("term") == "committed_minimum"]
+    unresolved = [u for u in contract.get("unresolved_terms") or []
+                  if u.get("term") == "committed_minimum"]
+    if not conflicts and not unresolved:
+        return
+    dismissed = resolutions.get("dismissed") or []
+    choices = []
+    for choice in resolutions.get("committed_minimum") or []:
+        choices.append({**choice, "_date": _norm_eff_date(choice.get("effective_date"))})
+
+    pending_conflicts = []
+    for conflict in conflicts:
+        match = next((c for c in choices
+                      if c.get("_date") == conflict.get("effective_date")
+                      and any(cand.get("amount") == c.get("amount")
+                              for cand in conflict.get("candidates") or [])),
+                     None)
+        if match is None:
+            pending_conflicts.append(conflict)
+
+    pending_unresolved = []
+    for item in unresolved:
+        was_dismissed = any(
+            d.get("term") == "committed_minimum"
+            and d.get("amount") == item.get("amount")
+            and (d.get("page") is None or d.get("page") == item.get("page"))
+            for d in dismissed)
+        was_dated = any(c.get("amount") == item.get("amount") and c.get("_date")
+                        for c in choices)
+        if not (was_dismissed or was_dated):
+            pending_unresolved.append(item)
+
+    if pending_conflicts or pending_unresolved:
+        raise HTTPException(status_code=409, detail={
+            "status": "needs_review",
+            "message": "Choose which minimum governs before confirming",
+            "term_conflicts": conflicts, "unresolved_terms": unresolved})
+
+    rebuilt = []
+    for choice in choices:
+        amount = choice.get("amount")
+        eff = choice.get("_date")
+        if amount is None or not eff:
+            continue
+        source = None
+        for conflict in conflicts:
+            if conflict.get("effective_date") == eff:
+                source = next((cand for cand in conflict.get("candidates") or []
+                               if cand.get("amount") == amount), source)
+        for item in unresolved:
+            if item.get("amount") == amount:
+                source = source or item
+        entry = {"amount": float(amount), "effective_date": eff}
+        if source:
+            entry.update({k: source[k] for k in
+                          ("provenance", "page", "section_ref", "source_file")
+                          if source.get(k) is not None})
+        rebuilt.append(entry)
+
+    now = datetime.now(timezone.utc).isoformat()
+    contract = dict(contract)
+    contract["minimum_schedule"] = rebuilt
+    contract["committed_minimum_monthly"] = (
+        min(rebuilt, key=lambda e: e["effective_date"])["amount"]
+        if rebuilt else contract.get("committed_minimum_monthly"))
+    contract["term_conflicts"] = []
+    contract["unresolved_terms"] = []
+    contract["term_resolutions"] = {
+        "resolved_by": _actor(user), "resolved_at": now, "choices": resolutions}
+    db.save_contract(account_id, contract)
+
+
 @app.post("/api/contracts/{customer_id}/confirm")
-def confirm_contract(customer_id: str, user: dict = Depends(verify_token)):
+def confirm_contract(customer_id: str, payload: ConfirmPayload | None = None,
+                     user: dict = Depends(verify_token)):
     """Persist a human confirmation of extracted agreement terms."""
     account_id = _account_id(user)
     if account_id is None:
         return {"mode": "sample", "status": "not_persisted", "customer_id": customer_id}
+    stored = next((c for c in db.get_all_contracts(account_id)
+                   if c.get("customer_id") == customer_id), None)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _resolve_minimum_terms(account_id, customer_id, stored,
+                           (payload.resolutions if payload else None) or {},
+                           user)
     contract = db.confirm_contract(account_id, customer_id, _actor(user))
     if contract is None:
         raise HTTPException(status_code=404, detail="Contract not found")

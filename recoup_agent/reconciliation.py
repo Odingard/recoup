@@ -205,7 +205,25 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             "partial-period billing — committed-minimum and escalator checks skipped",
         )
 
-    # Rule 1 - committed minimum not enforced
+    # Rule 1 - committed minimum not enforced. Conflicting or undated minimum
+    # terms fail closed to review regardless of confidence or confirmation.
+    if "term_conflicts" not in contract and "unresolved_terms" not in contract:
+        from .normalizer import detect_term_conflicts
+        detect_term_conflicts(contract)
+    min_conflicts = [c for c in contract.get("term_conflicts") or []
+                     if c.get("term") == "committed_minimum"]
+    min_unresolved = [u for u in contract.get("unresolved_terms") or []
+                      if u.get("term") == "committed_minimum"]
+
+    def _loc(cand: dict) -> str:
+        parts = []
+        if cand.get("section_ref"):
+            ref = str(cand["section_ref"])
+            parts.append(ref if not ref[0].isdigit() else f"\u00a7{ref}")
+        if cand.get("page") is not None:
+            parts.append(f"p.{cand['page']}")
+        return " ".join(parts) or "extracted term"
+
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
@@ -216,6 +234,24 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         invoice.get("discounts_applied") or invoice.get("credits_applied"))
     if prorated:
         pass
+    elif min_conflicts or min_unresolved:
+        reasons = []
+        for conflict in min_conflicts:
+            cands = " vs ".join(
+                f"${cand.get('amount'):,.2f} ({_loc(cand)})"
+                for cand in conflict.get("candidates") or [])
+            reasons.append(
+                f"Conflicting minimums: {cands} for periods from "
+                f"{conflict.get('effective_date')} \u2014 choose which governs")
+        for item in min_unresolved:
+            reasons.append(
+                f"Undated amendment sets minimum ${item.get('amount'):,.2f} "
+                f"({_loc(item)}) \u2014 give it an effective month or dismiss it")
+        _needs_review(
+            needs_review, contract, "committed_minimum", "; ".join(reasons),
+            extra={"term_conflicts": min_conflicts,
+                   "unresolved_terms": min_unresolved},
+        )
     elif minimum is None or base is None or minimum_conf < CONFIDENCE_THRESHOLD:
         _needs_review(
             needs_review,

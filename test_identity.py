@@ -75,3 +75,45 @@ def test_unmatched_csv_label_lands_in_needs_review(tmp_path):
     assert len(unmatched) == 1  # once per distinct label, not per row
     assert unmatched[0]["customer_name"] == "unknown-widget-co"
     assert "no contract matches" in unmatched[0]["reason"]
+
+
+def test_usage_csv_without_customer_column_single_counterparty(tmp_path):
+    from recoup_agent.ingest_csv import load_usage_csv
+
+    csv_file = tmp_path / "usage.csv"
+    csv_file.write_text("period,units\n2026-06,1200\n2026-07,900\n")
+    usage, needs_review = load_usage_csv(
+        csv_file,
+        CustomerResolver([{"customer_id": "ironclad_manufacturing",
+                           "customer_name": "Ironclad Manufacturing, LLC"}]),
+        default_customer="Ironclad Manufacturing, LLC")
+    assert needs_review == []
+    assert len(usage) == 2
+    assert all(r["customer_id"] == "ironclad_manufacturing" for r in usage)
+    assert all(r["customer_inferred"] is True for r in usage)
+
+
+def test_usage_csv_without_customer_column_fails_closed(tmp_path):
+    import pytest
+    from recoup_agent.ingest_csv import IngestError, load_usage_csv
+
+    csv_file = tmp_path / "usage.csv"
+    csv_file.write_text("period,units\n2026-06,1200\n")
+    with pytest.raises(IngestError, match="2 counterparties"):
+        load_usage_csv(csv_file, CustomerResolver(
+            _CONTRACTS[:2]))
+    with pytest.raises(IngestError, match="0 counterparties"):
+        load_usage_csv(csv_file, CustomerResolver([]))
+
+
+def test_usage_csv_with_customer_column_ignores_default(tmp_path):
+    from recoup_agent.ingest_csv import load_usage_csv
+
+    csv_file = tmp_path / "usage.csv"
+    csv_file.write_text(
+        "customer,period,units\nMeridian Foods,2026-06,50\n")
+    usage, _nr = load_usage_csv(
+        csv_file, CustomerResolver(_CONTRACTS),
+        default_customer="NorthPeak Logistics LLC")
+    assert usage[0]["customer_id"] == "meridian_foods"
+    assert "customer_inferred" not in usage[0]

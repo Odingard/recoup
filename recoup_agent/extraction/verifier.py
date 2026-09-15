@@ -6,7 +6,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .extractor import PageAnchoredEntitlement, _client as extraction_client, _transient
 from .pages import Page
@@ -18,6 +18,11 @@ class VerificationItem(BaseModel):
     index: int
     verdict: str
     reason: str = ""
+
+    @field_validator("verdict")
+    @classmethod
+    def _lower_verdict(cls, value: str) -> str:
+        return (value or "").strip().lower()
 
 
 class VerificationBatch(BaseModel):
@@ -104,7 +109,9 @@ def verify(result, pages: list[Page], *, client=None, model: str | None = None) 
     verified: list[VerifiedEntitlement] = []
     for index, (entitlement, quote_found, page_matched) in enumerate(prepared):
         item = checks.get(index)
-        verdict = item.verdict if item else "skipped"
+        verdict = (item.verdict if item else "skipped").strip().lower()
+        if verdict not in {"supports", "contradicts", "unclear", "skipped"}:
+            verdict = "unclear"
         factors = {"supports": 1.0, "unclear": 0.7, "contradicts": 0.2, "skipped": 1.0}
         final = min(float(entitlement.confidence_score),
                     0.5 if not quote_found else 1.0,

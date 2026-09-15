@@ -31,6 +31,9 @@ def test_contract_confirmation_persists_and_audits(monkeypatch):
             "confirmed_at": "2026-06-20T00:00:00+00:00",
         }
 
+    monkeypatch.setattr(
+        api.db, "get_all_contracts",
+        lambda account_id: [{"customer_id": "acme"}])
     monkeypatch.setattr(api.db, "confirm_contract", fake_confirm)
     resp = client.post("/api/contracts/acme/confirm",
                        headers={"Authorization": "Bearer token"})
@@ -42,6 +45,7 @@ def test_contract_confirmation_persists_and_audits(monkeypatch):
 
 def test_contract_confirmation_404_and_sample_not_persisted(monkeypatch):
     client = _auth_client(monkeypatch)
+    monkeypatch.setattr(api.db, "get_all_contracts", lambda account_id: [])
     monkeypatch.setattr(api.db, "confirm_contract", lambda *args: None)
     resp = client.post("/api/contracts/missing/confirm",
                        headers={"Authorization": "Bearer token"})

@@ -153,4 +153,65 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             "provenance": " | ".join(discount_provenance),
         })
 
+    detect_term_conflicts(normalized)
     return normalized
+
+
+def _candidate_ref(entry: dict, keys=("amount", "page", "section_ref", "source_file", "provenance")) -> dict:
+    return {k: entry[k] for k in keys if entry.get(k) is not None}
+
+
+def detect_term_conflicts(contract: dict) -> None:
+    """Fail-closed guard for the minimum_schedule: conflicting amounts for the
+    same effective date are flagged on `term_conflicts`; undated entries that
+    compete with dated ones are moved to `unresolved_terms` and removed from
+    the schedule so deterministic math never picks an arbitrary value.
+
+    Same amount + same date duplicates are deduped rather than flagged.
+    Written generically over minimum_schedule; the emitted term name is
+    committed_minimum for every entry.
+    """
+    schedule = contract.get("minimum_schedule") or []
+    if not schedule:
+        return
+    seen = set()
+    deduped = []
+    for entry in schedule:
+        key = (entry.get("amount"), entry.get("effective_date"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+
+    by_date: dict = {}
+    for entry in deduped:
+        by_date.setdefault(entry.get("effective_date"), []).append(entry)
+
+    conflicts: list[dict] = []
+    unresolved: list[dict] = []
+    keep: list[dict] = []
+    for eff_date, entries in by_date.items():
+        if eff_date is None:
+            if len(deduped) > len(entries):
+                for entry in entries:
+                    unresolved.append({
+                        "term": "committed_minimum",
+                        "reason": "undated_amendment",
+                        **_candidate_ref(entry)})
+                continue  # removed from the schedule; stays in term_history
+            keep.extend(entries)
+            continue
+        if len({e.get("amount") for e in entries}) > 1:
+            conflicts.append({
+                "term": "committed_minimum",
+                "effective_date": eff_date,
+                "candidates": [_candidate_ref(e) for e in entries],
+            })
+        keep.extend(entries)
+
+    contract["minimum_schedule"] = keep
+    contract["term_conflicts"] = conflicts
+    contract["unresolved_terms"] = unresolved
+    if keep:
+        latest = max(keep, key=lambda e: e.get("effective_date") or "")
+        contract["committed_minimum_monthly"] = latest["amount"]
