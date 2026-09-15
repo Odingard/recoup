@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime, timezone
 from google.cloud import firestore
+from google.api_core.exceptions import AlreadyExists
 
 _client = None
 _platform_settings_cache: dict = {"at": 0.0, "value": None}
@@ -573,10 +574,11 @@ def save_stripe_webhook_event(event_id: str, summary: dict) -> bool:
     """Create-only idempotency record; returns False when already processed."""
     db = get_client()
     ref = _webhook_events(db).document(event_id)
-    if ref.get().exists:
+    try:
+        ref.create({"stripe_event_id": event_id,
+                    "processed_at": datetime.now(timezone.utc).isoformat(), **summary})
+    except AlreadyExists:
         return False
-    ref.set({"stripe_event_id": event_id,
-             "processed_at": datetime.now(timezone.utc).isoformat(), **summary})
     return True
 
 
