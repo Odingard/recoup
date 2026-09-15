@@ -147,6 +147,8 @@ def extract_entitlements(file_path: str, *, client=None, model: str | None = Non
             mime_type = _MIME_OVERRIDES.get(suffix, "application/pdf" if suffix == ".pdf" else "image/jpeg")
             with open(file_path, "rb") as fh:
                 pages = get_ocr_adapter(client=client).page_texts(fh.read(), mime_type)
+            if not any(p.text.strip() for p in pages):
+                raise UnreadableDocumentError()
         result = extract_pages(pages, source_kind, client=client, model=model,
                                file_name=os.path.basename(file_path))
         verified = verify(result, pages, client=client, model=model)

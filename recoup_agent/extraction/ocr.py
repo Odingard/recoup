@@ -15,8 +15,13 @@ class OcrAdapter(Protocol):
     def page_texts(self, file_bytes: bytes, mime_type: str) -> list[Page]: ...
 
 
+class OcrPage(BaseModel):
+    number: int
+    text: str = ""
+
+
 class OcrPages(BaseModel):
-    pages: list[dict] = Field(default_factory=list)
+    pages: list[OcrPage] = Field(default_factory=list)
 
 
 def _ocr_client():
@@ -47,7 +52,7 @@ class GeminiOcr:
         else:
             raw = getattr(response, "text", response)
             parsed = OcrPages.model_validate_json(raw) if isinstance(raw, str) else OcrPages.model_validate(raw)
-        return [Page(int(item.get("number", i + 1)), str(item.get("text", "")))
+        return [Page(item.number or i + 1, item.text or "")
                 for i, item in enumerate(parsed.pages)]
 
 
