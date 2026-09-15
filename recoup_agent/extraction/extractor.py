@@ -174,6 +174,12 @@ def _dedupe(items: list[PageAnchoredEntitlement]) -> list[PageAnchoredEntitlemen
     return result
 
 
+def _family_prompt(term_types, signals) -> str:
+    return (f"Focus only on: {', '.join(term_types)}. "
+            f"Typical wording: {', '.join(signals)}. "
+            f"Ignore all other kinds of terms.\n{ALL_FAMILIES}")
+
+
 def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: str | None = None,
                   file_name: str | None = None) -> ExtractionResult:
     client = client or _client()
@@ -196,8 +202,7 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
                                 first_page_text=first_page_text)
             for family, term_types in families().items():
                 signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
-                prompt = f"Focus only on: {', '.join(term_types)}. Typical wording: {', '.join(signals)}. Ignore all other kinds of terms.\n{ALL_FAMILIES}"
-                response = _call(client, model, prompt, _config(types, cached_content=cache.name))
+                response = _call(client, model, _family_prompt(term_types, signals), _config(types, cached_content=cache.name))
                 parsed = _parse_response(response)
                 extracted.extend(parsed.entitlements)
                 if parsed.customer_name and customer_name == "Unknown":
@@ -221,6 +226,27 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
             extracted.extend(parsed.entitlements)
             if parsed.customer_name and customer_name == "Unknown":
                 customer_name = parsed.customer_name
+        if os.getenv("RECOUP_EXTRACTION_RECALL_PASS", "1") != "0":
+            lower = full_text.lower()
+            for family, term_types in families().items():
+                signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
+                if not any(s.lower() in lower for s in signals):
+                    continue
+                missing = [t for t in term_types
+                           if not any(e.term_type == t for e in extracted)]
+                if not missing:
+                    continue
+                try:
+                    for chunk in chunks:
+                        response = _call(client, model,
+                                         f"{_family_prompt(term_types, signals)}\n{chunk.text}",
+                                         _config(types))
+                        parsed = _parse_response(response)
+                        extracted.extend(parsed.entitlements)
+                        if parsed.customer_name and customer_name == "Unknown":
+                            customer_name = parsed.customer_name
+                except Exception:
+                    logger.warning("recall pass for %s failed; continuing", term_types)
     return ExtractionResult(_dedupe(extracted), customer_name, len(pages), source_kind, model,
                             len(chunks), cached, profile)
 

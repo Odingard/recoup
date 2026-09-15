@@ -20,6 +20,9 @@ class IngestError(ValueError):
     pass
 
 
+SEAT_QTY_RE = re.compile(r"(\d[\d,]*)\s*(?:x\s*)?(?:seat|user|licen[cs]e)s?\b", re.I)
+
+
 COLUMN_ALIASES = {
     "customer":    ["customer_id", "customer", "customer_name", "account", "account_name", "account_id",
                     "client", "client_name", "contactname", "contact_name", "customer_name_", "display_name", "name"],
@@ -236,17 +239,26 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             inv["overage_charge"] += amount
         else:
             inv["base_charge"] += amount
-        if "units" in cols and SEAT_RE.search(description):
-            try:
-                seat_units = float((row.get(cols["units"]) or "0").replace(",", "").strip() or 0)
-                if seat_units < 0:
-                    needs_review.append({"customer_id": cid, "customer_name": label,
-                                         "term": "seat_units",
-                                         "reason": f"negative seat quantity {seat_units:g} in row {idx}"})
-                else:
-                    inv["seat_units"] = inv.get("seat_units", 0.0) + seat_units
-            except ValueError:
-                pass
+        if SEAT_RE.search(description):
+            raw_units = ((row.get(cols["units"]) or "").strip()
+                         if "units" in cols else "")
+            seat_qty = None
+            if raw_units:
+                try:
+                    seat_qty = float(raw_units.replace(",", ""))
+                    if seat_qty < 0:
+                        needs_review.append({"customer_id": cid, "customer_name": label,
+                                             "term": "seat_units",
+                                             "reason": f"negative seat quantity {seat_qty:g} in row {idx}"})
+                        seat_qty = None
+                except ValueError:
+                    seat_qty = None
+            elif not raw_units:
+                match = SEAT_QTY_RE.search(description)
+                if match:
+                    seat_qty = float(match.group(1).replace(",", ""))
+            if seat_qty is not None:
+                inv["seat_units"] = inv.get("seat_units", 0.0) + seat_qty
 
     return list(invoices.values()), needs_review
 
