@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .reconciliation import reconcile
+from .document_quality import require_verified_contracts
 from .billing.connector_keys import resolve_connector_key
 from .book_loader import load_book, load_contracts, book_periods
 from .rights_graph.service import annotate_findings_with_graph
@@ -55,6 +56,11 @@ def compute_findings_and_review(
         contracts, usage_list, invoices_list = book
     else:
         contracts, usage_list, invoices_list = _load_book(account_id)
+    if customer_ids is None:
+        require_verified_contracts(contracts)
+    else:
+        for customer_id in customer_ids:
+            require_verified_contracts(contracts, customer_id)
     # Uploaded records win over the live connector for a given customer/period.
     usage = {(u["customer_id"], u["period"]): u for u in usage_list}
     invoices = {(i["customer_id"], i["period"]): i for i in invoices_list}

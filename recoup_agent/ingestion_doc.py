@@ -1,6 +1,7 @@
 import logging
 import mimetypes
 import os
+import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import List, Optional
@@ -8,6 +9,9 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from .cloud import models as genai
 from .cloud.models import BinaryPart, GenerationConfig, get_model_adapter
+from .cloud.local_documents import pdf_text_pages
+from .cloud.visual_structure import inspect_raster
+from .document_quality import LowConfidenceGateException, StructuralIssue, inspect_structure
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,7 @@ class ContractEntitlements(BaseModel):
     customer_name: str = Field(description="The name of the customer the contract is with.")
     entitlements: List[Entitlement]
     document: Optional[dict] = None
+    structural_verification: Optional[dict] = None
 
 def _extract_single_shot(file_path: str) -> ContractEntitlements:
     """Legacy single-shot extractor retained for controlled rollback."""
@@ -131,7 +136,8 @@ def _extract_single_shot(file_path: str) -> ContractEntitlements:
 
 def extract_entitlements(file_path: str, *, client=None, model: str | None = None) -> ContractEntitlements:
     """Extract, page-anchor, and verify document entitlements."""
-    if os.getenv("RECOUP_EXTRACTION_LEGACY") == "1":
+    visual = os.path.splitext(file_path)[1].lower() in {".pdf", ".png", ".jpg", ".jpeg"}
+    if os.getenv("RECOUP_EXTRACTION_LEGACY") == "1" and not visual:
         return _extract_single_shot(file_path)
     try:
         from .extraction.extractor import extract_pages
@@ -140,6 +146,15 @@ def extract_entitlements(file_path: str, *, client=None, model: str | None = Non
         from .extraction.ocr import get_ocr_adapter
 
         pages, source_kind = load_pages(file_path)
+        if os.path.splitext(file_path)[1].lower() == ".pdf":
+            try:
+                native_pages = pdf_text_pages(file_path)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                native_pages = []
+            if native_pages and all(page.text.strip() for page in native_pages):
+                pages, source_kind = native_pages, "pdf_text"
+            elif source_kind == "pdf_text":
+                source_kind = "scanned"
         if source_kind == "scanned" and len(pages) > MAX_SCANNED_PDF_PAGES:
             raise UnreadableDocumentError()
         if source_kind in {"scanned", "image"}:
@@ -149,15 +164,32 @@ def extract_entitlements(file_path: str, *, client=None, model: str | None = Non
                 pages = get_ocr_adapter(client=client).page_texts(fh.read(), mime_type)
             if not any(p.text.strip() for p in pages):
                 raise UnreadableDocumentError()
+        structural_verification = None
+        if visual:
+            try:
+                issues = inspect_structure(pages)
+                if not issues:
+                    issues = inspect_raster(file_path, pages)
+            except Exception as exc:
+                raise LowConfidenceGateException([StructuralIssue(
+                    0, "structural_check_unavailable",
+                    "Visual structure could not be verified; inspect and re-upload this document.",
+                )]) from exc
+            if issues:
+                raise LowConfidenceGateException(issues)
+            structural_verification = {"state": "Verified", "version": 1, "pages": len(pages)}
         result = extract_pages(pages, source_kind, client=client, model=model,
                                file_name=os.path.basename(file_path))
         verified = verify(result, pages, client=client, model=model)
         entitlements = [Entitlement(**item.model_dump()) for item in verified]
         return ContractEntitlements(customer_name=result.customer_name, entitlements=entitlements,
-                                    document=result.document.model_dump())
+                                    document=result.document.model_dump(),
+                                    structural_verification=structural_verification)
     except DocumentTooLargeError:
         raise
     except UnreadableDocumentError:
+        raise
+    except LowConfidenceGateException:
         raise
     except Exception as exc:
         logger.exception("document extraction failed for %s", file_path)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from .reconciliation import CONFIDENCE_THRESHOLD
 from .success_fee import recovered_dollars
+from .document_quality import NEEDS_VERIFICATION
 
 VERIFIED_CONFIDENCE = CONFIDENCE_THRESHOLD  # 0.85
 
@@ -50,13 +51,16 @@ def evidence_completeness(f: dict) -> float:
 
 
 def is_verified(f: dict) -> bool:
-    return (float(f.get("confidence_score") or 0) >= VERIFIED_CONFIDENCE
+    return (f.get("verification_state") != NEEDS_VERIFICATION
+            and float(f.get("confidence_score") or 0) >= VERIFIED_CONFIDENCE
             and bool(f.get("clause_text")) and bool(f.get("math")))
 
 
 def next_step(f: dict, realization_events: list[dict] | None,
               actions: list[dict] | None = None) -> str:
     status = f.get("status") or "open"
+    if f.get("verification_state") == NEEDS_VERIFICATION:
+        return "Inspect the document structure before recovery"
     if status == "open":
         return "Approve for recovery" if is_verified(f) else "Review evidence / confirm term"
     if status in {"approved", "invoiced", "disputed"}:
@@ -259,6 +263,7 @@ def build_command_center(findings: list[dict], recovery_events: list[dict],
             "currency": f.get("currency") or "USD",
             "confidence": f.get("confidence_score"),
             "status": f.get("status") or "open",
+            "verification_state": f.get("verification_state"),
             "verified": is_verified(f),
             "recommended_next_step": next_step(f, f_events, f_actions),
             "recovery_actions": [

@@ -7,6 +7,7 @@ silently dropped.
 from __future__ import annotations
 
 import io
+import hashlib
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from .extraction.graph import ExtractedDocument, assemble
 from .extraction.extractor import DocumentProfile
 from .extraction.pages import DocumentTooLargeError
 from .normalizer import normalize_contract_entitlements
+from .document_quality import LowConfidenceGateException
 
 CONTRACT_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 MAX_ZIP_FILES = 500
@@ -34,6 +36,7 @@ class BulkResult:
     usage: list[dict] = field(default_factory=list)
     needs_review: list[dict] = field(default_factory=list)
     files: list[dict] = field(default_factory=list)
+    verification_holds: list[dict] = field(default_factory=list)
 
 
 def expand_zip(name: str, content: bytes) -> tuple[list[tuple[str, bytes]], str | None]:
@@ -140,6 +143,16 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 temp.write(content)
                 temp.close()
                 extracted = extract(temp.name)
+            except LowConfidenceGateException as exc:
+                hold = {**exc.payload(), "document_id": hashlib.sha256(content).hexdigest(),
+                        "file_name": name}
+                result.verification_holds.append(hold)
+                result.files.append({"name": name, "kind": "contract",
+                                     "status": "Needs_Verification", "message": str(exc)})
+                result.needs_review.append({
+                    "customer_id": None, "customer_name": name, "term": "document_structure",
+                    **hold})
+                break
             except DocumentTooLargeError as exc:
                 result.files.append({"name": name, "kind": "contract", "status": "error",
                                      "message": str(exc)})
@@ -182,10 +195,23 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
             extracted_docs.append(ExtractedDocument(
                 file_name=name, profile=profile,
                 entitlements=list(extracted.entitlements),
-                customer_name=extracted.customer_name))
+                customer_name=extracted.customer_name,
+                structural_verification=extracted.structural_verification,
+                document_id=hashlib.sha256(content).hexdigest()))
             result.files.append({"name": name, "kind": "contract", "status": "success",
                                  "message": f"Extracted terms for {extracted.customer_name}",
                                  "count": 1})
+
+    if result.verification_holds:
+        for row in result.files:
+            if row["status"] == "success":
+                row.update(status="Needs_Verification", message="Batch held; extracted terms were not saved.")
+        for name, _ in flat:
+            if not any(row["name"] == name for row in result.files):
+                result.files.append({"name": name, "kind": "deferred",
+                                     "status": "Needs_Verification",
+                                     "message": "Batch held pending document verification."})
+        return result
 
     # Standalone documents for customers already on file merge with the stored
     # contract's source_entitlements when no new master was uploaded.

@@ -27,6 +27,8 @@ class ExtractedDocument:
     entitlements: list = field(default_factory=list)
     pages: list[Page] = field(default_factory=list)
     customer_name: Optional[str] = None
+    structural_verification: dict | None = None
+    document_id: str | None = None
 
 
 @dataclass
@@ -205,6 +207,8 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
         # Deterministic order for downstream normalization.
         entitlements.sort(key=lambda e: (e.effective_date is not None, e.effective_date or ""))
         doc_records = [{
+            "structural_verification": d.structural_verification,
+            "document_id": d.document_id,
             "file_name": d.file_name,
             "role": profiles[id(d)].role,
             "title": profiles[id(d)].title,

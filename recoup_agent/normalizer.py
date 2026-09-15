@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .identity import canonical_key
 from .ingestion_doc import ContractEntitlements, Entitlement
+from .document_quality import require_verified_document
 
 
 def _slugify(value: str) -> str:
@@ -34,8 +35,10 @@ def _term_meta(ent: Entitlement) -> dict:
 
 
 def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
+    require_verified_document(contract.structural_verification)
     candidates: dict[str, list[Entitlement]] = {}
     normalized = {
+        "structural_verification": contract.structural_verification,
         "customer_name": contract.customer_name,
         "customer_id": _slugify(contract.customer_name),
         "committed_minimum_monthly": None,

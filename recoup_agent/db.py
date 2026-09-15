@@ -1,6 +1,7 @@
 import time
 from datetime import datetime, timezone
 from .cloud.storage import DocumentStore, get_storage_adapter
+from .document_quality import NEEDS_VERIFICATION, require_verified_contracts
 
 _client = None
 _platform_settings_cache: dict = {"at": 0.0, "value": None}
@@ -128,6 +129,10 @@ def transition_finding_status(account_id: str, finding_id: str, new_status: str,
         if not snap.exists:
             raise FindingNotFound(finding_id)
         current = (snap.to_dict() or {}).get("status", "open")
+        if new_status in {"approved", "invoiced", "recovered"}:
+            account = _account_root(db, account_id).get(transaction=txn).to_dict() or {}
+            require_verified_contracts(list(account.get("document_verification_holds", {}).values()),
+                                       (snap.to_dict() or {}).get("customer_id"))
         try:
             assert_transition(current, new_status)
         except ValueError as exc:
@@ -214,6 +219,76 @@ def get_all_invoices(account_id: str) -> list[dict]:
 def get_all_contracts(account_id: str) -> list[dict]:
     db = get_client()
     return [doc.to_dict() for doc in _collection(db, account_id, "contracts").stream()]
+
+
+def hold_document(account_id: str, document: dict) -> dict:
+    store = get_client()
+    document_id = document["document_id"]
+    contracts = get_all_contracts(account_id)
+    related = [c for c in contracts if c.get("document_id") == document_id
+               or any(d.get("document_id") == document_id for d in c.get("documents", []))]
+    scope = "customer" if related else "account"
+    affected = related or [c for c in contracts if c.get("verification_scope") != "account"]
+    placeholder = {
+        "customer_id": "verification_" + document_id,
+        "customer_name": document["file_name"],
+        "file_name": document["file_name"], "verification_scope": scope,
+        "verification_state": NEEDS_VERIFICATION,
+        "verification_document_ids": [document_id],
+        "verification_customer_ids": [c["customer_id"] for c in affected],
+        "structural_verification": document,
+        "confirmed": False,
+    }
+    ids = {c["customer_id"] for c in affected}
+    now = datetime.now(timezone.utc).isoformat()
+    record = {**document, "state": NEEDS_VERIFICATION, "scope": scope,
+              "customer_ids": sorted(ids), "created_at": now}
+    doc_ref = _collection(store, account_id, "documents").document(document_id)
+    batch = store.batch()
+    batch.set(doc_ref, record, merge=True)
+    batch.set(_collection(store, account_id, "contracts").document(placeholder["customer_id"]),
+              placeholder)
+    batch.set(_collection(store, account_id, "audit_log").document(), {
+        "event": "document_structure_held", "document_id": document_id,
+        "state": NEEDS_VERIFICATION, "customer_ids": sorted(ids), "ts": now})
+    batch.set(_account_root(store, account_id), {
+        "document_verification_holds": {
+            document_id: {
+                "verification_state": NEEDS_VERIFICATION, "verification_scope": scope,
+                "verification_customer_ids": sorted(ids),
+            },
+        },
+    }, merge=True)
+    pending = 4
+    for contract in affected:
+        cid = contract["customer_id"]
+        held_ids = sorted(set(contract.get("verification_document_ids", [])) | {document_id})
+        batch.set(_collection(store, account_id, "contracts").document(cid), {
+            "verification_state": NEEDS_VERIFICATION,
+            "verification_document_ids": held_ids,
+            "structural_verification": document,
+            "confirmed": False, "confirmed_by": None, "confirmed_at": None,
+        }, merge=True)
+        pending += 1
+        if pending >= 400:
+            batch.commit()
+            batch, pending = store.batch(), 0
+    findings = get_all_findings(account_id)
+    for finding in findings:
+        if scope == "account" or finding.get("customer_id") in ids:
+            batch.set(_collection(store, account_id, "findings").document(finding["finding_id"]), {
+                "verification_state": NEEDS_VERIFICATION,
+                "structural_verification": document,
+                "verification_document_ids": sorted(
+                    set(finding.get("verification_document_ids", [])) | {document_id}),
+            }, merge=True)
+            pending += 1
+            if pending >= 400:
+                batch.commit()
+                batch, pending = store.batch(), 0
+    if pending:
+        batch.commit()
+    return record
 
 
 def confirm_contract(account_id: str, customer_id: str, actor: str | None) -> dict | None:
