@@ -106,7 +106,7 @@ def test_verification_confidence_math_and_quote_search(monkeypatch):
                                   provenance="The minimum fee is $50,000.", page=1)
     payload = '{"results":[{"index":0,"verdict":"supports"}]}'
     verified = verify(SimpleNamespace(entitlements=[ent]), [Page(1, "The minimum fee is $50,000.")], client=FakeClient([FakeResponse(payload)]))
-    assert verified[0].verification == {"quote_found": True, "page_matched": True, "model_check": "supports", "final_confidence": 0.8}
+    assert verified[0].verification == {"quote_found": True, "page_matched": True, "model_check": "supports", "final_confidence": 0.8, "ocr_confidence": None, "ocr_gate": False}
 
     missing = PageAnchoredEntitlement(term_type="committed_minimum", value=50000, confidence_score=0.9,
                                       provenance="not present", page=1)

@@ -37,6 +37,7 @@ jobs:
             artifactregistry.googleapis.com \
             secretmanager.googleapis.com \
             aiplatform.googleapis.com \
+            documentai.googleapis.com \
             --project $PROJECT_ID
 
       - name: Configure Docker for Artifact Registry
@@ -132,6 +133,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT=$PROJECT_ID|\
           GOOGLE_CLOUD_LOCATION=$REGION|\
           RECOUP_SAMPLE_MODE=0|\
+          RECOUP_DOCAI_PROCESSOR=projects/921318314706/locations/us/processors/4c2013258c42562e|\
           RECOUP_BILLING_SOURCE=stripe|\
           RECOUP_STRIPE_APP_REDIRECT_URI=https://recoup.odingard.com/api/connector/stripe/oauth/callback|\
           RECOUP_STRIPE_APP_AUTHORIZE_URL=https://marketplace.stripe.com/oauth/v2/authorize|\
@@ -149,7 +151,7 @@ jobs:
       - name: Grant Vertex AI and Cloud permissions to runtime SA
         run: |
           RUNTIME_SA="recoup-backend@${PROJECT_ID}.iam.gserviceaccount.com"
-          for role in roles/aiplatform.user roles/datastore.user; do
+          for role in roles/aiplatform.user roles/datastore.user roles/documentai.apiUser; do
             gcloud projects add-iam-policy-binding $PROJECT_ID \
               --member="serviceAccount:$RUNTIME_SA" \
               --role="$role" \

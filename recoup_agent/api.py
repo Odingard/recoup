@@ -2553,16 +2553,78 @@ def _norm_eff_date(value) -> str | None:
         return None
 
 
-def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
-                           resolutions: dict, user: dict) -> None:
-    """Fail-closed: conflicting/undated committed_minimum terms must all be
-    resolved (or dismissed) before the contract may be confirmed."""
+def _scalar_conflict_value_match(chosen, candidate) -> bool:
+    """term_start/term_end values are date strings; numerics compare as float."""
+    if chosen is None or candidate is None:
+        return False
+    try:
+        return float(chosen) == float(candidate)
+    except (TypeError, ValueError):
+        return str(chosen) == str(candidate)
+
+
+def _resolve_scalar_conflicts(contract: dict, resolutions: dict) -> list[dict]:
+    """Validate + apply resolutions['terms'] choices for non-minimum
+    conflicts. Returns the list of conflicts still unresolved."""
+    scalar_conflicts = [c for c in contract.get("term_conflicts") or []
+                        if c.get("term") != "committed_minimum"]
+    if not scalar_conflicts:
+        return []
+    from .normalizer import SCALAR_TERM_FIELDS
+    choices = resolutions.get("terms") or {}
+    pending = []
+    resolved = []
+    for conflict in scalar_conflicts:
+        term_type = conflict.get("term")
+        if term_type not in SCALAR_TERM_FIELDS:
+            pending.append(conflict)
+            continue
+        choice = choices.get(term_type) or {}
+        match = next((cand for cand in conflict.get("candidates") or []
+                      if _scalar_conflict_value_match(choice.get("value"),
+                                                    cand.get("value"))
+                      and (choice.get("page") is None
+                           or choice.get("page") == cand.get("page"))), None)
+        if match is None:
+            pending.append(conflict)
+        else:
+            resolved.append((conflict, match))
+    for conflict, match in resolved:
+        field, coerce = SCALAR_TERM_FIELDS[conflict["term"]]
+        contract[field] = (match.get("value") if coerce is None
+                           else coerce(match.get("value")))
+        meta = {"confidence": match.get("confidence") if match.get("confidence") is not None else 1.0,
+                "provenance": match.get("provenance")}
+        for key in ("page", "section_ref", "source_file", "verification"):
+            if match.get(key) is not None:
+                meta[key] = match[key]
+        contract.setdefault("term_meta", {})[field] = meta
+        if conflict["term"] == "escalator" and match.get("effective_date"):
+            contract["escalator_effective_date"] = match["effective_date"]
+        contract["term_conflicts"] = [c for c in contract.get("term_conflicts") or []
+                                      if c is not conflict]
+    return pending
+
+
+def _resolve_term_conflicts(account_id: str, customer_id: str, contract: dict,
+                            resolutions: dict, user: dict) -> None:
+    """Fail-closed: conflicting/undated terms must all be resolved (or
+    dismissed) before the contract may be confirmed."""
     conflicts = [c for c in contract.get("term_conflicts") or []
                  if c.get("term") == "committed_minimum"]
     unresolved = [u for u in contract.get("unresolved_terms") or []
                   if u.get("term") == "committed_minimum"]
-    if not conflicts and not unresolved:
+    had_scalar = any(c.get("term") != "committed_minimum"
+                     for c in contract.get("term_conflicts") or [])
+    scalar_pending = _resolve_scalar_conflicts(contract, resolutions)
+    if not conflicts and not unresolved and not had_scalar:
         return
+    if not conflicts and not unresolved and scalar_pending:
+        raise HTTPException(status_code=409, detail={
+            "status": "needs_review",
+            "message": "Choose which term governs before confirming",
+            "term_conflicts": contract.get("term_conflicts") or [],
+            "unresolved_terms": unresolved})
     dismissed = resolutions.get("dismissed") or []
     choices = []
     for choice in resolutions.get("committed_minimum") or []:
@@ -2590,11 +2652,12 @@ def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
         if not (was_dismissed or was_dated):
             pending_unresolved.append(item)
 
-    if pending_conflicts or pending_unresolved:
+    if pending_conflicts or pending_unresolved or scalar_pending:
         raise HTTPException(status_code=409, detail={
             "status": "needs_review",
-            "message": "Choose which minimum governs before confirming",
-            "term_conflicts": conflicts, "unresolved_terms": unresolved})
+            "message": "Choose which term governs before confirming",
+            "term_conflicts": contract.get("term_conflicts") or [],
+            "unresolved_terms": unresolved})
 
     rebuilt = []
     for choice in choices:
@@ -2620,15 +2683,18 @@ def _resolve_minimum_terms(account_id: str, customer_id: str, contract: dict,
 
     now = datetime.now(timezone.utc).isoformat()
     contract = dict(contract)
-    contract["minimum_schedule"] = rebuilt
-    contract["committed_minimum_monthly"] = (
-        min(rebuilt, key=lambda e: e["effective_date"])["amount"]
-        if rebuilt else contract.get("committed_minimum_monthly"))
-    if rebuilt:
-        contract.setdefault("term_meta", {})["committed_minimum_monthly"] = (
-            minimum_term_meta(rebuilt))
+    if conflicts or unresolved:
+        contract["minimum_schedule"] = rebuilt
+        contract["committed_minimum_monthly"] = (
+            min(rebuilt, key=lambda e: e["effective_date"])["amount"]
+            if rebuilt else contract.get("committed_minimum_monthly"))
+        if rebuilt:
+            contract.setdefault("term_meta", {})["committed_minimum_monthly"] = (
+                minimum_term_meta(rebuilt))
     contract["term_conflicts"] = []
-    contract["unresolved_terms"] = []
+    contract["unresolved_terms"] = [
+        u for u in contract.get("unresolved_terms") or []
+        if u.get("term") != "committed_minimum"]
     contract["term_resolutions"] = {
         "resolved_by": _actor(user), "resolved_at": now, "choices": resolutions}
     db.save_contract(account_id, contract)
@@ -2645,9 +2711,9 @@ def confirm_contract(customer_id: str, payload: ConfirmPayload | None = None,
                    if c.get("customer_id") == customer_id), None)
     if stored is None:
         raise HTTPException(status_code=404, detail="Contract not found")
-    _resolve_minimum_terms(account_id, customer_id, stored,
-                           (payload.resolutions if payload else None) or {},
-                           user)
+    _resolve_term_conflicts(account_id, customer_id, stored,
+                            (payload.resolutions if payload else None) or {},
+                            user)
     contract = db.confirm_contract(account_id, customer_id, _actor(user))
     if contract is None:
         raise HTTPException(status_code=404, detail="Contract not found")

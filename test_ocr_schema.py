@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from recoup_agent.extraction.ocr import GeminiOcr, OcrPage, OcrPages
-from recoup_agent.extraction.pages import Page
+from recoup_agent.extraction.pages import Page, TextBlock
 from recoup_agent.ingest_bulk import ingest_files
 from recoup_agent.ingestion_doc import (
     ContractEntitlements,
@@ -55,6 +55,49 @@ def test_extract_entitlements_fails_closed_on_empty_ocr(monkeypatch, tmp_path):
     pdf.write_bytes(b"%PDF-1.4 fake scanned")
     with pytest.raises(UnreadableDocumentError):
         extract_entitlements(str(pdf))
+
+
+class _PipelineModels:
+    """Fake client covering classify → extract → verify."""
+
+    def generate_content(self, **kwargs):
+        contents = kwargs.get("contents")
+        config = kwargs.get("config")
+        schema = getattr(config, "response_schema", None)
+        if getattr(schema, "__name__", "") == "DocumentProfile":
+            return SimpleNamespace(
+                text='{"role":"master","title":"License",'
+                     '"counterparty":"Redwood Field Services, LLC"}')
+        if getattr(schema, "__name__", "") == "VerificationBatch":
+            return SimpleNamespace(
+                text='{"results":[{"index":0,"verdict":"supports","reason":"ok"}]}')
+        return SimpleNamespace(
+            text='{"customer_name":"Redwood Field Services, LLC","entitlements":['
+                 '{"term_type":"committed_seats","value":240,"effective_date":null,'
+                 '"confidence_score":0.95,"provenance":"240 seats","page":1}]}')
+
+
+def test_extract_entitlements_with_docai_blocks(monkeypatch, tmp_path):
+    """extract_entitlements works end-to-end when OCR pages carry blocks."""
+    from recoup_agent.extraction import pages as page_module
+    from recoup_agent.extraction import ocr as ocr_module
+
+    text = "Customer commits to 240 seats at $65 per seat."
+    scanned = Page(1, "", blocks=(TextBlock(text, 0.97),), ocr_confidence=0.97)
+    ocr_page = Page(1, text, blocks=(TextBlock(text, 0.97),), ocr_confidence=0.97)
+    monkeypatch.setattr(page_module, "load_pages",
+                        lambda path: ([scanned], "scanned"))
+    monkeypatch.setattr(ocr_module, "get_ocr_adapter",
+                        lambda **kw: SimpleNamespace(
+                            page_texts=lambda *a, **k: [ocr_page]))
+
+    pdf = tmp_path / "scanned.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake scanned")
+    result = extract_entitlements(
+        str(pdf), client=SimpleNamespace(models=_PipelineModels()))
+    assert result.customer_name == "Redwood Field Services, LLC"
+    assert result.entitlements[0].term_type == "committed_seats"
+    assert result.entitlements[0].verification["ocr_confidence"] == 0.97
 
 
 def test_bulk_unknown_customer_empty_extraction_is_error():

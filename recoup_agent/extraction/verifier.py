@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field, field_validator
 from .extractor import PageAnchoredEntitlement, _client as extraction_client, _transient
 from .pages import Page
 
+OCR_CONFIDENCE_GATE = float(os.getenv("RECOUP_OCR_CONFIDENCE_GATE", "0.85"))
+
 VERIFY_PROMPT = """For each item, you are given the text of one contract page and a claimed financial term extracted from it. Decide whether the page text SUPPORTS the claim exactly as stated (same number, same unit, same dates), CONTRADICTS it (the page states a different value, or the quoted clause does not mean what the claim says), or is UNCLEAR. Do not use outside knowledge. Answer for every index."""
 
 
@@ -48,6 +50,25 @@ def _norm(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def _ocr_confidence(page: Page | None, quote: str) -> float | None:
+    """Min confidence of the cited page's blocks overlapping the quote; page
+    mean when no block overlaps; None when the OCR path provides no signal."""
+    if page is None:
+        return None
+    overlapping = []
+    normed_quote = _norm(quote)
+    if page.blocks and normed_quote:
+        for block in page.blocks:
+            block_text = _norm(block.text)
+            if len(block_text) < 8:
+                continue
+            if normed_quote[:40] in block_text or block_text[:40] in normed_quote:
+                overlapping.append(block.confidence)
+    if overlapping:
+        return min(overlapping)
+    return page.ocr_confidence
+
+
 def _model_check(client, model: str, items: list[dict]) -> list[VerificationItem]:
     from google.genai import types
     contents = VERIFY_PROMPT + "\n" + json.dumps(items, default=str)
@@ -81,6 +102,7 @@ def verify(result, pages: list[Page], *, client=None, model: str | None = None) 
     client = client or _client()
     model = model or os.getenv("RECOUP_VERIFY_MODEL", "gemini-2.5-flash")
     page_map = {page.number: page.text for page in pages}
+    page_objs: dict[int, Page] = {page.number: page for page in pages}
     prepared = []
     for entitlement in result.entitlements:
         quote = _norm(entitlement.provenance)[:120]
@@ -122,12 +144,17 @@ def verify(result, pages: list[Page], *, client=None, model: str | None = None) 
         if verdict not in {"supports", "contradicts", "unclear", "skipped"}:
             verdict = "unclear"
         factors = {"supports": 1.0, "unclear": 0.7, "contradicts": 0.2, "skipped": 1.0}
+        ocr_conf = _ocr_confidence(page_objs.get(entitlement.page),
+                                   _norm(entitlement.provenance)[:120])
         final = min(float(entitlement.confidence_score),
                     0.5 if not quote_found else 1.0,
                     0.9 if not page_matched else 1.0,
-                    factors.get(verdict, 0.7 if item else 1.0))
+                    factors.get(verdict, 0.7 if item else 1.0),
+                    *(0.7,) if ocr_conf is not None and ocr_conf < OCR_CONFIDENCE_GATE else ())
         verification = {"quote_found": quote_found, "page_matched": page_matched,
-                        "model_check": verdict, "final_confidence": round(final, 4)}
+                        "model_check": verdict, "final_confidence": round(final, 4),
+                        "ocr_confidence": round(ocr_conf, 4) if ocr_conf is not None else None,
+                        "ocr_gate": bool(ocr_conf is not None and ocr_conf < OCR_CONFIDENCE_GATE)}
         data = entitlement.model_dump()
         data["confidence_score"] = round(final, 4)
         data["verification"] = verification

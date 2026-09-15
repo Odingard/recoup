@@ -1337,7 +1337,7 @@ function App() {
           {gated ? renderGate() : (
             <div className="detail-grid detail-grid-two">
               <div><div className="info-label">Agreement clause</div>
-                <div className="provenance-box">{clauseSection || clauseLabel || '—'}{clausePage ? ` · p. ${clausePage}` : ''}<br />{evidence.clause_text || joined.clause_text || 'No clause text on file.'}{verifiedQuote ? <span className="file-chip">Verified quote</span> : <span className="file-chip muted-chip">Quote not found</span>}</div>
+                <div className="provenance-box">{clauseSection || clauseLabel || '—'}{clausePage ? ` · p. ${clausePage}` : ''}<br />{evidence.clause_text || joined.clause_text || 'No clause text on file.'}{clauseMeta.verification?.ocr_gate ? <span className="quote-chip muted-chip">Low OCR confidence · {Math.round((clauseMeta.verification?.ocr_confidence || 0) * 100)}%</span> : verifiedQuote ? <span className="file-chip">Verified quote</span> : <span className="file-chip muted-chip">Quote not found</span>}</div>
               </div>
               <div><div className="info-label">Calculation</div>
                 <div className="detail-copy math-copy">{evidence.math || joined.math || '—'}</div>
@@ -1635,15 +1635,17 @@ function App() {
             <div className="panel-heading"><div><strong title={contract.customer_name} className="truncate">{contract.customer_name}</strong><span className="muted-copy"> {contract.customer_id}</span></div><span className={`status-pill ${contract.confirmed ? 'status-approved' : needsReview ? 'status-review' : 'status-read'}`}>{contract.confirmed ? `Confirmed by ${shortActor(contract.confirmed_by)}` : needsReview ? 'Needs your review' : 'Read by Recoup'}</span></div>
             {(contract.documents || []).length > 0 && <div className="term-chips doc-chips">{contract.documents.map((doc, i) => <span key={`${doc.file_name}-${i}`} className="term-chip">{docRoleLabel(doc)} · {doc.file_name}{doc.effective_date ? ` · eff. ${doc.effective_date}` : ''}</span>)}</div>}
             <div className="muted-copy">Term {contract.term_start || '—'} → {contract.term_end || '—'} · minimum {formatCurrency(contract.committed_minimum_monthly)} · overage {formatRate(contract.overage_rate)} · escalator {contract.annual_escalator_pct ?? '—'}% · discounts {(contract.discounts || []).length}</div>
-            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && String(meta.verification?.model_check || '').toLowerCase() === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{termHistoryNote(contract, key) ? ` · ${termHistoryNote(contract, key)}` : ''}{verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
+            {termEntries.length > 0 && <div className="term-chips">{termEntries.map(([key, meta]) => { const verified = meta.verification?.quote_found && String(meta.verification?.model_check || '').toLowerCase() === 'supports'; return <span key={key} className={`term-chip ${meta.confidence < 0.85 ? 'review' : ''}`} title={meta.provenance || undefined}>{TERM_LABELS[key]} · {Math.round(meta.confidence * 100)}%{meta.section_ref ? ` · ${meta.section_ref}` : ''}{meta.page ? ` · p. ${meta.page}` : ''}{termHistoryNote(contract, key) ? ` · ${termHistoryNote(contract, key)}` : ''}{meta.verification?.ocr_gate ? <span className="quote-chip muted-chip">Low OCR confidence · {Math.round((meta.verification?.ocr_confidence || 0) * 100)}%</span> : verified ? <span className="quote-chip">Verified quote</span> : <span className="quote-chip muted-chip">Quote not found</span>}</span>})}</div>}
             {provenances.length === 1 && <div className="muted-copy source-line">Source: {provenances[0]}</div>}
             {(() => {
               const conflicts = (contract.term_conflicts || []).filter((c) => c.term === 'committed_minimum')
+              const otherConflicts = (contract.term_conflicts || []).filter((c) => c.term !== 'committed_minimum')
               const unresolved = (contract.unresolved_terms || []).filter((u) => u.term === 'committed_minimum')
-              if (!conflicts.length && !unresolved.length) return null
+              if (!conflicts.length && !unresolved.length && !otherConflicts.length) return null
               const choices = termChoices[contract.customer_id] || {}
               const setChoice = (key, value) => setTermChoices((current) => ({ ...current, [contract.customer_id]: { ...(current[contract.customer_id] || {}), [key]: value } }))
               const conflictsDone = conflicts.every((c) => choices[`c:${c.effective_date}`] != null)
+                && otherConflicts.every((c) => choices[`t:${c.term}`] != null)
               const unresolvedDone = unresolved.every((u, i) => Boolean(choices[`u:${i}:month`]) || choices[`u:${i}:dismiss`])
               const resolutions = {
                 committed_minimum: [
@@ -1651,10 +1653,32 @@ function App() {
                   ...unresolved.map((u, i) => choices[`u:${i}:month`] ? { effective_date: choices[`u:${i}:month`], amount: u.amount } : null).filter(Boolean),
                 ],
                 dismissed: unresolved.map((u, i) => choices[`u:${i}:dismiss`] ? { term: 'committed_minimum', amount: u.amount, page: u.page } : null).filter(Boolean),
+                terms: Object.fromEntries(otherConflicts.map((c) => [c.term, choices[`t:${c.term}`] || {}]).filter(([, v]) => v.value !== undefined)),
               }
+              const CONFLICT_LABELS = {
+                committed_seats: 'Committed seats', seat_price: 'Seat price', included_units: 'Included units',
+                overage_rate: 'Overage rate', escalator: 'Escalator', term_start: 'Term start', term_end: 'Term end',
+                auto_renewal: 'Auto-renewal', renewal_notice_days: 'Renewal notice',
+              }
+              const fmtValue = (term, v) => (term === 'seat_price' || term === 'overage_rate')
+                ? `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+                : term === 'escalator' ? `${v}%` : `${v}`
               return (
                 <div className="resolution-panel">
                   <div className="info-label">Which term governs?</div>
+                  {otherConflicts.map((c) => (
+                    <div key={c.term} className="resolution-group">
+                      <div className="muted-copy">{CONFLICT_LABELS[c.term] || c.term}</div>
+                      {(c.candidates || []).map((cand, ci) => (
+                        <label key={`${c.term}-${ci}`} className="terms-check" title={cand.provenance || undefined}>
+                          <input type="radio" name={`${contract.customer_id}-conflict-${c.term}`}
+                            checked={choices[`t:${c.term}`]?.value === cand.value && choices[`t:${c.term}`]?.page === cand.page}
+                            onChange={() => setChoice(`t:${c.term}`, { value: cand.value, page: cand.page ?? null })} />
+                          {`${fmtValue(c.term, cand.value)} · ${cand.section_ref || '—'} · p. ${cand.page ?? '—'}`}
+                        </label>
+                      ))}
+                    </div>
+                  ))}
                   {conflicts.map((c) => (
                     <div key={c.effective_date} className="resolution-group">
                       <div className="muted-copy">Minimum for periods from {c.effective_date}</div>

@@ -6,7 +6,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from .pages import Page
+from .pages import Page, TextBlock
 
 OCR_PROMPT = """Transcribe this document page by page. Return JSON: {\"pages\": [{\"number\": <1-based page number>, \"text\": \"<verbatim text of that page, preserving paragraph breaks and section numbers>\"}]}. Do not summarize, correct, or omit anything. If a page is blank, return an empty string for it."""
 
@@ -65,8 +65,31 @@ def _document_ai_pages(document) -> list[Page]:
             start = int(segment.start_index or 0)
             end = int(segment.end_index or 0)
             pieces.append(full_text[start:end])
-        pages.append(Page(number, "".join(pieces)))
+        blocks = []
+        for block in getattr(page, "blocks", []) or []:
+            layout = getattr(block, "layout", None)
+            if layout is None:
+                continue
+            text_parts = []
+            for segment in getattr(getattr(layout, "text_anchor", None), "text_segments", []) or []:
+                start = int(getattr(segment, "start_index", 0) or 0)
+                end = int(getattr(segment, "end_index", 0) or 0)
+                text_parts.append(full_text[start:end])
+            blocks.append(TextBlock("".join(text_parts),
+                                    float(getattr(layout, "confidence", 0.0) or 0.0)))
+        confidences = [float(t.layout.confidence)
+                       for t in getattr(page, "tokens", []) or []
+                       if getattr(getattr(t, "layout", None), "confidence", None) is not None]
+        pages.append(Page(number, "".join(pieces), tuple(blocks),
+                          sum(confidences) / len(confidences) if confidences else None))
     return pages
+
+
+def _docai_endpoint(processor_name: str) -> str:
+    """Regional Document AI endpoint derived from the processor resource name."""
+    parts = (processor_name or "").split("/")
+    location = parts[parts.index("locations") + 1] if "locations" in parts else "us"
+    return f"{location}-documentai.googleapis.com"
 
 
 class DocumentAiOcr:
@@ -75,8 +98,10 @@ class DocumentAiOcr:
         self.client = client
 
     def page_texts(self, file_bytes: bytes, mime_type: str) -> list[Page]:
+        from google.api_core.client_options import ClientOptions
         from google.cloud import documentai_v1 as documentai
-        client = self.client or documentai.DocumentProcessorServiceClient()
+        client = self.client or documentai.DocumentProcessorServiceClient(
+            client_options=ClientOptions(api_endpoint=_docai_endpoint(self.processor)))
         request = documentai.ProcessRequest(
             name=self.processor,
             raw_document=documentai.RawDocument(content=file_bytes, mime_type=mime_type),
