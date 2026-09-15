@@ -189,3 +189,83 @@ def test_confirm_dismissed_undated_amendment_200(monkeypatch):
         }})
     assert resp.status_code == 200
     assert [e["amount"] for e in saved["minimum_schedule"]] == [18000.0]
+
+
+def _ent(**kw):
+    from recoup_agent.ingestion_doc import Entitlement
+    defaults = dict(term_type="committed_minimum", value=0.0, label=None,
+                    effective_date=None, start_date=None, end_date=None,
+                    tier_up_to=None, confidence_score=1.0,
+                    provenance="", page=None, section_ref=None,
+                    verification=None, source_file=None)
+    defaults.update(kw)
+    return Entitlement(**defaults)
+
+
+def _normalized(ents):
+    from recoup_agent.ingestion_doc import ContractEntitlements
+    from recoup_agent.normalizer import normalize_contract_entitlements
+    return normalize_contract_entitlements(
+        ContractEntitlements(customer_name="Cat5 Corp", entitlements=ents))
+
+
+def test_normalize_minimum_meta_carries_governing_verification():
+    v15 = {"quote_found": True, "page_matched": True,
+           "model_check": "supports", "final_confidence": 1.0}
+    v18 = {"quote_found": True, "page_matched": True,
+           "model_check": "supports", "final_confidence": 0.95}
+    contract = _normalized([
+        _ent(value=15000.0, effective_date="2026-01-01", confidence_score=0.9,
+             provenance="Section 5.2", page=5, section_ref="5.2",
+             verification=v15),
+        _ent(value=18000.0, effective_date="2026-03-01", confidence_score=1.0,
+             provenance="Exhibit A.1", page=13, section_ref="A.1",
+             verification=v18),
+    ])
+    meta = contract["term_meta"]["committed_minimum_monthly"]
+    # Governing entry = latest effective date ($18k @ 2026-03-01).
+    assert meta["page"] == 13 and meta["section_ref"] == "A.1"
+    assert meta["verification"] == v18
+    assert meta["confidence"] == 0.9  # min over schedule entries
+    assert contract["term_conflicts"] == []
+    assert all("verification" in e for e in contract["minimum_schedule"])
+
+
+def test_unresolved_undated_entry_does_not_drag_meta_confidence():
+    contract = _normalized([
+        _ent(value=16500.0, confidence_score=0.7, provenance="Amendment",
+             page=17),
+        _ent(value=15000.0, effective_date="2026-03-01", confidence_score=1.0,
+             provenance="Section 5.2", page=5, section_ref="5.2"),
+        _ent(value=18000.0, effective_date="2026-03-01", confidence_score=1.0,
+             provenance="Exhibit A.1", page=13, section_ref="A.1"),
+    ])
+    # The undated amendment lands in unresolved_terms, not the schedule.
+    assert [u["amount"] for u in contract["unresolved_terms"]] == [16500.0]
+    meta = contract["term_meta"]["committed_minimum_monthly"]
+    assert meta["confidence"] == 1.0
+    assert contract["term_conflicts"]  # same-date conflict still flagged
+
+
+def test_confirm_resolutions_rebuild_meta_from_chosen_candidate(monkeypatch):
+    client = _auth_client(monkeypatch)
+    contract = _conflicted_contract()
+    ver = {"quote_found": True, "page_matched": True,
+           "model_check": "supports", "final_confidence": 1.0}
+    contract["minimum_schedule"][2]["verification"] = ver  # $18k / A.1 / p.13
+    detect_term_conflicts(contract)
+    saved = _wire_contract(monkeypatch, contract)
+    resp = client.post(
+        "/api/contracts/cat5/confirm",
+        headers={"Authorization": "Bearer token"},
+        json={"resolutions": {
+            "committed_minimum": [
+                {"effective_date": "2026-03-01", "amount": 18000.0}],
+            "dismissed": [{"term": "committed_minimum",
+                           "amount": 16500.0, "page": 17}],
+        }})
+    assert resp.status_code == 200
+    meta = saved["term_meta"]["committed_minimum_monthly"]
+    assert meta["page"] == 13 and meta["section_ref"] == "A.1"
+    assert meta["verification"] == ver
+    assert meta["provenance"] == "Exhibit A.1"

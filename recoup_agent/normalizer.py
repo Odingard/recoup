@@ -60,6 +60,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
                 **({"page": ent.page} if ent.page is not None else {}),
                 **({"section_ref": ent.section_ref} if ent.section_ref else {}),
                 **({"source_file": ent.source_file} if ent.source_file else {}),
+                **({"verification": ent.verification} if getattr(ent, "verification", None) else {}),
             })
         elif ent.term_type == "included_units":
             normalized["included_units"] = int(ent.value)
@@ -119,19 +120,17 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             normalized["seat_price"] = ent.value
             normalized["term_meta"]["seat_price"] = meta
 
+    detect_term_conflicts(normalized)
+
     if normalized["minimum_schedule"]:
         # Display value = the entry with the latest effective date (None = earliest).
-        latest = max(normalized["minimum_schedule"],
-                     key=lambda e: (e.get("effective_date") is not None, e.get("effective_date") or ""))
-        normalized["committed_minimum_monthly"] = latest["amount"]
-        normalized["term_meta"]["committed_minimum_monthly"] = {
-            "confidence": min(e["confidence"] for e in normalized["minimum_schedule"]),
-            "provenance": latest["provenance"],
-            **({"page": latest["page"]} if latest.get("page") is not None else {}),
-            **({"section_ref": latest["section_ref"]} if latest.get("section_ref") else {}),
-            **({"source_file": latest["source_file"]} if latest.get("source_file") else {}),
-        }
-        for e in normalized["minimum_schedule"]:
+        schedule = normalized["minimum_schedule"]
+        normalized["committed_minimum_monthly"] = max(
+            schedule,
+            key=lambda e: (e.get("effective_date") is not None,
+                           e.get("effective_date") or ""))["amount"]
+        normalized["term_meta"]["committed_minimum_monthly"] = minimum_term_meta(schedule)
+        for e in schedule:
             e.pop("confidence", None)
 
     tiers = normalized.pop("_overage_tiers", [])
@@ -153,11 +152,29 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             "provenance": " | ".join(discount_provenance),
         })
 
-    detect_term_conflicts(normalized)
     return normalized
 
 
-def _candidate_ref(entry: dict, keys=("amount", "page", "section_ref", "source_file", "provenance")) -> dict:
+def minimum_term_meta(schedule: list[dict]) -> dict:
+    """term_meta entry for committed_minimum_monthly: provenance and
+    verification come from the governing (latest effective date) entry;
+    confidence is the minimum across the *given* schedule entries, so
+    removed/undated candidates never drag it down."""
+    governing = max(schedule,
+                    key=lambda e: (e.get("effective_date") is not None,
+                                   e.get("effective_date") or ""))
+    confidence = min(
+        e["confidence"] if e.get("confidence") is not None
+        else (e.get("verification") or {}).get("final_confidence", 1.0)
+        for e in schedule)
+    meta = {"confidence": confidence, "provenance": governing.get("provenance")}
+    for key in ("page", "section_ref", "source_file", "verification"):
+        if governing.get(key) is not None:
+            meta[key] = governing[key]
+    return meta
+
+
+def _candidate_ref(entry: dict, keys=("amount", "page", "section_ref", "source_file", "provenance", "verification", "confidence")) -> dict:
     return {k: entry[k] for k in keys if entry.get(k) is not None}
 
 
