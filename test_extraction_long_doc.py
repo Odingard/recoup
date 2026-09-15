@@ -132,6 +132,16 @@ def test_verifier_normalizes_uppercase_verdicts():
     assert contra[0].verification["model_check"] == "contradicts"
     assert contra[0].confidence_score == pytest.approx(0.2)
 
+    sentence = verify(SimpleNamespace(entitlements=[ent]), pages,
+                      client=FakeClient([FakeResponse(
+                          '{"results":[{"index":0,"verdict":"The page text SUPPORTS the claim."}]}')]))
+    assert sentence[0].verification["model_check"] == "supports"
+
+    contra_sentence = verify(SimpleNamespace(entitlements=[ent]), pages,
+                             client=FakeClient([FakeResponse(
+                                 '{"results":[{"index":0,"verdict":"Contradicts — page says $18,000"}]}')]))
+    assert contra_sentence[0].verification["model_check"] == "contradicts"
+
 
 def test_model_check_failure_marks_unclear_not_fatal(monkeypatch):
     import time as _time
