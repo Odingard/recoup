@@ -107,14 +107,22 @@ Stripe → Settings → Team → *Invite member* (role: Developer or Analyst; us
 Administrator only for whoever owns payouts). This cannot be done from GCP.
 
 ### 10. Stripe webhooks & fee collection
-Create the endpoint in Stripe Dashboard → Developers → Webhooks:
-`https://recoup.odingard.com/api/billing/stripe/webhook`. Subscribe to
-`invoice.paid`, `invoice.payment_succeeded`, `invoice.payment_failed`,
-`invoice.voided`, `invoice.marked_uncollectible`, `charge.dispute.created`,
-`charge.dispute.closed`, `credit_note.created`, `setup_intent.succeeded`, and
-`payment_method.detached`. Store the signing secret in Secret Manager as
-`recoup-stripe-webhook-secret`; do not put the value in source or environment
-files. The deploy workflow mounts it as `RECOUP_STRIPE_WEBHOOK_SECRET`.
+Live-mode endpoints exist on the Stripe account (Developers → Webhooks):
+- production `we_1UFkHbGdRXoU9c1Nd6G26ZWo` → `https://recoup.odingard.com/api/billing/stripe/webhook`,
+  signing secret in Secret Manager `recoup-stripe-webhook-secret`;
+- staging `we_1UFkHYGdRXoU9c1N4Al0XVoV` → `https://recoup-staging-921318314706.us-central1.run.app/api/billing/stripe/webhook`,
+  signing secret `recoup-stripe-webhook-secret-staging`.
+
+Both subscribe to `invoice.paid`, `invoice.payment_succeeded`,
+`invoice.payment_failed`, `invoice.voided`, `invoice.marked_uncollectible`,
+`charge.dispute.created`, `charge.dispute.closed`, `credit_note.created`,
+`setup_intent.succeeded`, and `payment_method.detached`. The deploy workflow
+mounts the production secret as `RECOUP_STRIPE_WEBHOOK_SECRET`; never put the
+value in source or environment files. To rotate: roll the secret via the Stripe
+API (`POST /v1/webhook_endpoints/{id}` is not enough — use Dashboard "Roll
+secret" or create a new endpoint), add a new Secret Manager version, redeploy.
+Sanity check after deploy: an unsigned `POST` to the endpoint must return 400;
+a `503` means the secret is not mounted.
 
 Webhook delivery is idempotent by Stripe event id. Payment failures mark the
 account card status failed and fee events become retryable. Operators can use
