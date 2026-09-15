@@ -162,13 +162,16 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 continue
             finally:
                 Path(temp.name).unlink(missing_ok=True)
-            if not isinstance(extracted, ContractEntitlements):
+            if (not isinstance(extracted, ContractEntitlements)
+                    or not extracted.entitlements
+                    or not extracted.customer_name
+                    or extracted.customer_name == "Unknown"):
                 result.files.append({"name": name, "kind": "contract", "status": "error",
                                      "message": "No terms could be extracted."})
                 result.needs_review.append({
                     "customer_id": None, "customer_name": name,
                     "term": "contract_extraction",
-                    "reason": "No contract terms extracted; the document may be unreadable.",
+                    "reason": "No contract terms extracted; the document may be unreadable or is not an agreement.",
                     "suggested_action": "Upload a clearer copy of the agreement (PDF or DOCX) so Recoup can read the terms.",
                 })
                 continue
