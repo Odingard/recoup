@@ -355,6 +355,31 @@ def test_classify_contract_event():
     assert assurance.classify_contract_event(same, expired) == "term_expiration"
 
 
+def test_confirmation_timestamps_change_contract_event_id():
+    first = {**_contract("B"), "confirmed_at": "2026-09-15T03:00:00+00:00"}
+    second = {**first, "confirmed_at": "2026-09-15T03:01:00+00:00"}
+    assert assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "test", first
+    ).event_id != assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "test", second
+    ).event_id
+
+
+def test_confirmed_contract_re_evaluates_after_second_confirmation(fake_db):
+    contract = _contract("B")
+    fake_db.save_contract("acct", contract)
+    fake_db.save_usage("acct", _usage("B", "2026-06"))
+    fake_db.save_invoice("acct", _invoice("B", "2026-06"))
+    first = assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "confirm", {
+            **contract, "confirmed_at": "2026-09-15T03:00:00+00:00"})
+    second = assurance.make_event(
+        "acct", "agreement_amendment", "B", None, "confirm", {
+            **contract, "confirmed_at": "2026-09-15T03:01:00+00:00"})
+    assert assurance.evaluate_event("acct", first)["status"] == "evaluated"
+    assert assurance.evaluate_event("acct", second)["status"] != "duplicate"
+
+
 def test_identical_contract_ingest_does_not_duplicate_event(fake_db):
     original = _contract("B")
     first = api._save_contract_if_needed("acct", original)

@@ -2652,9 +2652,7 @@ def confirm_contract(customer_id: str, payload: ConfirmPayload | None = None,
     if contract is None:
         raise HTTPException(status_code=404, detail="Contract not found")
     summaries = _assure(account_id, "contract/confirm", "agreement_amendment",
-                        customer_id, None,
-                        {"customer_id": customer_id,
-                         "confirmed_at": contract["confirmed_at"]})
+                        customer_id, None, contract)
     return {"status": "confirmed", "contract": contract,
             **_assurance_block(summaries)}
 

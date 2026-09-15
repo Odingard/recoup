@@ -118,5 +118,6 @@ def test_confirm_endpoint_returns_assurance_block(monkeypatch):
     assert body["assurance"]["events"] == [{"event_id": "evt-1", "status": "evaluated"}]
     assert calls == [("acct-1", "contract/confirm", "agreement_amendment",
                       "acme", None,
-                      {"customer_id": "acme",
+                      {"customer_id": "acme", "confirmed": True,
+                       "confirmed_by": "owner@example.com",
                        "confirmed_at": "2026-06-20T00:00:00+00:00"})]
