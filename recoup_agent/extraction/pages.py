@@ -1,28 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from pypdf import PdfReader
 
 from ..ingestion_doc import _docx_to_text
+from ..cloud.documents import Page, TextBlock
 
 MAX_DOCUMENT_PAGES = 600
 MAX_SCANNED_PDF_PAGES = 25
-
-
-@dataclass(frozen=True)
-class TextBlock:
-    text: str
-    confidence: float
-
-
-@dataclass(frozen=True)
-class Page:
-    number: int
-    text: str
-    blocks: tuple[TextBlock, ...] = ()
-    ocr_confidence: float | None = None  # mean token confidence; None when the OCR path has no signal
 
 
 class DocumentTooLargeError(Exception):

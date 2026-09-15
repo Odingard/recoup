@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from ..cloud.models import GenerationConfig, get_model_adapter
 from .extractor import PageAnchoredEntitlement, _client as extraction_client, _transient
 from .pages import Page
 
@@ -70,14 +72,13 @@ def _ocr_confidence(page: Page | None, quote: str) -> float | None:
 
 
 def _model_check(client, model: str, items: list[dict]) -> list[VerificationItem]:
-    from google.genai import types
     contents = VERIFY_PROMPT + "\n" + json.dumps(items, default=str)
     last = None
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
+            response = get_model_adapter(client).generate(
                 model=model, contents=contents,
-                config=types.GenerateContentConfig(
+                config=GenerationConfig(
                     response_mime_type="application/json", response_schema=VerificationBatch,
                     temperature=0.0),
             )
@@ -93,7 +94,6 @@ def _model_check(client, model: str, items: list[dict]) -> list[VerificationItem
             last = exc
             if attempt == 2 or not _transient(exc):
                 raise
-            import time
             time.sleep((2, 6)[attempt])
     raise last
 

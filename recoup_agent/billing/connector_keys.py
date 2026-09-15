@@ -6,8 +6,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from google.api_core.exceptions import NotFound
-from google.cloud import secretmanager
+from ..cloud.models import ProviderConfigurationError
+from ..cloud.secrets import get_secret_store
 
 from .stripe_oauth import refresh_access_token
 
@@ -27,15 +27,13 @@ def _strip_prefix(raw: str | None, *, env_name: str) -> str | None:
     return value or None
 
 
-def _project_id() -> str | None:
-    return _strip_prefix(os.getenv("GOOGLE_CLOUD_PROJECT"), env_name="GOOGLE_CLOUD_PROJECT")
-
-
 def _client_instance():
     global _client
     if _client is None:
         try:
-            _client = secretmanager.SecretManagerServiceClient()
+            _client = get_secret_store()
+        except ProviderConfigurationError:
+            raise
         except Exception:
             _client = None
     return _client
@@ -51,54 +49,15 @@ def _is_valid_account_id(account_id: str | None) -> bool:
     return bool(account_id and _ACCOUNT_ID_RE.fullmatch(account_id))
 
 
-def _secret_path(project_id: str, secret_id: str) -> str:
-    return f"projects/{project_id}/secrets/{secret_id}"
-
-
-def _get_secret_value(client, project_id: str, secret_id: str) -> str | None:
-    try:
-        response = client.access_secret_version(
-            request={"name": f"{_secret_path(project_id, secret_id)}/versions/latest"}
-        )
-        return response.payload.data.decode("utf-8")
-    except NotFound:
-        return None
-    except Exception:
-        return None
-
-
-def _store_secret_value(client, project_id: str, secret_id: str, value: str) -> None:
-    secret_path = _secret_path(project_id, secret_id)
-    try:
-        client.create_secret(
-            request={
-                "parent": f"projects/{project_id}",
-                "secret_id": secret_id,
-                "secret": {
-                    "replication": {"automatic": {}},
-                },
-            }
-        )
-    except Exception:
-        pass
-    client.add_secret_version(
-        request={
-            "parent": secret_path,
-            "payload": {"data": value.encode("utf-8")},
-        }
-    )
-
-
 def _load_connector_record(account_id: str | None) -> dict[str, Any] | str | None:
     if account_id is None:
         return None
 
-    project_id = _project_id()
     client = _client_instance()
-    if client is not None and project_id:
+    if client is not None:
         try:
             secret_id = _secret_name(account_id)
-            value = _get_secret_value(client, project_id, secret_id)
+            value = client.get(secret_id)
             if value:
                 return value
         except ValueError:
@@ -184,9 +143,8 @@ def store_connector_key(account_id: str, key: str | dict[str, Any]) -> dict[str,
     ``key`` may be a raw access token string or the structured OAuth credential
     payload returned from Stripe's OAuth exchange. Never raises.
     """
-    project_id = _project_id()
     client = _client_instance()
-    if not project_id or client is None:
+    if client is None:
         return {
             "status": "needs_review",
             "message": "Secret Manager is not available; could not store the connector credential.",
@@ -217,7 +175,7 @@ def store_connector_key(account_id: str, key: str | dict[str, Any]) -> dict[str,
         if not value:
             return {"status": "needs_review", "message": "The connector credential is empty."}
         secret_id = _secret_name(account_id)
-        _store_secret_value(client, project_id, secret_id, value)
+        client.put(secret_id, value)
         return {
             "status": "success",
             "message": "Connector credential stored securely.",
@@ -241,15 +199,11 @@ def delete_connector_key(account_id: str) -> bool:
     secret was deleted, False if none existed or Secret Manager is
     unavailable. No Firestore-side connector metadata is stored by this
     module, so nothing else needs removing."""
-    project_id = _project_id()
     client = _client_instance()
-    if not project_id or client is None or not _is_valid_account_id(account_id):
+    if client is None or not _is_valid_account_id(account_id):
         return False
     try:
-        client.delete_secret(request={"name": _secret_path(project_id, _secret_name(account_id))})
-        return True
-    except NotFound:
-        return False
+        return client.delete(_secret_name(account_id))
     except Exception:
         return False
 
