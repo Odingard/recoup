@@ -1,21 +1,9 @@
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
-
 from google.api_core.client_options import ClientOptions
 from google.cloud import documentai_v1 as documentai
 
 from .documents import Page, TextBlock
-
-
-@runtime_checkable
-class PageBlocks(Protocol):
-    blocks: Sequence[documentai.Document.Page.Block]
-
-
-@runtime_checkable
-class PageTokens(Protocol):
-    tokens: Sequence[documentai.Document.Page.Token]
 
 
 def _document_ai_pages(document: documentai.Document) -> list[Page]:
@@ -24,8 +12,14 @@ def _document_ai_pages(document: documentai.Document) -> list[Page]:
     for number, page in enumerate(document.pages, 1):
         text = "".join(full_text[int(segment.start_index):int(segment.end_index)]
                        for segment in page.layout.text_anchor.text_segments)
-        source_blocks = page.blocks if isinstance(page, PageBlocks) else ()
-        source_tokens = page.tokens if isinstance(page, PageTokens) else ()
+        try:
+            source_blocks = page.blocks
+        except AttributeError:
+            source_blocks = ()
+        try:
+            source_tokens = page.tokens
+        except AttributeError:
+            source_tokens = ()
         blocks = tuple(TextBlock(
             "".join(full_text[int(segment.start_index):int(segment.end_index)]
                     for segment in block.layout.text_anchor.text_segments),
