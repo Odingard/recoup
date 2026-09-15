@@ -9,6 +9,17 @@ from recoup_agent import api
 from recoup_agent.billing import recoup_billing
 
 
+@pytest.fixture(autouse=True)
+def _terms_accepted(monkeypatch):
+    """Terms acceptance is required before any fee charge; tests that exercise
+    the charging paths stub this read at the db seam."""
+    record = {"version": recoup_billing.TERMS_VERSION,
+              "accepted_at": "2026-09-01T00:00:00+00:00"}
+    monkeypatch.setattr(recoup_billing._db, "get_terms_acceptance",
+                        lambda _a: record)
+    monkeypatch.setattr(api.db, "get_terms_acceptance", lambda _a: record)
+
+
 def _install_fake_stripe(monkeypatch, paid_status="paid"):
     """Minimal fake stripe module covering the calls recoup_billing makes."""
     state = {"customers": {}, "invoices": {}, "items": [], "sessions": {}}
@@ -276,6 +287,7 @@ def test_sync_recoveries_needs_connector(monkeypatch):
     monkeypatch.setattr(firebase_auth, "verify_id_token",
                         lambda token, **kw: {"uid": "acct1", "email": "a@b.c"})
     monkeypatch.setattr(api, "resolve_connector_key", lambda _a: None)
+    monkeypatch.setattr(api.db, "get_all_findings", lambda _a: [])
     client = TestClient(api.app)
     resp = client.post("/api/billing/sync-recoveries",
                        headers={"Authorization": "Bearer tok"})

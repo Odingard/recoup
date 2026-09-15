@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime, timezone
 from google.cloud import firestore
+from google.api_core.exceptions import AlreadyExists
 
 _client = None
 _platform_settings_cache: dict = {"at": 0.0, "value": None}
@@ -173,9 +174,18 @@ def save_invoice(account_id: str, payload: dict):
     doc_id = f"{payload['customer_id']}_{payload['period']}"
     _collection(db, account_id, "invoices").document(doc_id).set(payload, merge=True)
 
+def _contract_write_payload(payload: dict) -> dict:
+    # Re-uploading a contract must not inherit a prior version's human
+    # confirmation; only an explicit confirmed flag survives the write.
+    if "confirmed" in payload:
+        return payload
+    return {**payload, "confirmed": False, "confirmed_by": None, "confirmed_at": None}
+
+
 def save_contract(account_id: str, payload: dict):
     db = get_client()
-    _collection(db, account_id, "contracts").document(payload["customer_id"]).set(payload, merge=True)
+    _collection(db, account_id, "contracts").document(payload["customer_id"]).set(
+        _contract_write_payload(payload), merge=True)
 
 def get_all_usage(account_id: str) -> list[dict]:
     db = get_client()
@@ -552,3 +562,73 @@ def list_admin_audit(limit: int = 100) -> list[dict]:
     docs = [doc.to_dict() for doc in _platform_admin_audit(get_client()).stream()]
     docs.sort(key=lambda e: e.get("at") or "", reverse=True)
     return docs[:limit]
+
+
+# --- STRIPE WEBHOOK EVENTS (platform-level idempotency store) ---
+
+def _webhook_events(db):
+    return _platform_document(db, "webhooks").collection("stripe_events")
+
+
+def save_stripe_webhook_event(event_id: str, summary: dict) -> bool:
+    """Create-only idempotency record; returns False when already processed."""
+    db = get_client()
+    ref = _webhook_events(db).document(event_id)
+    try:
+        ref.create({"stripe_event_id": event_id,
+                    "processed_at": datetime.now(timezone.utc).isoformat(), **summary})
+    except AlreadyExists:
+        return False
+    return True
+
+
+def find_recovery_event_by_fee_invoice(invoice_id: str) -> tuple[str, dict] | None:
+    """Locate the recovery event whose fee invoice is invoice_id. Checks the
+    top-level fee_invoice_id, then fee_charge.invoice_id for older records."""
+    db = get_client()
+    for account_doc in db.collection("accounts").stream():
+        account_id = account_doc.id
+        events = account_doc.reference.collection("recovery_events").stream()
+        for doc in events:
+            event = doc.to_dict() or {}
+            charge = event.get("fee_charge") or {}
+            if (event.get("fee_invoice_id") == invoice_id
+                    or charge.get("invoice_id") == invoice_id
+                    or charge.get("charge_id") == invoice_id):
+                return account_id, event
+    return None
+
+
+def find_recovery_event_by_credit_note(credit_note_id: str) -> tuple[str, dict] | None:
+    db = get_client()
+    for account_doc in db.collection("accounts").stream():
+        for doc in account_doc.reference.collection("recovery_events").stream():
+            event = doc.to_dict() or {}
+            if (event.get("fee_charge") or {}).get("credit_note_id") == credit_note_id:
+                return account_doc.id, event
+    return None
+
+
+def find_account_by_stripe_customer(customer_id: str) -> str | None:
+    db = get_client()
+    for account_doc in db.collection("accounts").stream():
+        billing = (account_doc.to_dict() or {}).get("billing") or {}
+        if billing.get("stripe_customer_id") == customer_id:
+            return account_doc.id
+    return None
+
+
+# --- TERMS ACCEPTANCE ---
+
+def record_terms_acceptance(account_id: str, record: dict) -> dict:
+    data = {**record, "recorded_at": datetime.now(timezone.utc).isoformat()}
+    _account_root(get_client(), account_id).set(
+        {"terms_acceptance": data}, merge=True)
+    return data
+
+
+def get_terms_acceptance(account_id: str) -> dict | None:
+    doc = _account_root(get_client(), account_id).get()
+    if not doc.exists:
+        return None
+    return (doc.to_dict() or {}).get("terms_acceptance")

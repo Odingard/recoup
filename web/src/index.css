@@ -1,14 +1,14 @@
 :root {
-  --bg-dark: #0f1115;
-  --bg-panel: rgba(30, 33, 40, 0.6);
-  --bg-panel-hover: rgba(40, 44, 52, 0.8);
-  --accent-primary: #5e6ad2;
-  --accent-primary-hover: #737fe6;
-  --accent-success: #2ea043;
-  --accent-danger: #f85149;
-  --text-main: #e6edf3;
-  --text-muted: #8b949e;
-  --border-color: rgba(255, 255, 255, 0.08);
+  --bg-dark: #0B0F14;
+  --bg-panel: #141C26;
+  --bg-panel-hover: #192331;
+  --accent-primary: #2FBF83;
+  --accent-primary-hover: #3AD397;
+  --accent-success: #2FBF83;
+  --accent-danger: #E46D6D;
+  --text-main: #E8EDF3;
+  --text-muted: #A9B4C2;
+  --border-color: #243041;
   --glass-blur: blur(12px);
 }
 
@@ -24,9 +24,7 @@ body {
   color: var(--text-main);
   line-height: 1.5;
   min-height: 100vh;
-  /* Premium dark gradient background */
-  background: radial-gradient(circle at 50% 0%, #1a1d24 0%, var(--bg-dark) 60%);
-  background-attachment: fixed;
+  background: var(--bg-dark);
 }
 
 /* Glassmorphism panel utility */

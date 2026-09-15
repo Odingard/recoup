@@ -15,6 +15,7 @@ from ..money import quantize, to_cents
 
 RECOUP_BILLING_KEY_ENV = "RECOUP_BILLING_STRIPE_API_KEY"
 SUCCESS_FEE_PCT = 0.20
+TERMS_VERSION = "2026-09"
 
 
 def _strip_prefix(raw: str | None) -> str | None:
@@ -178,13 +179,21 @@ def complete_setup_session(account_id: str, session_id: str) -> dict:
 
 def billing_status(account_id: str) -> dict:
     billing = _db.get_account_billing(account_id) or {}
+    try:
+        acceptance = _db.get_terms_acceptance(account_id)
+    except Exception:
+        acceptance = None
     return {
         "configured": is_configured(),
         "card_on_file": bool(billing.get("payment_method_id")),
         "card_brand": billing.get("card_brand"),
         "card_last4": billing.get("card_last4"),
         "card_on_file_at": billing.get("card_on_file_at"),
+        "card_status": billing.get("card_status"),
         "success_fee_pct": SUCCESS_FEE_PCT,
+        "terms_accepted": ({"version": acceptance.get("version"),
+                             "accepted_at": acceptance.get("accepted_at")}
+                            if acceptance else None),
     }
 
 
@@ -242,6 +251,12 @@ def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
     key = _billing_key()
     if key is None:
         return _needs_config()
+    try:
+        accepted = _db.get_terms_acceptance(account_id)
+    except Exception:
+        accepted = None
+    if not accepted:
+        return {"status": "terms_missing", "message": "Accept the Terms of Service before billing a success fee."}
     billing = _db.get_account_billing(account_id) or {}
     cust_id = billing.get("stripe_customer_id")
     if not billing.get("payment_method_id") or not cust_id:
@@ -277,6 +292,8 @@ def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
         return {
             "status": "paid" if getattr(invoice, "status", None) == "paid" else "pending",
             "invoice_id": invoice.id,
+            "fee_invoice_id": invoice.id,
+            "charge_id": getattr(invoice, "charge", None),
             "amount": fee,
             "recovery_event_id": event.recovery_event_id,
             "hosted_invoice_url": getattr(invoice, "hosted_invoice_url", None),
@@ -284,6 +301,65 @@ def charge_success_fee_for_event(account_id: str, finding: dict, event) -> dict:
         }
     except Exception as exc:
         return {"status": "error", "message": f"Recoup billing failed: {exc}"}
+
+
+def _field(event, key, default=None):
+    if isinstance(event, dict):
+        return event.get(key, default)
+    return getattr(event, key, default)
+
+
+def retry_success_fee(account_id: str, event) -> dict:
+    """Retry one retryable fee event. Never raises. After 3 cumulative failed
+    attempts the event is placed on collection_hold with a needs-review-style
+    audit message."""
+    status = _field(event, "fee_status")
+    if status not in {"payment_failed", "error", "pending", "unbilled"}:
+        return {"status": "skipped",
+                "message": f"Fee status {status or 'unknown'} is not retryable."}
+    retry_count = int(_field(event, "fee_retry_count", 0) or 0)
+    finding_id = _field(event, "finding_id", "unknown")
+    if retry_count >= 3:
+        return {"status": "collection_hold",
+                "message": (f"Success fee for {finding_id} could not be "
+                            "collected after 3 attempts; contact the customer.")}
+    try:
+        accepted = _db.get_terms_acceptance(account_id)
+    except Exception:
+        accepted = None
+    if not accepted:
+        return {"status": "terms_missing",
+                "message": "Accept the Terms of Service before billing a success fee."}
+    billing = _db.get_account_billing(account_id) or {}
+    if not billing.get("payment_method_id"):
+        return {"status": "unbilled", "message": "No payment method on file."}
+    key = _billing_key()
+    if key is None:
+        return _needs_config()
+    charge = _field(event, "fee_charge", {}) or {}
+    invoice_id = charge.get("invoice_id") or _field(event, "fee_invoice_id")
+    try:
+        if invoice_id:
+            import stripe
+            invoice = stripe.Invoice.pay(invoice_id, api_key=key)
+            result = {"status": "paid" if getattr(invoice, "status", None) == "paid"
+                      else "pending",
+                      "invoice_id": invoice_id, "fee_invoice_id": invoice_id}
+        else:
+            import types
+            finding = _field(event, "finding", None) or {"finding_id": finding_id}
+            data = event if isinstance(event, dict) else vars(event)
+            result = charge_success_fee_for_event(
+                account_id, finding, types.SimpleNamespace(**data))
+    except Exception as exc:
+        result = {"status": "payment_failed", "message": str(exc)}
+    result["fee_retry_count"] = retry_count + 1
+    result["fee_last_retry_at"] = datetime.now(timezone.utc).isoformat()
+    if result.get("status") in {"error", "payment_failed"} and retry_count + 1 >= 3:
+        result["status"] = "collection_hold"
+        result["message"] = (f"Success fee for {finding_id} could not be "
+                             "collected after 3 attempts; contact the customer.")
+    return result
 
 
 def adjust_success_fee_for_reversal(account_id: str, original_event,

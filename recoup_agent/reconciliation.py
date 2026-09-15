@@ -82,6 +82,8 @@ def minimum_for_period(contract: dict, period: str) -> tuple[float | None, str |
 
 
 def _confidence(contract: dict, field: str) -> float:
+    if contract.get("confirmed") is True:
+        return 1.0
     return float(contract.get("term_meta", {}).get(field, {}).get("confidence", 1.0))
 
 
@@ -95,8 +97,8 @@ def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, re
         "term": term,
         "reason": reason,
         "suggested_action": (suggested_action or
-                             f"Confirm the {term} term in the signed contract, correct it in "
-                             "Step 4, and re-run reconciliation."),
+                             f"Confirm the {term} term in the Agreements panel (or upload "
+                             "a clearer copy of the agreement) and Recoup will re-evaluate."),
     }
     if extra:
         entry.update(extra)
