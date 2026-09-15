@@ -293,8 +293,7 @@ def build_novel_findings(account_id: str, customer_id: str, period: str) -> Nove
                            not_evaluable=list(graph.not_evaluable))
 
 
-STALE_WITHDRAWAL_REASON = ("Superseded: re-evaluation with complete billing "
-                           "and usage data no longer reproduces this discrepancy")
+STALE_WITHDRAWAL_REASON = db.STALE_WITHDRAWAL_REASON
 
 
 def _withdraw_stale_findings(account_id: str, customer_ids: list[str],
@@ -323,7 +322,9 @@ def _withdraw_stale_findings(account_id: str, customer_ids: list[str],
             db.transition_finding_status(
                 account_id, f["finding_id"], "rejected",
                 "assurance_withdrawn_stale",
-                fields={"withdrawal_reason": STALE_WITHDRAWAL_REASON})
+                fields={"withdrawal_reason": STALE_WITHDRAWAL_REASON,
+                        "withdrawn_by": "system",
+                        "withdrawn_at": _now()})
             withdrawn.append(f["finding_id"])
         except Exception:
             logger.warning("could not withdraw stale finding %s",
