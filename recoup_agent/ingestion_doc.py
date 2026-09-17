@@ -4,7 +4,7 @@ import os
 import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from .cloud import models as genai
@@ -53,6 +53,8 @@ def _docx_to_text(file_path: str) -> bytes:
 class Entitlement(BaseModel):
     term_type: str = Field(description="The type of entitlement, e.g., 'committed_minimum', 'overage_rate', 'discount', 'escalator', 'term_start', 'term_end', 'auto_renewal', 'renewal_notice_days', 'committed_seats', 'seat_price'")
     value: float = Field(description="The numeric value of the entitlement. For percentages, use decimals (e.g. 0.05 for 5%).")
+    amount_period: Optional[Literal["month", "quarter", "year", "unknown"]] = Field(
+        None, description="For committed_minimum, the period covered by the literal amount: month, quarter, year, or unknown if unstated. Do not convert the amount. Leave null for other terms.")
     label: Optional[str] = Field(None, description="Short human label for this term as it might appear on an invoice line, e.g. 'Launch promo', 'Volume discount', 'Amendment 1'.")
     effective_date: Optional[str] = Field(None, description="For committed_minimum/overage_rate/escalator terms: the date this value takes effect (ISO YYYY-MM-DD). For an amendment that changes a term, emit a SEPARATE entitlement with the amendment's effective date. Do NOT use this field for discount start or end dates.")
     start_date: Optional[str] = Field(None, description="For discounts/promotions: the date the discount STARTS (ISO YYYY-MM-DD). Leave null otherwise.")
