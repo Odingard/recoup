@@ -21,6 +21,9 @@ from recoup_agent.document_quality import (
     require_sound_structure,
 )
 from recoup_agent.normalizer import normalize_contract_entitlements
+from recoup_agent.billing import realized_value as rv
+from recoup_agent.cloud.local_documents import native_pages_complete
+from recoup_agent.extraction.extractor import DocumentProfile, ExtractionResult
 
 
 def renewal_pdf(masked=False, strike_height=2.2):
@@ -169,11 +172,18 @@ class MemoryDocument:
         return MemorySnapshot(self)
 
     def set(self, data, merge=False):
-        self.store.data[self.path] = {
-            **(self.store.data.get(self.path, {}) if merge else {}), **copy.deepcopy(data)}
+        def merged(old, new):
+            result = copy.deepcopy(old)
+            for key, value in new.items():
+                result[key] = (merged(result[key], value)
+                               if isinstance(result.get(key), dict) and isinstance(value, dict)
+                               else copy.deepcopy(value))
+            return result
+        self.store.data[self.path] = (
+            merged(self.store.data.get(self.path, {}), data) if merge else copy.deepcopy(data))
 
     def update(self, data):
-        self.set(data, merge=True)
+        self.store.data[self.path].update(copy.deepcopy(data))
 
     def delete(self):
         self.store.data.pop(self.path, None)
@@ -200,7 +210,7 @@ class MemoryBatch:
         self.writes.append(lambda: ref.set(data, merge))
 
     def update(self, ref, data):
-        self.set(ref, data, True)
+        self.writes.append(lambda: ref.update(data))
 
     def delete(self, ref):
         self.writes.append(ref.delete)
@@ -379,3 +389,160 @@ def test_unassigned_document_holds_entire_tenant(isolated_store):
     with pytest.raises(LowConfidenceGateException):
         pipeline.compute_findings_and_review("2026-06", account_id="tenant-a",
                                              customer_ids={"another-customer"})
+
+
+def add_hold(document_id="held-document"):
+    return db.hold_document("tenant-a", {
+        **LowConfidenceGateException([StructuralIssue(1, "anchor_drift", "Drift")]).payload(),
+        "document_id": document_id, "file_name": "agreement.pdf",
+    })
+
+
+@pytest.mark.parametrize("kind", ["partial", "closing", "settlement", "reversal", "legacy"])
+def test_held_realization_has_no_event_fee_or_case_side_effects(isolated_store, monkeypatch, kind):
+    seed()
+    finding = db.get_finding("tenant-a", "case-1")
+    original = rv.new_realization("tenant-a", finding, recovery_basis="cash_payment",
+                                  realized_value=10, external_reference="original")
+    db.save_recovery_event("tenant-a", original.to_dict())
+    add_hold()
+    fee = Mock(side_effect=AssertionError("Held recovery cannot bill."))
+    monkeypatch.setattr(api.recoup_billing, "charge_success_fee_for_event", fee)
+    monkeypatch.setattr(api.recoup_billing, "adjust_success_fee_for_reversal", fee)
+    before = copy.deepcopy(isolated_store.data)
+    api.app.dependency_overrides[api.verify_token] = lambda: {"account_id": "tenant-a"}
+    try:
+        path = "/api/findings/case-1/recovery-events"
+        payload = {"recovery_basis": "settlement" if kind == "settlement" else "cash_payment",
+                   "realized_value": 5 if kind == "partial" else 100,
+                   "external_reference": kind}
+        if kind == "reversal":
+            path += f"/{original.recovery_event_id}/reverse"
+            payload = {"reversal_amount": 1, "reversal_reference": "reverse"}
+        if kind == "legacy":
+            path = "/api/findings/case-1/recovered"
+            payload = {"paid_amount": 100, "payment_ref": "legacy"}
+        response = TestClient(api.app).post(path, json=payload)
+        assert response.status_code == 409
+        assert isolated_store.data == before
+        fee.assert_not_called()
+    finally:
+        api.app.dependency_overrides.clear()
+
+
+def test_recovery_transaction_checks_root_hold_before_missing_projection(isolated_store):
+    seed()
+    finding = db.get_finding("tenant-a", "case-1")
+    isolated_store.collection("accounts").document("tenant-a").set({
+        "document_verification_holds": {"h": {
+            "verification_state": NEEDS_VERIFICATION, "verification_scope": "account"}}})
+    event = rv.new_realization("tenant-a", finding, recovery_basis="cash_payment",
+                               realized_value=10, external_reference="late")
+    before = copy.deepcopy(isolated_store.data)
+    with pytest.raises(LowConfidenceGateException):
+        db.save_recovery_event("tenant-a", event.to_dict(), expected_finding=finding,
+                               finding_fields={"recovered_amount": 10})
+    assert isolated_store.data == before
+
+
+def test_recovery_commit_is_atomic_idempotent_and_rejects_stale_rollups(isolated_store):
+    seed()
+    finding = db.get_finding("tenant-a", "case-1")
+    event = rv.new_realization("tenant-a", finding, recovery_basis="cash_payment",
+                               realized_value=10, external_reference="first")
+    assert db.save_recovery_event("tenant-a", event.to_dict(), expected_finding=finding,
+                                 finding_fields={"recovered_amount": 10})
+    assert not db.save_recovery_event("tenant-a", event.to_dict(), expected_finding=finding)
+    second = rv.new_realization("tenant-a", finding, recovery_basis="cash_payment",
+                                realized_value=20, external_reference="second")
+    before = copy.deepcopy(isolated_store.data)
+    with pytest.raises(db.RecoveryConflict):
+        db.save_recovery_event("tenant-a", second.to_dict(), expected_finding=finding,
+                               finding_fields={"recovered_amount": 20})
+    assert isolated_store.data == before
+    assert db.get_finding("tenant-a", "case-1")["recovered_amount"] == 10
+    assert len(db.get_recovery_events("tenant-a")) == 1
+
+
+@pytest.mark.parametrize("filename", ["agreement.pdf", "replacement-new-name.pdf"])
+def test_verified_replacement_requires_explicit_resolution(isolated_store, filename):
+    seed()
+    add_hold()
+    db.save_contract("tenant-a", {
+        "customer_id": "redwood", "customer_name": "Redwood",
+        "document_id": "replacement", "file_name": filename,
+        "structural_verification": {"state": "Verified", "pages": 1},
+    })
+    with pytest.raises(LowConfidenceGateException):
+        db.transition_finding_status("tenant-a", "case-1", "invoiced", "test")
+    resolved = db.resolve_document_hold("tenant-a", "held-document", "replacement", "reviewer")
+    assert resolved["resolved_by"] == "reviewer"
+    assert assurance.account_status("tenant-a")["verification_queue"] == []
+    assert db.get_finding("tenant-a", "case-1")["verification_state"] == "Verified"
+    assert not db.get_all_contracts("tenant-a")[0]["confirmed"]
+    assert db.transition_finding_status("tenant-a", "case-1", "invoiced", "test")["status"] == "invoiced"
+
+
+def test_resolving_one_hold_preserves_other_holds_and_tenants(isolated_store):
+    seed()
+    seed("tenant-b")
+    add_hold("first")
+    add_hold("second")
+    db.save_contract("tenant-a", {
+        "customer_id": "redwood", "document_id": "replacement", "file_name": "new.pdf",
+        "structural_verification": {"state": "Verified"},
+    })
+    db.resolve_document_hold("tenant-a", "first", "replacement", "reviewer")
+    assert db.get_finding("tenant-a", "case-1")["verification_document_ids"] == ["second"]
+    with pytest.raises(LowConfidenceGateException):
+        db.transition_finding_status("tenant-a", "case-1", "invoiced", "test")
+    assert len(assurance.account_status("tenant-a")["verification_queue"]) == 1
+    assert db.get_finding("tenant-b", "case-1").get("verification_state") is None
+    db.resolve_document_hold("tenant-a", "second", "replacement", "reviewer")
+    assert assurance.account_status("tenant-a")["state"] == "Ready"
+
+
+@pytest.mark.parametrize("replacement", ["missing", "foreign", "stale", "wrong-customer"])
+def test_resolution_rejects_unverified_or_unassociated_replacement(isolated_store, replacement):
+    seed()
+    db.save_contract("tenant-a", {"customer_id": "redwood", "document_id": "held-document"})
+    add_hold()
+    account = "tenant-b" if replacement == "foreign" else "tenant-a"
+    if replacement != "missing":
+        db.save_contract(account, {
+            "customer_id": "other" if replacement == "wrong-customer" else "redwood",
+            "document_id": replacement, "file_name": "replacement.pdf",
+            "structural_verification": {"state": "Verified"},
+        })
+    if replacement == "stale":
+        db.save_contract("tenant-a", {"customer_id": "redwood", "document_id": "latest"})
+    before = copy.deepcopy(isolated_store.data)
+    with pytest.raises(db.VerificationResolutionError):
+        db.resolve_document_hold("tenant-a", "held-document", replacement, "reviewer")
+    assert isolated_store.data == before
+
+
+def test_native_blank_page_passes_but_missing_text_on_painted_page_does_not(tmp_path, monkeypatch):
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
+    for _ in range(25):
+        pdf.drawString(50, 700, "Renewal requires sixty days notice.")
+        pdf.showPage()
+    pdf.showPage()
+    pdf.save()
+    path = tmp_path / "native-with-blank.pdf"
+    path.write_bytes(buffer.getvalue())
+    pages = pdf_text_pages(str(path))
+    assert len(pages) == 26
+    assert native_pages_complete(str(path), pages, 26)
+    assert not native_pages_complete(str(path), pages[:-1], 26)
+    failed = [replace(pages[0], text="", blocks=()), *pages[1:]]
+    assert not native_pages_complete(str(path), failed, 26)
+    assert not native_pages_complete(str(path), [replace(p, text="") for p in pages], 26)
+    extract = Mock(return_value=ExtractionResult([], "Redwood", 26, "pdf_text",
+                                                 "test", 1, False, DocumentProfile()))
+    monkeypatch.setattr("recoup_agent.extraction.extractor.extract_pages", extract)
+    monkeypatch.setattr("recoup_agent.extraction.verifier.verify", lambda *args, **kwargs: [])
+    result = ingestion_doc.extract_entitlements(str(path))
+    assert result.structural_verification["state"] == "Verified"
+    assert extract.call_args.args[1] == "pdf_text"

@@ -21,6 +21,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, Uplo
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
@@ -978,12 +979,6 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
         evidence=evidence,
         recovery_action_id=recovery_action_id)
     existing = db.get_recovery_events(account_id, finding["finding_id"])
-    if not db.save_recovery_event(account_id, event.to_dict()):
-        raise HTTPException(
-            status_code=409,
-            detail={"status": "duplicate",
-                    "recovery_event_id": event.recovery_event_id})
-
     all_events = existing + [event.to_dict()]
     net = rv.net_realized(all_events)
     payment = {
@@ -1001,17 +996,10 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
     }
     requested = rv.quantize(finding.get("monthly_recoverable") or 0)
     closes_case = recovery_basis == "settlement" or net >= requested
-    if finding.get("status") == "recovered":
-        db.update_finding_fields(account_id, finding["finding_id"],
-                                 finding_fields, "recovery_realized")
-    elif closes_case:
-        _transition_fields(
-            account_id, finding["finding_id"], "recovered",
-            f"recovery_realized_{recovery_basis}",
-            fields={**finding_fields, "recovered_at": event.realized_at})
-    else:
-        db.update_finding_fields(account_id, finding["finding_id"],
-                                 finding_fields, "recovery_realized")
+    if closes_case and finding.get("status") != "recovered":
+        finding_fields.update(status="recovered", recovered_at=event.realized_at)
+    _commit_recovery_event(account_id, event.to_dict(), finding, finding_fields,
+                           f"recovery_realized_{recovery_basis}")
 
     fee_charge = None
     eligible, _reason = rv.billing_eligibility(
@@ -1039,6 +1027,21 @@ def _record_realization(account_id: str, finding: dict, *, recovery_basis: str,
                                      "success_fee_charge")
     _record_outcome(account_id, finding["finding_id"])
     return event.to_dict(), fee_charge, payment, net
+
+
+def _commit_recovery_event(account_id: str, event: dict, finding: dict,
+                           fields: dict, event_name: str) -> None:
+    try:
+        saved = db.save_recovery_event(
+            account_id, event, expected_finding=finding,
+            finding_fields=fields, event_name=event_name)
+    except db.FindingNotFound:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    except (db.IllegalTransition, db.RecoveryConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not saved:
+        raise HTTPException(status_code=409, detail={
+            "status": "duplicate", "recovery_event_id": event["recovery_event_id"]})
 
 
 def _record_outcome(account_id: str | None, finding_id: str) -> None:
@@ -1165,19 +1168,13 @@ def reverse_recovery_event(finding_id: str, event_id: str,
                              for e in events])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    if not db.save_recovery_event(account_id, reversal.to_dict()):
-        raise HTTPException(
-            status_code=409,
-            detail={"status": "duplicate",
-                    "recovery_event_id": reversal.recovery_event_id})
-
     net = rv.net_realized(events + [reversal.to_dict()])
     update = {"recovered_amount": net}
     if net == 0:
         update["metadata"] = {**(finding.get("metadata") or {}),
                               "fully_reversed": True}
-    db.update_finding_fields(account_id, finding_id, update,
-                             "recovery_reversal")
+    _commit_recovery_event(account_id, reversal.to_dict(), finding, update,
+                           "recovery_reversal")
 
     adjustment = recoup_billing.adjust_success_fee_for_reversal(
         account_id, original, reversal)
@@ -2382,7 +2379,7 @@ async def ingest_contract_document(file: UploadFile = File(...), user: dict = De
         content = await file.read()
     except Exception:
         return _needs_review_payload("Could not read uploaded file; please upload a valid document.")
-    return _ingest_contract_bytes(account_id, file.filename or "", content)
+    return await run_in_threadpool(_ingest_contract_bytes, account_id, file.filename or "", content)
 
 
 @app.post("/api/ingest/bulk")
@@ -2412,6 +2409,10 @@ async def ingest_bulk(files: list[UploadFile] = File(...), user: dict = Depends(
                        "limit is 25 MB. Compress or split it.")
         items.append((f.filename or "upload", content))
 
+    return await run_in_threadpool(_ingest_bulk_items, account_id, items)
+
+
+def _ingest_bulk_items(account_id: str | None, items: list[tuple[str, bytes]]) -> dict:
     prior_contracts = db.get_all_contracts(account_id)
     prior_invoices = db.get_all_invoices(account_id)
     prior_usage = db.get_all_usage(account_id)
@@ -2522,6 +2523,26 @@ class AssuranceEvaluatePayload(BaseModel):
     period: str | None = None
 
 
+class VerificationResolutionPayload(BaseModel):
+    replacement_document_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    confirm: bool
+
+
+@app.post("/api/documents/{document_id}/resolve")
+def resolve_document_verification(document_id: str, payload: VerificationResolutionPayload,
+                                  user: dict = Depends(verify_token)):
+    account_id = _account_id(user)
+    if account_id is None:
+        raise HTTPException(status_code=403, detail="Sign in to resolve a document hold.")
+    if not payload.confirm:
+        raise HTTPException(status_code=422, detail="Confirm you inspected the replacement document.")
+    try:
+        return db.resolve_document_hold(
+            account_id, document_id, payload.replacement_document_id, _actor(user))
+    except db.VerificationResolutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/api/assurance/status")
 def get_assurance_status(user: dict = Depends(verify_token)):
     """Continuous-assurance status for the authenticated tenant."""
@@ -2535,7 +2556,10 @@ def get_assurance_status(user: dict = Depends(verify_token)):
                 "open_discrepancies": 0, "needs_review": 0,
                 "events_total": 0, "events_needs_review": 0,
                 "recent_events": []}
-    return {**account_status(account_id), "triggers_monitored": monitored}
+    status = account_status(account_id)
+    return {**status, "triggers_monitored": monitored,
+            "verified_replacements": db.verified_replacements(account_id)
+            if status.get("verification_queue") else []}
 
 
 @app.get("/api/assurance/events")

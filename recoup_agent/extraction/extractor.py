@@ -4,18 +4,19 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
-
-logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
 from ..cloud.models import GenerationConfig, get_model_adapter
 from .ocr import get_ocr_adapter
-from .chunker import Chunk, chunk_pages
+from .chunker import chunk_pages
 from .ontology import FINANCIAL_RIGHT_TYPES, families
 from .pages import Page, load_pages
+
+logger = logging.getLogger(__name__)
 
 SYSTEM = """You are extracting contractual financial entitlements for a revenue-recovery audit. You only report terms that are stated in the document text provided. Every entitlement must carry: the exact verbatim quote as provenance, the page number from the [[PAGE n]] marker where that quote appears, and the section reference if the document has one. Never infer, estimate, or normalise a number that is not written in the text. If an amendment, addendum, order form, or exhibit changes a term, emit both the original and the changed value as separate entitlements, each with its own effective_date. Where the document uses a defined term (for example "Committed Volume" or "Fees"), resolve it using the document's own definitions section and cite both pages in provenance. Percentages are decimals (0.05 for 5%). Dates are ISO YYYY-MM-DD. If you are not certain a term is stated, set confidence_score below 0.6 rather than omitting or guessing.\n"""
 
@@ -179,6 +180,16 @@ def _family_prompt(term_types, signals) -> str:
             f"Ignore all other kinds of terms.\n{ALL_FAMILIES}")
 
 
+def _extract_prompts(client, model, prompts: list[str], *, cached_content=None) -> list[ChunkExtraction]:
+    workers = min(4, max(1, int(os.getenv("RECOUP_EXTRACTION_CONCURRENCY", "4"))))
+
+    def run(prompt):
+        return _parse_response(_call(client, model, prompt, _config(cached_content=cached_content)))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(run, prompts))
+
+
 def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: str | None = None,
                   file_name: str | None = None) -> ExtractionResult:
     client = get_model_adapter(client) if client is not None else _client()
@@ -194,57 +205,55 @@ def extract_pages(pages: list[Page], source_kind: str, *, client=None, model: st
         cache = None
         try:
             cache = client.create_cache(model=model, text=full_text, system=SYSTEM, ttl="1800s")
-            cached = True
-            profile = _classify(client, model, text=chunks[0].text if chunks else "",
-                                cached_content=cache, file_name=file_name,
-                                first_page_text=first_page_text)
-            for family, term_types in families().items():
-                signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
-                response = _call(client, model, _family_prompt(term_types, signals), _config(cached_content=cache))
-                parsed = _parse_response(response)
-                extracted.extend(parsed.entitlements)
-                if parsed.customer_name and customer_name == "Unknown":
-                    customer_name = parsed.customer_name
         except Exception:
-            cached = False
-            extracted = []
-        finally:
-            if cache is not None:
+            logger.warning("document cache unavailable; using page chunks", exc_info=True)
+        if cache is not None:
+            try:
+                profile = _classify(client, model, text=chunks[0].text if chunks else "",
+                                    file_name=file_name, first_page_text=first_page_text)
+                prompts = []
+                for term_types in families().values():
+                    signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
+                    prompts.append(_family_prompt(term_types, signals))
+                results = _extract_prompts(client, model, prompts, cached_content=cache)
+            finally:
                 try:
                     client.delete_cache(cache)
                 except Exception:
-                    pass
+                    logger.warning("document cache cleanup failed", exc_info=True)
+            cached = True
+            for parsed in results:
+                extracted.extend(parsed.entitlements)
+                if parsed.customer_name and customer_name == "Unknown":
+                    customer_name = parsed.customer_name
     if not cached:
         if chunks:
             profile = _classify(client, model, text=chunks[0].text,
                                 file_name=file_name, first_page_text=first_page_text)
-        for chunk in chunks:
-            response = _call(client, model, f"{ALL_FAMILIES}\n{chunk.text}", _config())
-            parsed = _parse_response(response)
+        for parsed in _extract_prompts(client, model, [f"{ALL_FAMILIES}\n{chunk.text}" for chunk in chunks]):
             extracted.extend(parsed.entitlements)
             if parsed.customer_name and customer_name == "Unknown":
                 customer_name = parsed.customer_name
         if os.getenv("RECOUP_EXTRACTION_RECALL_PASS", "1") != "0":
             lower = full_text.lower()
-            for family, term_types in families().items():
-                signals = sorted({phrase for term in term_types for phrase in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
-                if not any(s.lower() in lower for s in signals):
+            prompts = []
+            for term_types in families().values():
+                signals = sorted({s for term in term_types for s in FINANCIAL_RIGHT_TYPES[term].signal_phrases})
+                if (not any(signal.lower() in lower for signal in signals)
+                        or all(any(e.term_type == term for e in extracted) for term in term_types)):
                     continue
-                missing = [t for t in term_types
-                           if not any(e.term_type == t for e in extracted)]
-                if not missing:
-                    continue
+                prompts.extend(
+                    f"{_family_prompt(term_types, signals)}\n{chunk.text}" for chunk in chunks
+                    if any(signal.lower() in chunk.text.lower() for signal in signals)
+                )
+            if prompts:
                 try:
-                    for chunk in chunks:
-                        response = _call(client, model,
-                                         f"{_family_prompt(term_types, signals)}\n{chunk.text}",
-                                         _config())
-                        parsed = _parse_response(response)
+                    for parsed in _extract_prompts(client, model, prompts):
                         extracted.extend(parsed.entitlements)
                         if parsed.customer_name and customer_name == "Unknown":
                             customer_name = parsed.customer_name
                 except Exception:
-                    logger.warning("recall pass for %s failed; continuing", term_types)
+                    logger.warning("recall pass failed; continuing")
     return ExtractionResult(_dedupe(extracted), customer_name, len(pages), source_kind, model,
                             len(chunks), cached, profile)
 

@@ -197,6 +197,22 @@ function App() {
   const [firebaseUser, setFirebaseUser] = useState(null)
   const [sessionMode, setSessionMode] = useState(null)
   const [loadingAuth, setLoadingAuth] = useState(true)
+
+  useEffect(() => onAuthStateChanged(auth, (nextUser) => {
+    setFirebaseUser(nextUser)
+    setLoadingAuth(false)
+    setSessionMode((current) => (
+      current === 'sample' && !nextUser ? 'sample' : nextUser ? 'auth' : null
+    ))
+  }), [])
+
+  return <Workspace
+    key={sessionMode === 'sample' ? 'sample' : `${sessionMode}:${firebaseUser?.uid || ''}`}
+    {...{ firebaseUser, setFirebaseUser, sessionMode, setSessionMode, loadingAuth, setLoadingAuth }}
+  />
+}
+
+function Workspace({ firebaseUser, setFirebaseUser, sessionMode, setSessionMode, loadingAuth, setLoadingAuth }) {
   const [route, setRoute] = useState(normalizeHash())
   const [billingPeriod, setBillingPeriod] = useState(DEFAULT_PERIOD)
   const [, setFindings] = useState([])
@@ -269,18 +285,6 @@ function App() {
       return next
     })
   }
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
-      setFirebaseUser(nextUser)
-      setLoadingAuth(false)
-      setSessionMode((current) => {
-        if (current === 'sample') return 'sample'
-        return nextUser ? 'auth' : null
-      })
-    })
-    return unsubscribe
-  }, [])
 
   useEffect(() => {
     const onHash = () => setRoute(normalizeHash())
@@ -655,7 +659,7 @@ function App() {
     signOut(auth).catch(() => { /* sample mode must remain usable */ })
     setSessionMode('sample')
     setLoadingAuth(false)
-  }, [])
+  }, [setLoadingAuth, setSessionMode])
 
   useEffect(() => {
     if (!isSampleMode || sampleSeeded.current) return undefined
@@ -746,6 +750,21 @@ function App() {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
     } finally { setBulkUploading(false) }
+  }
+
+  const resolveVerification = async (event, documentId) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    try {
+      await apiRequest(`/documents/${encodeURIComponent(documentId)}/resolve`, {
+        method: 'POST',
+        body: { replacement_document_id: form.get('replacement'), confirm: form.get('confirm') === 'on' },
+      })
+      setStatusMessage('Document hold resolved. Review the replacement agreement’s terms before recovery.')
+      await refreshAll()
+    } catch (error) {
+      setStatusMessage(failureMessage('Could not resolve document hold', error))
+    }
   }
 
   const handleEmptyDragOver = (event) => {
@@ -1527,6 +1546,20 @@ function App() {
               <li key={document.document_id} className="upload-history-item">
                 <span>{document.file_name} · {document.reason}</span>
                 <span className="muted-copy">{(document.issues || []).map((issue) => `Page ${issue.page || 'unknown'}: ${issue.reason}`).join(' · ')} {document.suggested_action}</span>
+                <form onSubmit={(event) => resolveVerification(event, document.document_id)}>
+                  <label>Verified replacement
+                    <select name="replacement" required defaultValue="">
+                      <option value="" disabled>Upload a clear replacement, then select it</option>
+                      {(assurance.verified_replacements || []).map((replacement) => (
+                        <option key={replacement.document_id} value={replacement.document_id}>
+                          {replacement.file_name} · {replacement.customer_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label><input type="checkbox" name="confirm" required /> I inspected this replacement and confirm it replaces the held document for this customer.</label>
+                  <button className="secondary-btn" type="submit">Resolve document hold</button>
+                </form>
               </li>
             ))}</ul>
           </div>
@@ -1925,4 +1958,5 @@ function App() {
   )
 }
 
+void Workspace
 export default App

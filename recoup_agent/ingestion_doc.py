@@ -9,7 +9,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from .cloud import models as genai
 from .cloud.models import BinaryPart, GenerationConfig, get_model_adapter
-from .cloud.local_documents import pdf_text_pages
+from .cloud.local_documents import native_pages_complete, pdf_text_pages
 from .cloud.visual_structure import inspect_raster
 from .document_quality import LowConfidenceGateException, StructuralIssue, inspect_structure
 
@@ -151,7 +151,7 @@ def extract_entitlements(file_path: str, *, client=None, model: str | None = Non
                 native_pages = pdf_text_pages(file_path)
             except (OSError, ValueError, subprocess.SubprocessError):
                 native_pages = []
-            if native_pages and all(page.text.strip() for page in native_pages):
+            if native_pages_complete(file_path, native_pages, len(pages)):
                 pages, source_kind = native_pages, "pdf_text"
             elif source_kind == "pdf_text":
                 source_kind = "scanned"

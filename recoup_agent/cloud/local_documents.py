@@ -102,6 +102,22 @@ def pdf_text_pages(file_path: str) -> list[Page]:
     return pages
 
 
+def native_pages_complete(file_path: str, pages: list[Page], expected_count: int) -> bool:
+    if len(pages) != expected_count or not any(page.text.strip() for page in pages):
+        return False
+    empty = [page for page in pages if not page.text.strip()]
+    if not empty:
+        return True
+    reader = PdfReader(file_path)
+    paint = {b"Tj", b"TJ", b"'", b'"', b"Do", b"INLINE IMAGE",
+             b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*", b"sh"}
+    for page in empty:
+        content = reader.pages[page.number - 1].get_contents()
+        if content is not None and any(operator in paint for _, operator in content.operations):
+            return False
+    return True
+
+
 class LocalDocumentAdapter:
     def page_texts(self, file_bytes: bytes, mime_type: str) -> list[Page]:
         suffixes = {"application/pdf": ".pdf", "image/png": ".png", "image/jpeg": ".jpg"}

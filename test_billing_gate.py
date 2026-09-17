@@ -255,7 +255,12 @@ def test_sync_recoveries_paid_invoice(monkeypatch):
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda *a, **k: field_calls.append(a[1:]))
     monkeypatch.setattr(api.db, "get_recovery_events", lambda *a, **k: [])
-    monkeypatch.setattr(api.db, "save_recovery_event", lambda *a, **k: True)
+    def save_event(account, event, *, expected_finding=None, finding_fields=None, event_name=None):
+        if finding_fields:
+            _transition(account, event["finding_id"], finding_fields["status"], event_name,
+                        fields=finding_fields)
+        return True
+    monkeypatch.setattr(api.db, "save_recovery_event", save_event)
     monkeypatch.setattr(api.db, "update_recovery_event_fields",
                         lambda *a, **k: None)
 
