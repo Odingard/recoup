@@ -182,6 +182,7 @@ def normalize_invoice(raw: dict, contract: dict | None) -> dict:
         "credits_applied": [],
         "prorated": False,
         "proration_amount": 0.0,
+        "line_items": [],
     }
     contract_discounts = (contract or {}).get("discounts") or []
     for item in raw.get("line_items") or []:
@@ -205,6 +206,12 @@ def normalize_invoice(raw: dict, contract: dict | None) -> dict:
         units = item.get("units", item.get("quantity", item.get("qty")))
         if units is not None and SEAT_RE.search(description):
             invoice["seat_units"] = invoice.get("seat_units", 0.0) + float(units)
+        invoice["line_items"].append({
+            "description": description,
+            "amount": amount,
+            "role": "seat" if role == "base" and SEAT_RE.search(description) else role,
+            **({"quantity": float(units)} if units is not None else {}),
+        })
     if "invoice_id" in raw:
         invoice["invoice_id"] = raw["invoice_id"]
     return invoice

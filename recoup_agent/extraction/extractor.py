@@ -23,6 +23,8 @@ SYSTEM = """You are extracting contractual financial entitlements for a revenue-
 RULES = """Rules: (1) If an amendment or addendum changes a term (e.g. lowers the committed minimum), emit BOTH the original and the amended value as separate entitlements, each with its own effective_date. (2) For discounts and promotions, put the promo name in label, when it begins in start_date and when it ends in end_date; never in effective_date. (3) Emit included_units whenever the base fee 'includes' a quantity of units. (4) Only report overage_rate for a per-unit charge that applies ABOVE an included quantity; a per-unit list price that is simply billed per unit is not an overage rate. (5) provenance must be the verbatim clause text. (6) If overage pricing is tiered (different per-unit rates for different volume bands above the included quantity), emit one overage_tier entitlement per band with value = that band's per-unit rate and tier_up_to = the band's upper bound in units above the included quantity (null for the last band), instead of a single overage_rate. (7) Emit term_start and term_end for the initial term's start and end dates (value=0, date in effective_date). (8) Emit auto_renewal when the contract renews automatically (value = renewal term length in months, 0 if unstated) and renewal_notice_days for the notice period required to cancel before renewal. (9) For per-seat pricing, emit committed_seats (the seat/user/license count) and seat_price (the monthly price per seat)."""
 
 RULES += " (10) For committed_minimum, preserve the literal amount and set amount_period to month, quarter, year, or unknown. Quote the words establishing the amount's period, even if payment installments use a different period. Never convert annual fees to monthly yourself. (11) For an escalator on anniversaries of the Effective Date, preserve that anchor in effective_date and quote the anniversary rule; do not calculate an increase date. If the clause explicitly gives a first increase date, use that date instead."
+RULES += " (12) Give every financial entitlement a stable lower_snake_case scope for the product or charge layer it governs, such as platform or enterprise_workspace. Reuse that scope for original and amended values. Use the same scope on committed_seats and its seat_price."
+RULES += " (13) Preserve each financial term's effective_date and inclusive end_date, including an original rate's expiration when replaced. A product-specific recurring fee and a separate platform fee must have different scopes. A stated recurring charge that is simply seats multiplied by seat_price is not an additional committed_minimum."
 
 ALL_FAMILIES = "Extract every committed minimum, included units, overage rate or tier, discount or promotion, escalator, initial term start/end, auto-renewal, renewal notice period, committed seats and seat price stated in the following pages. Each page is preceded by a [[PAGE n]] marker; report that n as page.\n" + RULES
 
@@ -33,6 +35,7 @@ class PageAnchoredEntitlement(BaseModel):
     amount_period: Optional[Literal["month", "quarter", "year", "unknown"]] = Field(
         None, description="For committed_minimum, the period covered by the literal amount: month, quarter, year, or unknown if unstated. Do not convert the amount. Leave null for other terms.")
     label: Optional[str] = None
+    scope: Optional[str] = None
     effective_date: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -46,6 +49,7 @@ class PageAnchoredEntitlement(BaseModel):
 ROLE_VALUES = {"master", "amendment", "order_form", "exhibit", "sow", "other"}
 
 CLASSIFY_PROMPT = """Classify this contract document. role is one of: master (a master agreement, MSA, subscription or services agreement that stands on its own), amendment (an amendment, addendum, or change order that modifies an earlier agreement), order_form (an order form, sales order, or quote that supplies quantities and prices under a master agreement), exhibit (an exhibit, schedule, or attachment to a master agreement), sow (statement of work), other. title is the document's own title as written. counterparty is the customer/licensee/client party name as written. effective_date is the document's stated effective date (ISO YYYY-MM-DD) or null. references lists the titles or dates of other agreements this document says it modifies, attaches to, or is governed by, verbatim. amendment_number is the number if the title says "Amendment No. N" or similar, else null. Use only what is written."""
+CLASSIFY_PROMPT += " execution_date is the date the document was signed, if stated. Set order_form_precedence only when an explicit clause grants service-specific order-form prices and quantities precedence over general terms."
 
 
 class DocumentProfile(BaseModel):
@@ -53,6 +57,8 @@ class DocumentProfile(BaseModel):
     title: Optional[str] = None
     counterparty: Optional[str] = None
     effective_date: Optional[str] = None
+    execution_date: Optional[str] = None
+    order_form_precedence: bool = False
     references: list[str] = Field(default_factory=list)
     amendment_number: Optional[int] = None
 
@@ -171,7 +177,7 @@ def _dedupe(items: list[PageAnchoredEntitlement]) -> list[PageAnchoredEntitlemen
     seen = set()
     result = []
     for item in items:
-        key = (item.term_type, item.value, item.amount_period, item.effective_date, item.start_date, item.end_date, item.page)
+        key = (item.term_type, item.scope, item.value, item.amount_period, item.effective_date, item.start_date, item.end_date, item.page)
         if key not in seen:
             seen.add(key)
             result.append(item)

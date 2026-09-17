@@ -43,11 +43,13 @@ class AgreementBundle:
 
 def _profile(doc: ExtractedDocument) -> DocumentProfile:
     p = doc.profile
-    if isinstance(p, DocumentProfile):
-        return p
     if isinstance(p, dict):
-        return DocumentProfile.model_validate(p)
-    return DocumentProfile()
+        p = DocumentProfile.model_validate(p)
+    if not isinstance(p, DocumentProfile):
+        return DocumentProfile()
+    if not p.effective_date and p.execution_date:
+        return p.model_copy(update={"effective_date": p.execution_date})
+    return p
 
 
 def _group_key(doc: ExtractedDocument) -> str:
@@ -140,7 +142,7 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
         supply = [d for d in docs if profiles[id(d)].role in SUPPLY_ROLES and d is not master]
         ordered_sources = [master] + sorted(supply, key=_sort_key)
 
-        selected: dict[str, Entitlement] = {}
+        selected: dict[str, list[Entitlement]] = {}
         minimums: list[Entitlement] = []
         others: list[Entitlement] = []  # multi-value terms (discount, overage_tier)
         master_terms: dict[str, Entitlement] = {}
@@ -149,14 +151,44 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
         def _hist(term: str, ent: Entitlement, file_name: str):
             term_history.setdefault(term, []).append({
                 "value": ent.value, "effective_date": ent.effective_date,
+                "scope": ent.scope, "end_date": ent.end_date,
                 "source_file": file_name, "page": ent.page})
+
+        def document_term(raw, document: ExtractedDocument) -> Entitlement:
+            ent = _as_entitlement(raw, document.file_name)
+            profile = profiles[id(document)]
+            if (ent.scope and ent.term_type in {"committed_seats", "seat_price"}
+                    and profile.role == "order_form"
+                    and profiles[id(master)].order_form_precedence):
+                ent = ent.model_copy(update={"overrides_generic": True})
+            if (ent.scope and not ent.effective_date
+                    and ent.term_type not in {"discount", "term_start", "term_end"}):
+                values = {
+                    candidate.value
+                    for source in document.entitlements
+                    if (candidate := _as_entitlement(source, document.file_name)).term_type == ent.term_type
+                    and candidate.scope == ent.scope
+                }
+                if len(values) == 1 and profile.effective_date:
+                    ent = ent.model_copy(update={"effective_date": profile.effective_date})
+            return ent
 
         for d in ordered_sources:
             fname = d.file_name
             is_master = d is master
             for raw in d.entitlements:
-                ent = _as_entitlement(raw, fname)
+                ent = document_term(raw, d)
                 tt = ent.term_type
+                if ent.scope and tt in {
+                    "committed_minimum", "included_units", "overage_rate",
+                    "escalator", "seat_price", "committed_seats",
+                }:
+                    if tt == "committed_minimum":
+                        minimums.append(ent)
+                    else:
+                        selected.setdefault(tt, []).append(ent)
+                    _hist(tt, ent, fname)
+                    continue
                 if tt == "committed_minimum":
                     if is_master or tt not in master_terms:
                         minimums.append(ent)
@@ -170,12 +202,12 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
                         master_terms[tt] = ent
                 elif tt in SINGLE_VALUE_TERMS:
                     if tt not in selected:
-                        selected[tt] = ent
+                        selected[tt] = [ent]
                         _hist(tt, ent, fname)
                         if is_master:
                             master_terms[tt] = ent
                     elif is_master:
-                        selected[tt] = ent
+                        selected[tt].append(ent)
                         _hist(tt, ent, fname)
                         master_terms[tt] = ent
                     elif tt in master_terms and master_terms[tt].value != ent.value:
@@ -192,18 +224,35 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
         for d in dated_amendments:
             fname = d.file_name
             for raw in d.entitlements:
-                ent = _as_entitlement(raw, fname)
+                ent = document_term(raw, d)
                 tt = ent.term_type
                 if tt == "committed_minimum":
                     minimums.append(ent)
                     _hist(tt, ent, fname)
                 elif tt in SINGLE_VALUE_TERMS:
-                    selected[tt] = ent
+                    selected.setdefault(tt, []).append(ent)
                     _hist(tt, ent, fname)
                 else:
                     others.append(ent)
 
-        entitlements = minimums + list(selected.values()) + others
+        entitlements = minimums + [
+            ent
+            for term_entitlements in selected.values()
+            for ent in term_entitlements
+        ] + others
+        for index, ent in enumerate(entitlements):
+            if ent.scope and not ent.effective_date and ent.term_type != "discount":
+                known_dates = {
+                    candidate.effective_date for candidate in entitlements
+                    if candidate.term_type == ent.term_type
+                    and candidate.scope == ent.scope
+                    and candidate.value == ent.value
+                    and candidate.effective_date
+                }
+                if len(known_dates) == 1:
+                    entitlements[index] = ent.model_copy(
+                        update={"effective_date": next(iter(known_dates))}
+                    )
         # Deterministic order for downstream normalization.
         entitlements.sort(key=lambda e: (e.effective_date is not None, e.effective_date or ""))
         doc_records = [{
@@ -215,6 +264,8 @@ def assemble(documents: list[ExtractedDocument]) -> list[AgreementBundle]:
             "effective_date": profiles[id(d)].effective_date,
             "pages": len(d.pages) if d.pages else None,
             "amendment_number": profiles[id(d)].amendment_number,
+            "execution_date": profiles[id(d)].execution_date,
+            "order_form_precedence": profiles[id(d)].order_form_precedence,
         } for d in (superseded_masters + [master] + sorted(supply, key=_sort_key) + dated_amendments + undated)]
         customer_name = (profiles[id(master)].counterparty or master.customer_name
                          or next((profiles[id(d)].counterparty or d.customer_name

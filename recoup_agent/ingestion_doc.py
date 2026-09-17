@@ -56,9 +56,17 @@ class Entitlement(BaseModel):
     amount_period: Optional[Literal["month", "quarter", "year", "unknown"]] = Field(
         None, description="For committed_minimum, the period covered by the literal amount: month, quarter, year, or unknown if unstated. Do not convert the amount. Leave null for other terms.")
     label: Optional[str] = Field(None, description="Short human label for this term as it might appear on an invoice line, e.g. 'Launch promo', 'Volume discount', 'Amendment 1'.")
+    scope: Optional[str] = Field(
+        None,
+        description=(
+            "Stable lower_snake_case name for the product or charge layer this "
+            "term governs, e.g. platform or enterprise_workspace. Reuse the "
+            "same scope when an amendment changes that term."
+        ),
+    )
     effective_date: Optional[str] = Field(None, description="For committed_minimum/overage_rate/escalator terms: the date this value takes effect (ISO YYYY-MM-DD). For an amendment that changes a term, emit a SEPARATE entitlement with the amendment's effective date. Do NOT use this field for discount start or end dates.")
     start_date: Optional[str] = Field(None, description="For discounts/promotions: the date the discount STARTS (ISO YYYY-MM-DD). Leave null otherwise.")
-    end_date: Optional[str] = Field(None, description="For discounts/promotions: the date the discount ENDS or expires (ISO YYYY-MM-DD). Leave null if it never expires.")
+    end_date: Optional[str] = Field(None, description="Inclusive expiration date (ISO YYYY-MM-DD) for this financial term or discount. Leave null if no expiration is stated.")
     tier_up_to: Optional[float] = Field(None, description="For overage_tier terms only: the upper bound of this tier in overage units above the included quantity; null for the final, unbounded tier.")
     confidence_score: float = Field(description="Confidence score of this extraction between 0.0 and 1.0")
     provenance: str = Field(description="The exact clause quote and page number indicating where this was found.")
@@ -66,6 +74,7 @@ class Entitlement(BaseModel):
     section_ref: Optional[str] = None
     verification: Optional[dict] = None
     source_file: Optional[str] = None
+    overrides_generic: bool = False
 
 class ContractEntitlements(BaseModel):
     customer_name: str = Field(description="The name of the customer the contract is with.")
