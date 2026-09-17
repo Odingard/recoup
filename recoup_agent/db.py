@@ -1,6 +1,11 @@
 import time
 from datetime import datetime, timezone
 from .cloud.storage import DocumentStore, get_storage_adapter
+from .document_quality import (
+    NEEDS_VERIFICATION, held_contracts, require_verified_contracts,
+    require_verified_document,
+)
+from .recovery import assert_transition
 
 _client = None
 _platform_settings_cache: dict = {"at": 0.0, "value": None}
@@ -8,6 +13,14 @@ _tenant_touch_cache: dict[str, float] = {}
 
 
 class FindingNotFound(Exception):
+    pass
+
+
+class RecoveryConflict(Exception):
+    pass
+
+
+class VerificationResolutionError(ValueError):
     pass
 
 
@@ -128,6 +141,10 @@ def transition_finding_status(account_id: str, finding_id: str, new_status: str,
         if not snap.exists:
             raise FindingNotFound(finding_id)
         current = (snap.to_dict() or {}).get("status", "open")
+        if new_status in {"approved", "invoiced", "recovered"}:
+            account = _account_root(db, account_id).get(transaction=txn).to_dict() or {}
+            require_verified_contracts(list(account.get("document_verification_holds", {}).values()),
+                                       (snap.to_dict() or {}).get("customer_id"))
         try:
             assert_transition(current, new_status)
         except ValueError as exc:
@@ -202,6 +219,16 @@ def save_contract(account_id: str, payload: dict):
     db = get_client()
     _collection(db, account_id, "contracts").document(payload["customer_id"]).set(
         _contract_write_payload(payload), merge=True)
+    for source in payload.get("documents") or [payload]:
+        verification = source.get("structural_verification") or {}
+        if source.get("document_id") and verification.get("state") == "Verified":
+            _collection(db, account_id, "documents").document(source["document_id"]).set({
+                "document_id": source["document_id"],
+                "file_name": source.get("file_name"),
+                "customer_id": payload["customer_id"],
+                "customer_name": payload.get("customer_name"),
+                "state": "Verified", "structural_verification": verification,
+            }, merge=True)
 
 def get_all_usage(account_id: str) -> list[dict]:
     db = get_client()
@@ -214,6 +241,159 @@ def get_all_invoices(account_id: str) -> list[dict]:
 def get_all_contracts(account_id: str) -> list[dict]:
     db = get_client()
     return [doc.to_dict() for doc in _collection(db, account_id, "contracts").stream()]
+
+
+def hold_document(account_id: str, document: dict) -> dict:
+    store = get_client()
+    document_id = document["document_id"]
+    contracts = get_all_contracts(account_id)
+    related = [c for c in contracts if c.get("document_id") == document_id
+               or any(d.get("document_id") == document_id for d in c.get("documents", []))]
+    scope = "customer" if related else "account"
+    affected = related or [c for c in contracts if c.get("verification_scope") != "account"]
+    placeholder = {
+        "customer_id": "verification_" + document_id,
+        "customer_name": document["file_name"],
+        "file_name": document["file_name"], "verification_scope": scope,
+        "verification_state": NEEDS_VERIFICATION,
+        "verification_document_ids": [document_id],
+        "verification_customer_ids": [c["customer_id"] for c in affected],
+        "structural_verification": document,
+        "confirmed": False,
+    }
+    ids = {c["customer_id"] for c in affected}
+    now = datetime.now(timezone.utc).isoformat()
+    record = {**document, "state": NEEDS_VERIFICATION, "scope": scope,
+              "customer_ids": sorted(ids), "created_at": now}
+    doc_ref = _collection(store, account_id, "documents").document(document_id)
+    batch = store.batch()
+    batch.set(doc_ref, record, merge=True)
+    batch.set(_collection(store, account_id, "contracts").document(placeholder["customer_id"]),
+              placeholder)
+    batch.set(_collection(store, account_id, "audit_log").document(), {
+        "event": "document_structure_held", "document_id": document_id,
+        "state": NEEDS_VERIFICATION, "customer_ids": sorted(ids), "ts": now})
+    batch.set(_account_root(store, account_id), {
+        "document_verification_holds": {
+            document_id: {
+                "verification_state": NEEDS_VERIFICATION, "verification_scope": scope,
+                "verification_customer_ids": sorted(ids),
+            },
+        },
+    }, merge=True)
+    pending = 4
+    for contract in affected:
+        cid = contract["customer_id"]
+        held_ids = sorted(set(contract.get("verification_document_ids", [])) | {document_id})
+        batch.set(_collection(store, account_id, "contracts").document(cid), {
+            "verification_state": NEEDS_VERIFICATION,
+            "verification_document_ids": held_ids,
+            "structural_verification": document,
+            "confirmed": False, "confirmed_by": None, "confirmed_at": None,
+        }, merge=True)
+        pending += 1
+        if pending >= 400:
+            batch.commit()
+            batch, pending = store.batch(), 0
+    findings = get_all_findings(account_id)
+    for finding in findings:
+        if scope == "account" or finding.get("customer_id") in ids:
+            batch.set(_collection(store, account_id, "findings").document(finding["finding_id"]), {
+                "verification_state": NEEDS_VERIFICATION,
+                "structural_verification": document,
+                "verification_document_ids": sorted(
+                    set(finding.get("verification_document_ids", [])) | {document_id}),
+            }, merge=True)
+            pending += 1
+            if pending >= 400:
+                batch.commit()
+                batch, pending = store.batch(), 0
+    if pending:
+        batch.commit()
+    return record
+
+
+def verified_replacements(account_id: str) -> list[dict]:
+    return [s.to_dict() for s in _collection(get_client(), account_id, "documents").stream()
+            if (s.to_dict() or {}).get("state") == "Verified"]
+
+
+def resolve_document_hold(account_id: str, document_id: str,
+                          replacement_id: str, actor: str) -> dict:
+    store = get_client()
+    root = _account_root(store, account_id)
+    document_ref = root.collection("documents").document(document_id)
+    replacement_ref = root.collection("documents").document(replacement_id)
+    original = document_ref.get().to_dict() or {}
+
+    def validate(txn):
+        account = root.get(transaction=txn).to_dict() or {}
+        document = document_ref.get(transaction=txn).to_dict() or {}
+        replacement = replacement_ref.get(transaction=txn).to_dict() or {}
+        holds = account.get("document_verification_holds", {})
+        if (document_id not in holds or document.get("state") != NEEDS_VERIFICATION
+                or document.get("created_at") != original.get("created_at")):
+            raise VerificationResolutionError("This document has no current matching hold.")
+        if (replacement_id == document_id or replacement.get("state") != "Verified"
+                or (replacement.get("structural_verification") or {}).get("state") != "Verified"
+                or not replacement.get("customer_id")):
+            raise VerificationResolutionError("Choose a successfully verified replacement upload.")
+        if (document.get("scope") == "customer"
+                and replacement["customer_id"] not in document.get("customer_ids", [])):
+            raise VerificationResolutionError("The replacement belongs to a different customer.")
+        contract = root.collection("contracts").document(
+            replacement["customer_id"]).get(transaction=txn).to_dict() or {}
+        source_ids = {s.get("document_id") for s in contract.get("documents", [])}
+        source_ids.add(contract.get("document_id"))
+        if replacement_id not in source_ids:
+            raise VerificationResolutionError("The replacement is no longer in the current agreement.")
+        return {key: value for key, value in holds.items() if key != document_id}
+
+    get_storage_adapter().transact(store.transaction(), validate)
+    references = [
+        snapshot.reference
+        for name in ("contracts", "findings")
+        for snapshot in root.collection(name).stream()
+        if not (snapshot.to_dict() or {}).get("verification_scope")
+    ]
+    for start in range(0, len(references), 350):
+        chunk = references[start:start + 350]
+
+        def project(txn):
+            remaining = validate(txn)
+            snapshots = [ref.get(transaction=txn) for ref in chunk]
+            for snap in snapshots:
+                data = snap.to_dict() or {}
+                active = {key: hold for key, hold in remaining.items()
+                          if held_contracts([hold], data.get("customer_id"))}
+                if document_id not in data.get("verification_document_ids", []):
+                    continue
+                txn.update(snap.reference, {
+                    "verification_document_ids": sorted(active),
+                    "verification_state": NEEDS_VERIFICATION if active else "Verified",
+                    "structural_verification": {
+                        "state": NEEDS_VERIFICATION if active else "Verified",
+                        "replacement_document_id": replacement_id,
+                    },
+                })
+
+        get_storage_adapter().transact(store.transaction(), project)
+
+    def finish(txn):
+        remaining = validate(txn)
+        resolution = {
+            "state": "Resolved", "replacement_document_id": replacement_id,
+            "resolved_by": actor, "resolved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        txn.update(root, {"document_verification_holds": remaining})
+        txn.update(document_ref, resolution)
+        txn.delete(root.collection("contracts").document("verification_" + document_id))
+        txn.set(root.collection("audit_log").document(), {
+            "event": "document_structure_resolved", "document_id": document_id, **resolution,
+        })
+        return {"document_id": document_id, **resolution}
+
+    return get_storage_adapter().transact(store.transaction(), finish)
 
 
 def confirm_contract(account_id: str, customer_id: str, actor: str | None) -> dict | None:
@@ -349,16 +529,52 @@ def get_observations(account_id: str, customer_id: str | None = None,
 
 # --- RECOVERY EVENTS (realized recovered value) ---
 
-def save_recovery_event(account_id: str, event: dict) -> bool:
-    """Create-only: returns True when the event doc was written, False when an
-    event with the same recovery_event_id already exists (duplicate)."""
-    db = get_client()
-    ref = _collection(db, account_id, "recovery_events").document(
+def save_recovery_event(account_id: str, event: dict, *,
+                        expected_finding: dict | None = None,
+                        finding_fields: dict | None = None,
+                        event_name: str = "recovery_realized") -> bool:
+    """Commit the event and case projection under the same verification guard."""
+    store = get_client()
+    root = _account_root(store, account_id)
+    ref = root.collection("recovery_events").document(
         event["recovery_event_id"])
-    if ref.get().exists:
-        return False
-    ref.set(event)
-    return True
+    finding_ref = root.collection("findings").document(event["finding_id"])
+
+    def record(txn):
+        if ref.get(transaction=txn).exists:
+            return False
+        snap = finding_ref.get(transaction=txn)
+        if not snap.exists:
+            raise FindingNotFound(event["finding_id"])
+        finding = {"finding_id": snap.id, **(snap.to_dict() or {})}
+        account = root.get(transaction=txn).to_dict() or {}
+        contract = root.collection("contracts").document(
+            finding["customer_id"]).get(transaction=txn).to_dict() or {}
+        require_verified_contracts(
+            [*account.get("document_verification_holds", {}).values(), finding, contract],
+            finding["customer_id"])
+        require_verified_document(finding.get("structural_verification"))
+        if expected_finding is not None and finding != expected_finding:
+            raise RecoveryConflict("The finding changed; refresh before recording recovery.")
+        current = finding.get("status", "open")
+        if current not in {"approved", "invoiced", "disputed", "recovered"}:
+            raise IllegalTransition(current, "recovered")
+        if finding_fields and finding_fields.get("status", current) != current:
+            try:
+                assert_transition(current, finding_fields["status"])
+            except ValueError as exc:
+                raise IllegalTransition(current, finding_fields["status"]) from exc
+        txn.set(ref, event)
+        if finding_fields:
+            txn.update(finding_ref, finding_fields)
+        txn.set(root.collection("audit_log").document(), {
+            "event": event_name, "finding_id": event["finding_id"],
+            "recovery_event_id": event["recovery_event_id"],
+            "details": finding_fields or {}, "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        return True
+
+    return get_storage_adapter().transact(store.transaction(), record)
 
 
 def update_recovery_event_fields(account_id: str, event_id: str, fields: dict,

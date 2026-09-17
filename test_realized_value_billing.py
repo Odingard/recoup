@@ -124,11 +124,13 @@ def _wire(monkeypatch, store, *, billing_card=True, paid_status="paid",
                 if acc == a and (fid is None or e["finding_id"] == fid)]
     monkeypatch.setattr(api.db, "get_recovery_events", get_events)
 
-    def save_event(a, e):
+    def save_event(a, e, *, expected_finding=None, finding_fields=None, event_name=None):
         key = (a, e["recovery_event_id"])
         if key in store.events:
             return False
         store.events[key] = dict(e)
+        if finding_fields:
+            store.findings[(a, e["finding_id"])].update(finding_fields)
         return True
     monkeypatch.setattr(api.db, "save_recovery_event", save_event)
     monkeypatch.setattr(api.db, "update_recovery_event_fields",

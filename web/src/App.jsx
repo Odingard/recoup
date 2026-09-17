@@ -72,6 +72,7 @@ function termHistoryNote(contract, metaKey) {
 }
 
 function caseStageLabel(caseItem) {
+  if (caseItem?.verification_state === 'Needs_Verification') return 'Needs verification'
   const status = caseItem?.status || 'open'
   if (status === 'open') return caseItem?.verified ? 'Approve' : 'Prove'
   if (status === 'approved') return 'Act'
@@ -196,6 +197,22 @@ function App() {
   const [firebaseUser, setFirebaseUser] = useState(null)
   const [sessionMode, setSessionMode] = useState(null)
   const [loadingAuth, setLoadingAuth] = useState(true)
+
+  useEffect(() => onAuthStateChanged(auth, (nextUser) => {
+    setFirebaseUser(nextUser)
+    setLoadingAuth(false)
+    setSessionMode((current) => (
+      current === 'sample' && !nextUser ? 'sample' : nextUser ? 'auth' : null
+    ))
+  }), [])
+
+  return <Workspace
+    key={sessionMode === 'sample' ? 'sample' : `${sessionMode}:${firebaseUser?.uid || ''}`}
+    {...{ firebaseUser, setFirebaseUser, sessionMode, setSessionMode, loadingAuth, setLoadingAuth }}
+  />
+}
+
+function Workspace({ firebaseUser, setFirebaseUser, sessionMode, setSessionMode, loadingAuth, setLoadingAuth }) {
   const [route, setRoute] = useState(normalizeHash())
   const [billingPeriod, setBillingPeriod] = useState(DEFAULT_PERIOD)
   const [, setFindings] = useState([])
@@ -268,18 +285,6 @@ function App() {
       return next
     })
   }
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
-      setFirebaseUser(nextUser)
-      setLoadingAuth(false)
-      setSessionMode((current) => {
-        if (current === 'sample') return 'sample'
-        return nextUser ? 'auth' : null
-      })
-    })
-    return unsubscribe
-  }, [])
 
   useEffect(() => {
     const onHash = () => setRoute(normalizeHash())
@@ -654,7 +659,7 @@ function App() {
     signOut(auth).catch(() => { /* sample mode must remain usable */ })
     setSessionMode('sample')
     setLoadingAuth(false)
-  }, [])
+  }, [setLoadingAuth, setSessionMode])
 
   useEffect(() => {
     if (!isSampleMode || sampleSeeded.current) return undefined
@@ -725,7 +730,7 @@ function App() {
       appendActivity((result?.files || []).map((file) => {
         const kind = file.kind || file.type || 'file'
         const customer = file.customer || file.customer_name || file.customer_id
-        const review = file.status === 'error' || file.status === 'needs_review' ? ' · needs review' : ''
+        const review = ['error', 'needs_review', 'Needs_Verification'].includes(file.status) ? ' · needs review' : ''
         return `Read ${file.name} → ${kind}${customer ? ` · matched ${customer}` : ''}${review}`
       }))
       appendActivity((result?.assurance?.events || []).map(formatAssuranceActivity).filter(Boolean))
@@ -737,14 +742,29 @@ function App() {
         setUploadedContracts((current) => [{ ...contract, confirmed: false, discounts: contract.discounts || [], ...(fileName ? { file_name: fileName } : {}) }, ...current.filter((item) => item.customer_id !== contract.customer_id)])
       })
       const nr = result?.needs_review?.length
-      setStatusMessage(result?.status === 'needs_review'
-        ? (result.message || 'Bulk upload needs review.')
+      setStatusMessage(['needs_review', 'Needs_Verification'].includes(result?.status)
+        ? (result.message || 'Upload held for verification. No reconciliation was run.')
         : `Bulk upload: ${result.contracts} contracts, ${result.invoices} invoices, ${result.usage} usage rows.` + (nr ? ` ${nr} item(s) need review.` : ''))
       await refreshAll()
     } catch (error) {
       console.error(error)
       setStatusMessage(failureMessage('Bulk upload failed', error))
     } finally { setBulkUploading(false) }
+  }
+
+  const resolveVerification = async (event, documentId) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    try {
+      await apiRequest(`/documents/${encodeURIComponent(documentId)}/resolve`, {
+        method: 'POST',
+        body: { replacement_document_id: form.get('replacement'), confirm: form.get('confirm') === 'on' },
+      })
+      setStatusMessage('Document hold resolved. Review the replacement agreement’s terms before recovery.')
+      await refreshAll()
+    } catch (error) {
+      setStatusMessage(failureMessage('Could not resolve document hold', error))
+    }
   }
 
   const handleEmptyDragOver = (event) => {
@@ -1422,6 +1442,7 @@ function App() {
   )
 
   const caseRowAction = (c) => {
+    if (c.verification_state === 'Needs_Verification') return <span className="muted-copy">Review document structure</span>
     const status = c.status || 'open'
     if (status === 'open') {
       return c.verified
@@ -1518,6 +1539,31 @@ function App() {
           </tr>)}
           {cases.length === 0 && <tr><td colSpan="7" className="muted-copy">No cases match the current filters.</td></tr>}
         </tbody></table></div>
+        {(assurance?.verification_queue || []).length > 0 && (
+          <div className="panel-section" role="status">
+            <div className="info-label">Needs verification · processing held</div>
+            <ul className="upload-history">{assurance.verification_queue.map((document) => (
+              <li key={document.document_id} className="upload-history-item">
+                <span>{document.file_name} · {document.reason}</span>
+                <span className="muted-copy">{(document.issues || []).map((issue) => `Page ${issue.page || 'unknown'}: ${issue.reason}`).join(' · ')} {document.suggested_action}</span>
+                <form onSubmit={(event) => resolveVerification(event, document.document_id)}>
+                  <label>Verified replacement
+                    <select name="replacement" required defaultValue="">
+                      <option value="" disabled>Upload a clear replacement, then select it</option>
+                      {(assurance.verified_replacements || []).map((replacement) => (
+                        <option key={replacement.document_id} value={replacement.document_id}>
+                          {replacement.file_name} · {replacement.customer_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label><input type="checkbox" name="confirm" required /> I inspected this replacement and confirm it replaces the held document for this customer.</label>
+                  <button className="secondary-btn" type="submit">Resolve document hold</button>
+                </form>
+              </li>
+            ))}</ul>
+          </div>
+        )}
         {reviewQueue.length > 0 && (
           <div className="panel-section"><div className="info-label">Needs review</div>
             <ul className="upload-history">{reviewQueue.map((item, i) => <li key={i} className="upload-history-item"><span>{item.customer_name || item.customer_id || 'Record'} · {item.term || item.reason || 'Needs review'}</span><span className="muted-copy">{[item.reason, item.suggested_action, item.next_step].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')}</span></li>)}</ul>
@@ -1912,4 +1958,5 @@ function App() {
   )
 }
 
+void Workspace
 export default App

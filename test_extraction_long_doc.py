@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from threading import Barrier, Lock
 
 import pytest
 
 from recoup_agent.extraction.chunker import chunk_pages
 from recoup_agent.extraction.eval.long_contract import build_long_contract
 from recoup_agent.extraction.extractor import (
-    ChunkExtraction,
+    DocumentProfile,
     PageAnchoredEntitlement,
     _call,
     extract_pages,
@@ -15,7 +16,7 @@ from recoup_agent.extraction.extractor import (
 from recoup_agent.extraction.ocr import _document_ai_pages
 from recoup_agent.extraction.pages import DocumentTooLargeError, Page
 from recoup_agent.extraction.verifier import verify
-from recoup_agent.ingestion_doc import ContractEntitlements, Entitlement
+from recoup_agent.ingestion_doc import ContractEntitlements
 
 
 class FakeResponse:
@@ -53,6 +54,62 @@ class FakeClient:
 
 def _extract_payload(customer="Acme"):
     return '{"customer_name":"%s","entitlements":[]}' % customer
+
+
+class ConcurrentModel:
+    def __init__(self, fail=False):
+        self.barrier = Barrier(4)
+        self.lock = Lock()
+        self.active = 0
+        self.peak = 0
+        self.completed = 0
+        self.deleted = False
+        self.fail = fail
+
+    def create_cache(self, **kwargs):
+        return "cached-document"
+
+    def delete_cache(self, name):
+        assert self.active == 0
+        self.deleted = True
+
+    def generate(self, *, model, contents, config):
+        if config.response_schema is DocumentProfile:
+            assert config.cached_content is None
+            return FakeResponse('{"role":"master","counterparty":"Acme"}')
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            self.barrier.wait(timeout=5)
+            if self.fail and contents.startswith("Focus only on: committed_minimum"):
+                raise ValueError("malformed extraction")
+            return FakeResponse(_extract_payload())
+        finally:
+            with self.lock:
+                self.active -= 1
+                self.completed += 1
+
+
+def test_cached_families_run_concurrently_and_cleanup_after_all_workers(monkeypatch):
+    monkeypatch.setenv("RECOUP_EXTRACTION_CONCURRENCY", "4")
+    client = ConcurrentModel()
+    result = extract_pages([Page(i, "Contract fees. " * 5000) for i in range(1, 5)],
+                           "pdf_text", client=client)
+    assert result.cached
+    assert client.peak == 4
+    assert client.completed == 4
+    assert client.deleted
+
+
+def test_failed_cached_family_does_not_return_partial_extraction(monkeypatch):
+    monkeypatch.setenv("RECOUP_EXTRACTION_CONCURRENCY", "4")
+    client = ConcurrentModel(fail=True)
+    with pytest.raises(ValueError, match="malformed extraction"):
+        extract_pages([Page(i, "Contract fees. " * 5000) for i in range(1, 5)],
+                      "pdf_text", client=client)
+    assert client.completed == 4
+    assert client.deleted
 
 
 def test_chunking_has_markers_and_one_page_overlap():

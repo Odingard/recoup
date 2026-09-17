@@ -117,7 +117,7 @@ def test_db_failure_during_recovery_event_leaves_finding_untouched(monkeypatch):
     monkeypatch.setattr(api.db, "update_finding_fields",
                         lambda *a, **k: writes.append(a))
 
-    def _boom(a, e):
+    def _boom(a, e, **kwargs):
         raise RuntimeError("firestore down")
     monkeypatch.setattr(api.db, "save_recovery_event", _boom)
     client = TestClient(api.app, raise_server_exceptions=False)

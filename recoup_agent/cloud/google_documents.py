@@ -3,7 +3,31 @@ from __future__ import annotations
 from google.api_core.client_options import ClientOptions
 from google.cloud import documentai_v1 as documentai
 
-from .documents import Page, TextBlock
+from .documents import LayoutToken, Page, Point, TextBlock, TextSpan
+
+
+def _spans(layout: documentai.Document.Page.Layout) -> tuple[TextSpan, ...]:
+    try:
+        return tuple(TextSpan(int(s.start_index), int(s.end_index))
+                     for s in layout.text_anchor.text_segments)
+    except AttributeError:
+        return ()
+
+
+def _polygon(layout: documentai.Document.Page.Layout, width: float, height: float) -> tuple[Point, ...]:
+    try:
+        polygon = layout.bounding_poly
+    except AttributeError:
+        return ()
+    if polygon.normalized_vertices:
+        return tuple(Point(float(p.x), float(p.y)) for p in polygon.normalized_vertices)
+    if width > 0 and height > 0:
+        return tuple(Point(float(p.x) / width, float(p.y) / height) for p in polygon.vertices)
+    return ()
+
+
+def _text(source: str, spans: tuple[TextSpan, ...]) -> str:
+    return "".join(source[s.start:s.end] for s in spans)
 
 
 def _document_ai_pages(document: documentai.Document) -> list[Page]:
@@ -20,13 +44,26 @@ def _document_ai_pages(document: documentai.Document) -> list[Page]:
             source_tokens = page.tokens
         except AttributeError:
             source_tokens = ()
-        blocks = tuple(TextBlock(
-            "".join(full_text[int(segment.start_index):int(segment.end_index)]
-                    for segment in block.layout.text_anchor.text_segments),
-            float(block.layout.confidence)) for block in source_blocks)
+        try:
+            width, height = float(page.dimension.width), float(page.dimension.height)
+        except AttributeError:
+            width, height = 0, 0
+        tokens = tuple(LayoutToken(
+            _text(full_text, _spans(token.layout)),
+            _polygon(token.layout, width, height), _spans(token.layout))
+            for token in source_tokens)
+        blocks = []
+        for block in source_blocks:
+            spans = _spans(block.layout)
+            polygon = _polygon(block.layout, width, height)
+            members = tuple(token for token in tokens if any(
+                s.start < b.end and s.end > b.start for s in token.spans for b in spans))
+            blocks.append(TextBlock(_text(full_text, spans), float(block.layout.confidence),
+                                    polygon, spans, members))
         confidences = [float(token.layout.confidence) for token in source_tokens]
-        pages.append(Page(number, text, blocks,
-                          sum(confidences) / len(confidences) if confidences else None))
+        pages.append(Page(number, text, tuple(blocks),
+                          sum(confidences) / len(confidences) if confidences else None,
+                          full_text, True))
     return pages
 
 
