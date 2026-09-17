@@ -10,8 +10,7 @@ from fastapi.testclient import TestClient
 from recoup_agent import api
 from recoup_agent.billing import realized_value as rv
 from recoup_agent.realization_ledger import (assert_no_double_count,
-                                           case_ledger, outcome_record,
-                                           recovery_metrics)
+                                           case_ledger, recovery_metrics)
 from recoup_agent.recovery_actions.models import new_action
 from recoup_agent.success_fee import compute_metrics
 
@@ -192,11 +191,13 @@ class FakeDb:
             out = [e for e in out if e.get("finding_id") == fid]
         return [copy.deepcopy(e) for e in out]
 
-    def save_recovery_event(self, a, e):
+    def save_recovery_event(self, a, e, *, expected_finding=None, finding_fields=None, event_name=None):
         if any(x["recovery_event_id"] == e["recovery_event_id"]
                for x in self.events.setdefault(a, [])):
             return False
         self.events[a].append(copy.deepcopy(e))
+        if finding_fields:
+            self.findings[a][e["finding_id"]].update(finding_fields)
         return True
 
     def update_recovery_event_fields(self, a, eid, fields, event):

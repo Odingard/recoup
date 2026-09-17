@@ -18,6 +18,7 @@ always surface as a needs_review note (never netted into findings).
 """
 from __future__ import annotations
 from datetime import date, timedelta
+from decimal import Decimal
 
 from .book_loader import match_discount
 from .line_roles import SEAT_RE
@@ -443,7 +444,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             # the invoice for that period is issued on/after the anniversary
             # and therefore lies in the new contract year.
             mid_period = ann.day != 1 and period_d < ann <= period_end
-            expected_base = minimum * (1 + esc) ** steps
+            expected_base = quantize(Decimal(str(minimum)) * (1 + Decimal(str(esc))) ** steps)
             baseline = max(base, minimum)
             amount = expected_base - baseline
             if amount > 0.01:

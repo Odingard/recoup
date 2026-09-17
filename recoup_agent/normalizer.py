@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+import re
+
 from .identity import canonical_key
 from .ingestion_doc import ContractEntitlements, Entitlement
+from .document_quality import require_verified_document
+from .money import quantize, to_cents
 
 
 def _slugify(value: str) -> str:
@@ -33,9 +39,78 @@ def _term_meta(ent: Entitlement) -> dict:
     return meta
 
 
+def _minimum_amount(ent: Entitlement) -> tuple[float | None, dict]:
+    periods = {
+        period for period, pattern in (
+            ("year", r"\bannual\b|\bper\s+(?:year|annum)\b|/\s*(?:year|yr)\b"),
+            ("quarter", r"\bquarterly\b|\bper\s+quarter\b|/\s*quarter\b"),
+            ("month", r"\bmonthly\b|\bper\s+month\b|/\s*(?:month|mo)\b"),
+        )
+        if re.search(pattern, ent.provenance, re.IGNORECASE)
+    }
+    period = ent.amount_period
+    if len(periods) == 1 and period in (None, "unknown"):
+        period = next(iter(periods))
+    elif not periods and period is None:
+        period = "month"
+    if (period not in ("month", "quarter", "year")
+            or (periods and periods != {period})
+            or (ent.amount_period is not None and not periods)):
+        return None, {"source_value": ent.value, "amount_period": period,
+                      "normalization_error": "The commitment amount's period is missing or conflicts with its evidence."}
+    months = {"month": 1, "quarter": 3, "year": 12}[period]
+    cents = to_cents(ent.value)
+    amount = quantize(Decimal(cents) / months / 100)
+    if months == 1 and ent.amount_period is None:
+        return amount, {}
+    return amount, {
+        "source_value": ent.value,
+        "amount_period": period,
+        "normalization_formula": f"{cents} cents / {months} months = {to_cents(amount)} cents/month (ROUND_HALF_UP)",
+    }
+
+
+def _normalize_escalator_date(normalized: dict, candidates: dict[str, list[Entitlement]]) -> None:
+    start = normalized.get("term_start")
+    effective = normalized.get("escalator_effective_date")
+    if not start or effective != start:
+        return
+    matching = [ent for ent in candidates.get("escalator", []) if ent.effective_date == effective]
+    if not matching or not all(re.search(
+        r"\banniversary\s+of\s+(?:the\s+)?(?:effective\s+date|commencement\s+date|term\s+start)\b",
+        ent.provenance, re.IGNORECASE,
+    ) for ent in matching):
+        normalized["term_meta"]["escalator_effective_date"] = {
+            **normalized["term_meta"]["escalator_effective_date"],
+            "confidence": 0.0,
+            "normalization_error": "Confirm whether the first increase occurs at commencement or its anniversary.",
+        }
+        normalized["escalator_effective_date"] = None
+        return
+    try:
+        anchor = date.fromisoformat(start)
+    except ValueError:
+        normalized["term_meta"]["escalator_effective_date"] = {
+            **normalized["term_meta"]["escalator_effective_date"], "confidence": 0.0}
+        normalized["escalator_effective_date"] = None
+        return
+    try:
+        first_increase = anchor.replace(year=anchor.year + 1)
+    except ValueError:
+        first_increase = anchor.replace(year=anchor.year + 1, day=28)
+    normalized["escalator_effective_date"] = first_increase.isoformat()
+    normalized["term_meta"]["escalator_effective_date"] = {
+        **normalized["term_meta"]["escalator_effective_date"],
+        "source_effective_date": effective,
+        "normalization_formula": f"first anniversary of {effective} = {first_increase}",
+    }
+
+
 def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
+    require_verified_document(contract.structural_verification)
     candidates: dict[str, list[Entitlement]] = {}
     normalized = {
+        "structural_verification": contract.structural_verification,
         "customer_name": contract.customer_name,
         "customer_id": _slugify(contract.customer_name),
         "committed_minimum_monthly": None,
@@ -60,17 +135,18 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
     tier_provenance: list[str] = []
 
     for ent in contract.entitlements:
-        meta = _term_meta(ent)
         if ent.term_type == "committed_minimum":
+            amount, conversion = _minimum_amount(ent)
             normalized["minimum_schedule"].append({
-                "amount": ent.value,
+                "amount": amount,
+                **conversion,
                 "effective_date": ent.effective_date,
                 "provenance": ent.provenance,
-                "confidence": float(ent.confidence_score),
+                "confidence": float(ent.confidence_score) if amount is not None else 0.0,
                 **({"page": ent.page} if ent.page is not None else {}),
                 **({"section_ref": ent.section_ref} if ent.section_ref else {}),
                 **({"source_file": ent.source_file} if ent.source_file else {}),
-                **({"verification": ent.verification} if getattr(ent, "verification", None) else {}),
+                **({"verification": ent.verification} if ent.verification else {}),
             })
         elif ent.term_type in SCALAR_TERM_FIELDS:
             candidates.setdefault(ent.term_type, []).append(ent)
@@ -106,6 +182,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             discount_confidences.append(float(ent.confidence_score))
             discount_provenance.append(ent.provenance)
     resolve_scalar_terms(normalized, candidates)
+    _normalize_escalator_date(normalized, candidates)
     detect_term_conflicts(normalized)
 
     if normalized["minimum_schedule"]:
@@ -233,7 +310,8 @@ def minimum_term_meta(schedule: list[dict]) -> dict:
         else (e.get("verification") or {}).get("final_confidence", 1.0)
         for e in schedule)
     meta = {"confidence": confidence, "provenance": governing.get("provenance")}
-    for key in ("page", "section_ref", "source_file", "verification"):
+    for key in ("page", "section_ref", "source_file", "verification",
+                "source_value", "amount_period", "normalization_formula", "normalization_error"):
         if governing.get(key) is not None:
             meta[key] = governing[key]
     return meta

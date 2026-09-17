@@ -504,6 +504,9 @@ class _FakeDbRoot:
     def __init__(self, store):
         self._store = store
 
+    def get(self, transaction=None):
+        return _Snap(self._store.get("_account"))
+
     def collection(self, name):
         return _Coll(self._store, name)
 

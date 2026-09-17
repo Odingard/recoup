@@ -11,9 +11,31 @@ from .models import BinaryPart, GenerationConfig, ModelResponse, ProviderConfigu
 
 
 @dataclass(frozen=True)
+class Point:
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
+class TextSpan:
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class LayoutToken:
+    text: str
+    polygon: tuple[Point, ...] = ()
+    spans: tuple[TextSpan, ...] = ()
+
+
+@dataclass(frozen=True)
 class TextBlock:
     text: str
     confidence: float
+    polygon: tuple[Point, ...] = ()
+    spans: tuple[TextSpan, ...] = ()
+    tokens: tuple[LayoutToken, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -22,6 +44,8 @@ class Page:
     text: str
     blocks: tuple[TextBlock, ...] = ()
     ocr_confidence: float | None = None
+    layout_text: str | None = None
+    layout_available: bool = False
 
 
 class CloudDocumentAdapter(Protocol):
