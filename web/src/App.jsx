@@ -795,6 +795,15 @@ function Workspace({ firebaseUser, setFirebaseUser, sessionMode, setSessionMode,
       if (result?.status === 'confirmed' || result?.contract?.confirmed) {
         setUploadedContracts((current) => current.map((item) => item.customer_id === customerId ? { ...item, ...result.contract, confirmed: true } : item))
         setTermChoices((current) => ({ ...current, [customerId]: {} }))
+        const evaluated = (result.assurance?.events || []).filter(
+          (event) => event.status === 'evaluated' && event.customer_ids?.includes(customerId) && Array.isArray(event.needs_review),
+        )
+        if (evaluated.length) {
+          setReviewQueue((current) => [
+            ...current.filter((item) => item.customer_id !== customerId),
+            ...evaluated.flatMap((event) => event.needs_review).filter((item) => item.customer_id === customerId),
+          ])
+        }
         setStatusMessage('Contract terms confirmed.')
         await refreshAll()
       } else {
@@ -1718,7 +1727,7 @@ function Workspace({ firebaseUser, setFirebaseUser, sessionMode, setSessionMode,
                       {(c.candidates || []).map((cand, ci) => (
                         <label key={`${c.term}-${ci}`} className="terms-check" title={cand.provenance || undefined}>
                           <input type="radio" name={`${contract.customer_id}-conflict-${c.term}`}
-                            checked={choices[`t:${c.term}`]?.value === cand.value && choices[`t:${c.term}`]?.page === cand.page}
+                            checked={choices[`t:${c.term}`]?.value === cand.value && (choices[`t:${c.term}`]?.page ?? null) === (cand.page ?? null)}
                             onChange={() => setChoice(`t:${c.term}`, { value: cand.value, page: cand.page ?? null })} />
                           {`${fmtValue(c.term, cand.value)} · ${cand.section_ref || '—'} · p. ${cand.page ?? '—'}`}
                         </label>

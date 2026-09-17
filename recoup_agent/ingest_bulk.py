@@ -241,6 +241,8 @@ def ingest_files(items: list[tuple[str, bytes]], existing_contracts: list[dict],
                 profile=DocumentProfile.model_validate({"role": d.get("role", "master"),
                                                         "title": d.get("title"),
                                                         "effective_date": d.get("effective_date"),
+                                                        "execution_date": d.get("execution_date"),
+                                                        "order_form_precedence": d.get("order_form_precedence", False),
                                                         "amendment_number": d.get("amendment_number"),
                                                         "counterparty": prior.get("customer_name")}),
                 entitlements=[Entitlement(**e) for e in prior_ents

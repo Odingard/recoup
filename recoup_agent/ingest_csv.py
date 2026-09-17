@@ -192,6 +192,8 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
 
         dkey = _dup_key(row, cols, where=where, rownum=idx)
         if dkey in seen_rows:
+            if (cid, period) in invoices:
+                invoices[(cid, period)]["incomplete"] = True
             if dkey not in duped_rows:
                 duped_rows.add(dkey)
                 needs_review.append({
@@ -211,9 +213,12 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             "discounts_applied": [], "amount_billed": 0.0,
             "tax_excluded": 0.0, "credits_applied": [],
             "prorated": False, "proration_amount": 0.0,
+            "line_items": [],
         })
         if "currency" in cols and row.get(cols["currency"]):
             ccy = normalize_currency(row.get(cols["currency"]))
+            if not ccy:
+                inv["currency_mixed"] = True
             if ccy:
                 prior = inv.get("currency")
                 if prior and prior != ccy:
@@ -239,26 +244,39 @@ def load_invoices_csv(path, resolver: CustomerResolver) -> tuple[list[dict], lis
             inv["overage_charge"] += amount
         else:
             inv["base_charge"] += amount
+        raw_units = ((row.get(cols["units"]) or "").strip()
+                     if "units" in cols else "")
+        line_quantity = None
+        if raw_units:
+            try:
+                line_quantity = float(raw_units.replace(",", ""))
+            except ValueError:
+                line_quantity = None
+                inv["incomplete"] = True
+        seat_qty = line_quantity
         if SEAT_RE.search(description):
-            raw_units = ((row.get(cols["units"]) or "").strip()
-                         if "units" in cols else "")
-            seat_qty = None
-            if raw_units:
-                try:
-                    seat_qty = float(raw_units.replace(",", ""))
-                    if seat_qty < 0:
-                        needs_review.append({"customer_id": cid, "customer_name": label,
-                                             "term": "seat_units",
-                                             "reason": f"negative seat quantity {seat_qty:g} in row {idx}"})
-                        seat_qty = None
-                except ValueError:
-                    seat_qty = None
+            if seat_qty is not None and seat_qty < 0:
+                inv["incomplete"] = True
+                needs_review.append({"customer_id": cid, "customer_name": label,
+                                     "term": "seat_units",
+                                     "reason": f"negative seat quantity {seat_qty:g} in row {idx}"})
+                seat_qty = None
             elif not raw_units:
                 match = SEAT_QTY_RE.search(description)
                 if match:
                     seat_qty = float(match.group(1).replace(",", ""))
             if seat_qty is not None:
                 inv["seat_units"] = inv.get("seat_units", 0.0) + seat_qty
+        line_item = {
+            "description": description,
+            "amount": amount,
+            "role": "seat" if role == "base" and SEAT_RE.search(description) else role,
+        }
+        if line_quantity is not None:
+            line_item["quantity"] = line_quantity
+        elif seat_qty is not None:
+            line_item["quantity"] = seat_qty
+        inv["line_items"].append(line_item)
 
     return list(invoices.values()), needs_review
 
@@ -347,8 +365,13 @@ def load_usage_csv(path, resolver: CustomerResolver,
     for rec in usage.values():
         metrics = rec.pop("_metrics")
         if len(metrics) > 1:
+            rec["incomplete"] = True
             top = max(metrics.items(), key=lambda kv: kv[1])[0]
             rec["units"] = metrics[top]
+        if any(item.get("customer_id") == rec["customer_id"]
+               and item.get("term") in {"duplicate_row", "usage_units"}
+               for item in needs_review):
+            rec["incomplete"] = True
         if float(rec["units"]).is_integer():
             rec["units"] = int(rec["units"])
     return list(usage.values()), needs_review

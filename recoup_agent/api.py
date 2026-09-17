@@ -61,10 +61,10 @@ from .renewals import build_renewal_calendar
 from .report import build_report, render_html, render_pdf
 from .security import assert_key_separation
 from .success_fee import compute_metrics
+from .templates import TEMPLATES
 from .trueup import build_trueup, render_trueup_pdf
 
 logger = logging.getLogger(__name__)
-from .templates import TEMPLATES
 
 _firebase_lock = threading.Lock()
 _firebase_ready = False
@@ -2652,6 +2652,13 @@ def _resolve_scalar_conflicts(contract: dict, resolutions: dict) -> list[dict]:
             if match.get(key) is not None:
                 meta[key] = match[key]
         contract.setdefault("term_meta", {})[field] = meta
+        schedules = contract.get("variable_schedules") or {}
+        if conflict["term"] in schedules:
+            schedules[conflict["term"]] = [
+                entry for entry in schedules[conflict["term"]]
+                if (entry.get("scope") != conflict.get("scope")
+                    or entry.get("effective_date") != conflict.get("effective_date"))
+            ] + [dict(match)]
         if conflict["term"] == "escalator" and match.get("effective_date"):
             contract["escalator_effective_date"] = match["effective_date"]
         contract["term_conflicts"] = [c for c in contract.get("term_conflicts") or []
@@ -2712,7 +2719,12 @@ def _resolve_term_conflicts(account_id: str, customer_id: str, contract: dict,
             "term_conflicts": contract.get("term_conflicts") or [],
             "unresolved_terms": unresolved})
 
-    rebuilt = []
+    replaced = {(conflict.get("scope"), conflict.get("effective_date"))
+                for conflict in conflicts}
+    rebuilt = [
+        entry for entry in contract.get("minimum_schedule") or []
+        if (entry.get("scope"), entry.get("effective_date")) not in replaced
+    ]
     for choice in choices:
         amount = choice.get("amount")
         eff = choice.get("_date")
@@ -2730,7 +2742,8 @@ def _resolve_term_conflicts(account_id: str, customer_id: str, contract: dict,
         if source:
             entry.update({k: source[k] for k in
                           ("provenance", "page", "section_ref", "source_file",
-                           "verification", "confidence")
+                           "verification", "confidence", "scope", "end_date",
+                           "term_confidence")
                           if source.get(k) is not None})
         rebuilt.append(entry)
 

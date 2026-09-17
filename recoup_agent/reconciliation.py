@@ -17,10 +17,14 @@ excluded from base; credits/refunds are kept out of discounts_applied and
 always surface as a needs_review note (never netted into findings).
 """
 from __future__ import annotations
+import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
+from math import isfinite
 
 from .book_loader import match_discount
+from .document_quality import require_verified_contracts, require_verified_document
+from .identity import canonical_key
 from .line_roles import SEAT_RE
 from .money import is_supported, normalize_currency, quantize
 
@@ -82,6 +86,261 @@ def minimum_for_period(contract: dict, period: str) -> tuple[float | None, str |
     return chosen.get("amount"), chosen.get("provenance")
 
 
+def _active_schedule_entry(
+    contract: dict,
+    term_type: str,
+    period: str,
+    *,
+    scope: str | None = None,
+) -> dict | None:
+    schedule = (contract.get("variable_schedules") or {}).get(term_type) or []
+    if not schedule:
+        return None
+    period_start = _parse(period + "-01")
+    scoped = [
+        entry for entry in schedule
+        if scope is None or (entry.get("scope") or "__default__") == scope
+    ]
+    active = [
+        entry for entry in scoped
+        if ((start := _parse(entry.get("effective_date"))) is None
+            or (period_start and start <= period_start))
+        and ((end := _parse(entry.get("end_date"))) is None
+             or (period_start and end >= period_start))
+    ]
+    if not active:
+        return None
+    return max(
+        active,
+        key=lambda entry: (
+            entry.get("effective_date") is not None,
+            entry.get("effective_date") or "",
+        ),
+    )
+
+
+def scalar_for_period(
+    contract: dict,
+    term_type: str,
+    period: str,
+    fallback_field: str,
+) -> tuple[float | None, dict]:
+    entry = _active_schedule_entry(contract, term_type, period)
+    if entry is None:
+        if (contract.get("variable_schedules") or {}).get(term_type):
+            return None, {"confidence": 0.0}
+        return contract.get(fallback_field), (
+            contract.get("term_meta", {}).get(fallback_field, {})
+        )
+    return entry.get("value"), entry
+
+
+def _scheduled_terms_for_period(
+    contract: dict,
+    term_type: str,
+    period: str,
+    fallback_field: str,
+) -> dict[str, dict]:
+    schedule = (contract.get("variable_schedules") or {}).get(term_type) or []
+    if not schedule:
+        value = contract.get(fallback_field)
+        if value is None:
+            return {}
+        return {
+            "__default__": {
+                "value": value,
+                **contract.get("term_meta", {}).get(fallback_field, {}),
+            }
+        }
+    scopes = {entry.get("scope") or "__default__" for entry in schedule}
+    return {
+        scope: entry
+        for scope in scopes
+        if (entry := _active_schedule_entry(
+            contract, term_type, period, scope=scope
+        )) is not None
+    }
+
+
+def minimums_for_period(contract: dict, period: str) -> list[dict]:
+    schedule = contract.get("minimum_schedule") or []
+    if not schedule:
+        amount = contract.get("committed_minimum_monthly")
+        if amount is None:
+            return []
+        return [{
+            "amount": amount,
+            "scope": "__default__",
+            **contract.get("term_meta", {}).get("committed_minimum_monthly", {}),
+        }]
+    scopes = {entry.get("scope") or "__default__" for entry in schedule}
+    selected = []
+    for scope in sorted(scopes):
+        candidates = [
+            entry for entry in schedule
+            if (entry.get("scope") or "__default__") == scope
+            and ((start := _parse(entry.get("effective_date"))) is None
+                 or start <= _parse(period + "-01"))
+            and ((end := _parse(entry.get("end_date"))) is None
+                 or end >= _parse(period + "-01"))
+        ]
+        if candidates:
+            selected.append(max(
+                candidates,
+                key=lambda entry: (
+                    entry.get("effective_date") is not None,
+                    entry.get("effective_date") or "",
+                ),
+            ))
+    return selected
+
+
+def _entry_confidence(entry: dict, fallback: float = 1.0) -> float:
+    verification = entry.get("verification") or {}
+    if verification.get("final_confidence") is not None:
+        return float(verification["final_confidence"])
+    if entry.get("term_confidence") is not None:
+        return float(entry["term_confidence"])
+    if entry.get("confidence") is not None:
+        return float(entry["confidence"])
+    return fallback
+
+
+def build_expected_ledger(
+    contract: dict,
+    usage: dict,
+    period: str,
+) -> list[dict]:
+    minimums = {
+        entry.get("scope") or "__default__": entry
+        for entry in minimums_for_period(contract, period)
+    }
+    seat_counts = _scheduled_terms_for_period(
+        contract, "committed_seats", period, "committed_seats"
+    )
+    seat_prices = _scheduled_terms_for_period(
+        contract, "seat_price", period, "seat_price"
+    )
+    included_units = _scheduled_terms_for_period(
+        contract, "included_units", period, "included_units"
+    )
+    overage_rates = _scheduled_terms_for_period(
+        contract, "overage_rate", period, "overage_rate"
+    ) if not contract.get("overage_tiers") else {}
+    if any(entry.get("overrides_generic")
+           for terms in (seat_counts, seat_prices) for entry in terms.values()):
+        seat_counts.pop("__default__", None)
+        seat_prices.pop("__default__", None)
+
+    charges: list[dict] = []
+    seat_amounts: dict[str, Decimal] = {}
+    for scope in sorted(set(seat_counts) | set(seat_prices)):
+        if scope not in seat_counts or scope not in seat_prices:
+            charges.append({
+                "key": f"seat_licensing:{scope}", "kind": "seat", "scope": scope,
+                "expected_amount": 0, "confidence": 0,
+            })
+            continue
+        count_entry = seat_counts[scope]
+        price_entry = seat_prices[scope]
+        count = Decimal(str(count_entry["value"]))
+        rate = Decimal(str(price_entry["value"]))
+        active_seats = None
+        metric = canonical_key(usage.get("metric") or "")
+        if SEAT_RE.search(metric.replace("_", " ")):
+            active_seats = Decimal(str(usage.get("units") or 0))
+        expected_quantity = max(count, active_seats or Decimal(0))
+        amount = expected_quantity * rate
+        seat_amounts[scope] = amount
+        charges.append({
+            "key": f"seat_licensing:{scope}",
+            "kind": "seat",
+            "scope": scope,
+            "expected_amount": quantize(amount),
+            "expected_quantity": float(expected_quantity),
+            "expected_rate": float(rate),
+            "confidence": min(
+                _entry_confidence(count_entry),
+                _entry_confidence(price_entry),
+            ),
+            "provenance": " ".join(dict.fromkeys(filter(None, (
+                count_entry.get("provenance"), price_entry.get("provenance"),
+            )))),
+            "review_reason": (
+                "The relationship between the seat charge and minimum requires review."
+                if scope in minimums else
+                "Generic and product-specific seat terms require explicit precedence."
+                if scope == "__default__" and len(seat_counts) > 1 else None
+            ),
+        })
+
+    for scope, entry in sorted(minimums.items()):
+        amount = Decimal(str(entry.get("amount") or 0))
+        floor_above_seats = max(
+            Decimal(0),
+            amount - seat_amounts.get(scope, Decimal(0)),
+        )
+        if floor_above_seats:
+            charges.append({
+                "key": f"fixed_charge:{scope}",
+                "kind": "base",
+                "scope": scope,
+                "expected_amount": quantize(floor_above_seats),
+                "confidence": _entry_confidence(
+                    entry,
+                    _confidence(contract, "committed_minimum_monthly"),
+                ) if scope != "__default__" or not seat_amounts else 0.0,
+                "provenance": entry.get("provenance") or "",
+                "contract_amount": quantize(amount),
+                "review_reason": (
+                    "The relationship between the minimum and seat charges requires review."
+                    if scope in seat_amounts
+                    or (scope == "__default__" and seat_amounts) else None
+                ),
+            })
+
+    usage_units = usage.get("units")
+    if usage_units is not None:
+        usage_decimal = Decimal(str(usage_units))
+        common_scopes = set(included_units) & set(overage_rates)
+        usage_scope_ambiguous = False
+        if not common_scopes and len(included_units) == len(overage_rates) == 1:
+            included_scope, included_entry = next(iter(included_units.items()))
+            rate_scope, rate_entry = next(iter(overage_rates.items()))
+            usage_scope_ambiguous = "__default__" not in {included_scope, rate_scope}
+            common_scopes = {rate_scope}
+            included_units = {rate_scope: included_entry}
+            overage_rates = {rate_scope: rate_entry}
+        for scope in sorted(common_scopes):
+            included_entry = included_units[scope]
+            rate_entry = overage_rates[scope]
+            included = Decimal(str(included_entry["value"]))
+            rate = Decimal(str(rate_entry["value"]))
+            quantity = max(Decimal(0), usage_decimal - included)
+            charges.append({
+                "key": f"usage_overage:{scope}",
+                "kind": "overage",
+                "scope": scope,
+                "expected_amount": quantize(quantity * rate),
+                "expected_quantity": float(quantity),
+                "expected_rate": float(rate),
+                "included_units": float(included),
+                "actual_units": float(usage_decimal),
+                "confidence": min(
+                    _entry_confidence(included_entry),
+                    _entry_confidence(rate_entry),
+                ) if len(common_scopes) == 1 else 0.0,
+                "provenance": " ".join(dict.fromkeys(filter(None, (
+                    rate_entry.get("provenance"), included_entry.get("provenance"),
+                )))),
+                "review_reason": (
+                    "Usage must be assigned to the contractual product or meter."
+                    if usage_scope_ambiguous or len(common_scopes) > 1 else None
+                ),
+            })
+    return charges
+
+
 def _confidence(contract: dict, field: str) -> float:
     if contract.get("confirmed") is True:
         return 1.0
@@ -108,6 +367,21 @@ def _needs_review(needs_review: list[dict] | None, contract: dict, term: str, re
 
 def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_review: list[dict] | None = None) -> list[dict]:
     """Compare one customer's contract entitlements against what was billed."""
+    require_verified_contracts([contract])
+    require_verified_document(contract.get("structural_verification"))
+    contract = dict(contract)
+    contract["term_meta"] = dict(contract.get("term_meta") or {})
+    for term_type, field in (
+        ("included_units", "included_units"),
+        ("overage_rate", "overage_rate"),
+        ("committed_seats", "committed_seats"),
+        ("seat_price", "seat_price"),
+        ("escalator", "annual_escalator_pct"),
+    ):
+        value, meta = scalar_for_period(contract, term_type, period, field)
+        contract[field] = value
+        if meta:
+            contract["term_meta"][field] = meta
     findings: list[dict] = []
     cid, cname = contract["customer_id"], contract["customer_name"]
     type_counts: dict[str, int] = {}
@@ -146,6 +420,11 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
             finding["actual_value"] = quantize(actual_value)
         if extra:
             finding.update(extra)
+            if extra.get("ledger_key"):
+                suffix = hashlib.sha256(extra["ledger_key"].encode()).hexdigest()[:10]
+                finding["finding_id"] = (
+                    f"F-{cid.upper()}-{period.replace('-', '')}-{TYPECODE[ftype]}-{suffix}"
+                )
         findings.append(finding)
 
     period_d = _parse(period + "-01")
@@ -254,6 +533,275 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
         _surface_credits()
         return findings
 
+    scoped_terms = any(
+        entry.get("scope")
+        for schedule in (contract.get("variable_schedules") or {}).values()
+        for entry in schedule
+    ) or any(entry.get("scope") for entry in contract.get("minimum_schedule") or [])
+    ledger_mode = invoice.get("line_items") is not None and scoped_terms
+    if ledger_mode and (conflicted_terms or min_conflicts or min_unresolved):
+        if min_conflicts or min_unresolved:
+            _needs_review(
+                needs_review, contract, "committed_minimum",
+                "Conflicting or undated minimum terms require resolution "
+                "before expected charges can be calculated.",
+                extra={"term_conflicts": min_conflicts,
+                       "unresolved_terms": min_unresolved},
+            )
+        _surface_credits()
+        return findings
+    if ledger_mode and not prorated:
+        financial_lines = [
+            line for line in invoice.get("line_items") or []
+            if line.get("role") in {"base", "seat", "overage"}
+        ]
+        invalid_data = invoice.get("incomplete") or usage.get("incomplete")
+        for line in financial_lines:
+            amount_value = float(line.get("amount") or 0)
+            quantity_value = line.get("quantity")
+            invalid_data = invalid_data or not isfinite(amount_value) or amount_value < 0
+            if quantity_value is not None:
+                invalid_data = invalid_data or (
+                    not isfinite(float(quantity_value)) or float(quantity_value) <= 0
+                )
+        for schedule in [contract.get("minimum_schedule") or [],
+                         *(contract.get("variable_schedules") or {}).values()]:
+            for entry in schedule:
+                value = entry.get("amount", entry.get("value"))
+                if isinstance(value, (int, float, Decimal)):
+                    invalid_data = invalid_data or not isfinite(float(value)) or value < 0
+        if usage.get("units") is not None:
+            value = float(usage["units"])
+            invalid_data = invalid_data or not isfinite(value) or value < 0
+        if invalid_data:
+            _needs_review(
+                needs_review, contract, "billing_data",
+                "Incomplete records or invalid financial quantities require review.",
+            )
+            _surface_credits()
+            return findings
+        expected_ledger = build_expected_ledger(contract, usage, period)
+        actual_lines = [
+            line for line in invoice.get("line_items") or []
+            if line.get("role") in {"base", "seat", "overage"}
+            and not (line.get("role") == "overage" and contract.get("overage_tiers"))
+        ]
+        expected_scopes = {
+            kind: {charge["scope"] for charge in expected_ledger
+                   if charge["kind"] == kind}
+            for kind in ("base", "seat", "overage")
+        }
+        matched_actual: set[int] = set()
+
+        def matching_lines(charge: dict) -> list[tuple[int, dict]]:
+            candidates = [
+                (index, line) for index, line in enumerate(actual_lines)
+                if line.get("role") == charge["kind"]
+                and index not in matched_actual
+            ]
+            if (len(expected_scopes[charge["kind"]]) == 1
+                    and charge["kind"] != "base"):
+                return [
+                    (index, line) for index, line in candidates
+                    if not line.get("scope")
+                    or canonical_key(line["scope"]) == canonical_key(charge["scope"])
+                ]
+            scope = canonical_key(charge["scope"])
+            return [
+                (index, line) for index, line in candidates
+                if canonical_key(line.get("scope") or "") == scope
+                or scope in canonical_key(line.get("description") or "")
+                or (charge["kind"] == "base"
+                    and len(expected_scopes["base"]) == 1
+                    and canonical_key(line.get("description") or "")
+                    in {"base_charge", "monthly_fee", "base_fee", "subscription"})
+            ]
+
+        for charge in expected_ledger:
+            if charge.get("review_reason"):
+                _needs_review(
+                    needs_review, contract, charge["key"], charge["review_reason"],
+                )
+                continue
+            matched = matching_lines(charge)
+            if not matched and any(
+                line.get("role") == charge["kind"]
+                for line in actual_lines
+            ):
+                _needs_review(
+                    needs_review, contract, charge["key"],
+                    "Invoice lines cannot be assigned to this charge scope.",
+                )
+                continue
+            matched_actual.update(index for index, _line in matched)
+            actual_amount = quantize(sum(
+                Decimal(str(line.get("amount") or 0))
+                for _index, line in matched
+            ))
+            expected_amount = charge["expected_amount"]
+            confidence = float(charge["confidence"])
+            if contract.get("confirmed") and charge.get("provenance"):
+                confidence = 1.0
+            if confidence < CONFIDENCE_THRESHOLD:
+                _needs_review(
+                    needs_review,
+                    contract,
+                    charge["key"],
+                    f"missing or low-confidence expected charge "
+                    f"(confidence={confidence:.2f})",
+                )
+                continue
+            amount = quantize(
+                Decimal(str(expected_amount))
+                - Decimal(str(actual_amount))
+            )
+            quantities = [
+                Decimal(str(line["quantity"]))
+                for _index, line in matched
+                if line.get("quantity") is not None
+                and Decimal(str(line["quantity"])) > 0
+            ]
+            if quantities and len(quantities) != len(matched):
+                _needs_review(
+                    needs_review, contract, charge["key"],
+                    "Only some matched billing lines provide a quantity.",
+                )
+                continue
+            actual_quantity = sum(quantities, Decimal(0)) if quantities else None
+            quantity_basis = "invoice"
+            if (actual_quantity is None and matched
+                    and charge["kind"] == "overage"
+                    and charge.get("expected_quantity", 0) > 0):
+                actual_quantity = Decimal(str(charge["expected_quantity"]))
+                quantity_basis = "metered_overage"
+            derived_rate = (
+                float(Decimal(str(actual_amount)) / actual_quantity)
+                if actual_quantity
+                else None
+            )
+            extra = {
+                "ledger_key": charge["key"],
+                "variance": -amount,
+                "variance_status": (
+                    "MISSING_CONTRACTUAL_CHARGE_ERROR"
+                    if not matched
+                    else "UNDERBILLED_CONTRACTUAL_CHARGE"
+                ),
+            }
+            if charge.get("expected_quantity") is not None:
+                extra["expected_quantity"] = charge["expected_quantity"]
+            if actual_quantity is not None:
+                extra["actual_quantity"] = float(actual_quantity)
+                extra["quantity_basis"] = quantity_basis
+            if charge.get("expected_rate") is not None:
+                extra["expected_rate"] = charge["expected_rate"]
+            if derived_rate is not None:
+                extra["derived_actual_rate"] = derived_rate
+                if (
+                    charge.get("expected_rate") is not None
+                    and abs(derived_rate - charge["expected_rate"]) > 0.000001
+                ):
+                    extra["variance_status"] = "TARIFF_MISMATCH_ERROR"
+
+            if amount > 0.01:
+                if charge["kind"] == "base":
+                    add(
+                        "missing_base_charge" if not matched else "unenforced_minimum",
+                        "Contractual fixed charge missing or underbilled",
+                        amount,
+                        "committed_minimum",
+                        f"Expected ${expected_amount:,.2f} for "
+                        f"{charge['scope']}; ${actual_amount:,.2f} was billed.",
+                        math=(
+                            f"expected fixed charge ${expected_amount:,.2f} "
+                            f"− billed ${actual_amount:,.2f} = ${amount:,.2f}"
+                        ),
+                        clause_text=charge["provenance"],
+                        confidence=confidence,
+                        term="committed_minimum_monthly",
+                        extra=extra,
+                        expected_value=expected_amount,
+                        actual_value=actual_amount,
+                    )
+                elif charge["kind"] == "seat":
+                    add(
+                        "underbilled_seats",
+                        "Committed seats not fully billed",
+                        amount,
+                        "seats",
+                        f"Expected {charge['expected_quantity']:g} seats at "
+                        f"${charge['expected_rate']:,.2f}; "
+                        f"${actual_amount:,.2f} was billed.",
+                        math=(
+                            f"{charge['expected_quantity']:g} × "
+                            f"${charge['expected_rate']:,.2f} = "
+                            f"${expected_amount:,.2f} − billed "
+                            f"${actual_amount:,.2f} = ${amount:,.2f}"
+                        ),
+                        clause_text=charge["provenance"],
+                        confidence=confidence,
+                        term="committed_seats/seat_price",
+                        extra=extra,
+                        expected_value=expected_amount,
+                        actual_value=actual_amount,
+                    )
+                else:
+                    math = (
+                        f"{charge['actual_units']:g} units − "
+                        f"{charge['included_units']:g} included = "
+                        f"{charge['expected_quantity']:g} overage units × "
+                        f"{_fmt_rate(charge['expected_rate'])} = "
+                        f"${expected_amount:,.2f} − billed "
+                        f"${actual_amount:,.2f} = ${amount:,.2f}"
+                    )
+                    if derived_rate is not None:
+                        math += (
+                            f"; derived billed rate ${actual_amount:,.2f} ÷ "
+                            f"{float(actual_quantity):g} = "
+                            f"{_fmt_rate(derived_rate)}"
+                        )
+                    add(
+                        "unbilled_overage",
+                        "Usage overage not fully billed",
+                        amount,
+                        "overage",
+                        f"Expected ${expected_amount:,.2f} in overage at "
+                        f"{_fmt_rate(charge['expected_rate'])}; "
+                        f"${actual_amount:,.2f} was billed.",
+                        math=math,
+                        clause_text=charge["provenance"],
+                        confidence=confidence,
+                        term="included_units/overage_rate",
+                        extra=extra,
+                        expected_value=expected_amount,
+                        actual_value=actual_amount,
+                    )
+            elif amount < -0.01 or extra["variance_status"] == "TARIFF_MISMATCH_ERROR":
+                _needs_review(
+                    needs_review,
+                    contract,
+                    charge["key"],
+                    f"Actual charge ${actual_amount:,.2f} or its derived rate "
+                    f"requires review against expected ${expected_amount:,.2f}.",
+                    extra={
+                        **extra,
+                        "expected_value": expected_amount,
+                        "actual_value": actual_amount,
+                    },
+                )
+
+        for index, line in enumerate(actual_lines):
+            if index not in matched_actual:
+                _needs_review(
+                    needs_review,
+                    contract,
+                    "invoice_line_item",
+                    f"invoice line has no matching contractual charge: "
+                    f"{line.get('description') or 'unnamed line'} "
+                    f"(${float(line.get('amount') or 0):,.2f})",
+                    extra={"line_item": line},
+                )
+
     minimum, minimum_provenance = minimum_for_period(contract, period)
     base = invoice.get("base_charge")
     minimum_conf = _confidence(contract, "committed_minimum_monthly")
@@ -262,7 +810,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     base_missing = base is not None and base <= 0.005
     has_other_lines = (invoice.get("overage_charge") or 0) > 0.005 or bool(
         invoice.get("discounts_applied") or invoice.get("credits_applied"))
-    if prorated:
+    if ledger_mode:
+        pass
+    elif prorated:
         pass
     elif min_conflicts or min_unresolved:
         reasons = []
@@ -313,7 +863,9 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     else:
         rate_conf = _confidence(contract, "overage_rate")
         rate_term = "overage_rate"
-    if included is not None and included < 0:
+    if ledger_mode and not tiers:
+        pass
+    elif included is not None and included < 0:
         _needs_review(needs_review, contract, "included_units", "negative usage quantity")
     elif used is not None and used < 0:
         _needs_review(needs_review, contract, "included_units/overage", "negative usage quantity")
@@ -408,6 +960,16 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
                     actual_value=base)
 
     # Rule 4 - annual escalator not applied
+    if ledger_mode:
+        active_minimums = minimums_for_period(contract, period)
+        if len(active_minimums) == 1:
+            minimum = active_minimums[0]["amount"]
+            base = sum(
+                line.get("amount") or 0 for line in invoice.get("line_items") or []
+                if line.get("role") == "base"
+            )
+        else:
+            minimum = None
     esc = contract.get("annual_escalator_pct")
     esc_date_raw = contract.get("escalator_effective_date")
     esc_date = _parse(esc_date_raw)
@@ -482,7 +1044,8 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     # Rule 6 - missing base line item (invoice carries non-base charges but no
     # base line against a committed minimum; replaces Rule 1 for this period to
     # avoid double-counting the same shortfall)
-    if (not prorated and minimum and minimum_conf >= CONFIDENCE_THRESHOLD
+    if (not ledger_mode and not prorated and minimum
+            and minimum_conf >= CONFIDENCE_THRESHOLD
             and base is not None and base_missing and has_other_lines):
         add("missing_base_charge", "Committed minimum base charge missing from invoice",
             minimum, "committed_minimum",
@@ -500,7 +1063,7 @@ def reconcile(contract: dict, usage: dict, invoice: dict, period: str, needs_rev
     if committed_seats is not None and committed_seats < 0:
         _needs_review(needs_review, contract, "committed_seats", "negative seat quantity")
         committed_seats = None
-    if committed_seats and seat_price:
+    if not ledger_mode and committed_seats and seat_price:
         billed_seats = invoice.get("seat_units")
         usage_metric = (usage.get("metric") or "").lower()
         usage_metrics = usage.get("_metrics") or {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import List, Optional
 
+from ..line_roles import SEAT_RE
 from .models import NormalizedCustomer, NormalizedInvoice, NormalizedSubscription, NormalizedUsage
 from .provider import BillingProvider
 
@@ -246,6 +247,7 @@ class StripeBillingProvider(BillingProvider):
                         "proration": bool(_value(line, "proration", False)),
                         "amount": _value(line, "amount", 0),
                         "description": _value(line, "description", ""),
+                        "quantity": _value(line, "quantity"),
                         "currency": _value(line, "currency"),
                         "line_role": line_role,
                         "usage_type": usage_type or "",
@@ -319,6 +321,7 @@ def map_stripe_billing_to_reconcile_inputs(
         "credits_applied": [],
         "prorated": False,
         "proration_amount": 0.0,
+        "line_items": [],
     }
 
     period_invoices = [invoice for invoice in invoices if invoice.period == period]
@@ -333,6 +336,7 @@ def map_stripe_billing_to_reconcile_inputs(
     if len(currencies) > 1:
         invoice_dict["currency_mixed"] = True
     if not period_invoices:
+        invoice_dict["incomplete"] = True
         needs_review.append({
             "customer_id": customer_id,
             "customer_name": customer_name,
@@ -347,6 +351,17 @@ def map_stripe_billing_to_reconcile_inputs(
             signed = float(line.get("amount", 0)) / 100.0
             amount = abs(signed)
             description = line.get("description") or line.get("price_nickname") or line.get("price_id") or "Stripe line item"
+            quantity = line.get("quantity")
+            invoice_dict["line_items"].append({
+                "description": description,
+                "amount": amount,
+                "role": (
+                    "seat"
+                    if role == "base" and SEAT_RE.search(description)
+                    else role
+                ),
+                **({"quantity": float(quantity)} if quantity is not None else {}),
+            })
             if role == "proration":
                 invoice_dict["prorated"] = True
                 invoice_dict["proration_amount"] += signed

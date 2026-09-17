@@ -36,6 +36,8 @@ def _term_meta(ent: Entitlement) -> dict:
         meta["verification"] = ent.verification
     if ent.source_file:
         meta["source_file"] = ent.source_file
+    if ent.scope:
+        meta["scope"] = ent.scope
     return meta
 
 
@@ -127,6 +129,7 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
         "renewal_notice_days": None,
         "committed_seats": None,
         "seat_price": None,
+        "variable_schedules": {},
     }
 
     discount_confidences: list[float] = []
@@ -141,8 +144,13 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
                 "amount": amount,
                 **conversion,
                 "effective_date": ent.effective_date,
+                "end_date": ent.end_date,
+                "scope": ent.scope,
                 "provenance": ent.provenance,
                 "confidence": float(ent.confidence_score) if amount is not None else 0.0,
+                "term_confidence": (
+                    float(ent.confidence_score) if amount is not None else 0.0
+                ),
                 **({"page": ent.page} if ent.page is not None else {}),
                 **({"section_ref": ent.section_ref} if ent.section_ref else {}),
                 **({"source_file": ent.source_file} if ent.source_file else {}),
@@ -181,6 +189,10 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
             normalized["discounts"].append(discount)
             discount_confidences.append(float(ent.confidence_score))
             discount_provenance.append(ent.provenance)
+    normalized["variable_schedules"] = {
+        term_type: [_scalar_candidate_ref(ent) for ent in ents]
+        for term_type, ents in candidates.items()
+    }
     resolve_scalar_terms(normalized, candidates)
     _normalize_escalator_date(normalized, candidates)
     detect_term_conflicts(normalized)
@@ -221,10 +233,13 @@ def normalize_contract_entitlements(contract: ContractEntitlements) -> dict:
 def _scalar_candidate_ref(ent: Entitlement) -> dict:
     ref = {"value": ent.effective_date
            if _term_type_of(ent) in ("term_start", "term_end") else ent.value}
-    for key in ("page", "section_ref", "source_file", "provenance",
-                "verification", "confidence_score", "effective_date"):
-        if getattr(ent, key, None) is not None:
-            ref["confidence" if key == "confidence_score" else key] = getattr(ent, key)
+    for key, value in ent.model_dump(
+        include={"page", "section_ref", "source_file", "provenance",
+                 "verification", "confidence_score", "effective_date",
+                 "end_date", "scope", "overrides_generic"},
+        exclude_none=True,
+    ).items():
+        ref["confidence" if key == "confidence_score" else key] = value
     return ref
 
 
@@ -241,6 +256,17 @@ def resolve_scalar_terms(normalized: dict, candidates: dict[str, list]) -> None:
     the field stays None so reconciliation skips deterministically."""
     for term_type, ents in candidates.items():
         field, coerce = SCALAR_TERM_FIELDS[term_type]
+        scopes = {ent.scope for ent in ents}
+        if len(scopes) > 1:
+            for scope in sorted(scopes, key=lambda value: value or ""):
+                scoped = {"term_meta": {}}
+                resolve_scalar_terms(
+                    scoped, {term_type: [ent for ent in ents if ent.scope == scope]}
+                )
+                normalized.setdefault("term_conflicts", []).extend(
+                    scoped.get("term_conflicts") or []
+                )
+            continue
         meta_by_ent = {id(e): _term_meta(e) for e in ents}
         values = []
         for ent in ents:
@@ -261,23 +287,35 @@ def resolve_scalar_terms(normalized: dict, candidates: dict[str, list]) -> None:
             _assign_scalar(normalized, field, coerce, _v, term_type, ent, meta_by_ent)
             continue
         if term_type not in ("term_start", "term_end"):
-            # Amendment precedence: every entry dated differently → latest wins.
+            # A single value at each effective boundary forms a timeline. An
+            # undated value is the baseline; later dated values supersede it.
+            by_date: dict[str | None, set[float]] = {}
+            for value, effective_date, _ent in distinct:
+                by_date.setdefault(effective_date, set()).add(value)
             dated = [item for item in distinct if item[1] is not None]
-            dates = {item[1] for item in dated}
-            if len(dates) == len(distinct) and len(dates) > 1:
+            if dated and all(len(date_values) == 1
+                             for date_values in by_date.values()):
                 value, eff, ent = max(dated, key=lambda item: item[1])
                 _assign_scalar(normalized, field, coerce, value, term_type, ent, meta_by_ent)
                 continue
         # term_start/term_end carry their boundary in effective_date, so any
         # two distinct values disagree with no amendment date to order them —
         # same for same-date/undated scalars. Fail closed.
-        eff = distinct[0][1]
-        normalized.setdefault("term_conflicts", []).append({
-            "term": term_type,
-            "effective_date": eff,
-            "candidates": [_scalar_candidate_ref(ent)
-                           for _v, _e, ent in distinct],
-        })
+        groups = [distinct]
+        if term_type not in ("term_start", "term_end"):
+            groups = [
+                [item for item in distinct if item[1] == effective]
+                for effective, values_at_date in by_date.items()
+                if len(values_at_date) > 1
+            ]
+        for group in groups:
+            normalized.setdefault("term_conflicts", []).append({
+                "term": term_type,
+                "scope": ents[0].scope,
+                "effective_date": group[0][1],
+                "candidates": [_scalar_candidate_ref(ent)
+                               for _v, _e, ent in group],
+            })
         normalized["term_meta"][field] = {
             "confidence": 0.0,
             "provenance": meta_by_ent[id(distinct[0][2])].get("provenance"),
@@ -317,7 +355,7 @@ def minimum_term_meta(schedule: list[dict]) -> dict:
     return meta
 
 
-def _candidate_ref(entry: dict, keys=("amount", "page", "section_ref", "source_file", "provenance", "verification", "confidence")) -> dict:
+def _candidate_ref(entry: dict, keys=("amount", "page", "section_ref", "source_file", "provenance", "verification", "confidence", "term_confidence", "scope", "end_date")) -> dict:
     return {k: entry[k] for k in keys if entry.get(k) is not None}
 
 
@@ -337,7 +375,7 @@ def detect_term_conflicts(contract: dict) -> None:
     seen = set()
     deduped = []
     for entry in schedule:
-        key = (entry.get("amount"), entry.get("effective_date"))
+        key = (entry.get("scope"), entry.get("amount"), entry.get("effective_date"))
         if key in seen:
             continue
         seen.add(key)
@@ -345,14 +383,15 @@ def detect_term_conflicts(contract: dict) -> None:
 
     by_date: dict = {}
     for entry in deduped:
-        by_date.setdefault(entry.get("effective_date"), []).append(entry)
+        by_date.setdefault((entry.get("scope"), entry.get("effective_date")), []).append(entry)
 
     conflicts: list[dict] = []
     unresolved: list[dict] = []
     keep: list[dict] = []
-    for eff_date, entries in by_date.items():
+    for (scope, eff_date), entries in by_date.items():
         if eff_date is None:
-            if len(deduped) > len(entries):
+            scoped_entries = [entry for entry in deduped if entry.get("scope") == scope]
+            if len(scoped_entries) > len(entries):
                 for entry in entries:
                     unresolved.append({
                         "term": "committed_minimum",
@@ -364,6 +403,7 @@ def detect_term_conflicts(contract: dict) -> None:
         if len({e.get("amount") for e in entries}) > 1:
             conflicts.append({
                 "term": "committed_minimum",
+                "scope": scope,
                 "effective_date": eff_date,
                 "candidates": [_candidate_ref(e) for e in entries],
             })
