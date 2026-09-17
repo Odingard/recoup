@@ -399,6 +399,7 @@ def evaluate_event(account_id: str, event: ChangeEvent) -> dict:
         return {**base, "status": "evaluated", "customer_ids": customer_ids,
                 "periods": periods, "findings_upserted": len(all_findings),
                 "findings_withdrawn": withdrawn,
+                "needs_review": all_review,
                 "needs_review_count": len(all_review)}
     except LowConfidenceGateException as exc:
         db.save_assurance_event(account_id, {
