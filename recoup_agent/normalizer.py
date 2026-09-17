@@ -61,6 +61,8 @@ def _minimum_amount(ent: Entitlement) -> tuple[float | None, dict]:
     months = {"month": 1, "quarter": 3, "year": 12}[period]
     cents = to_cents(ent.value)
     amount = quantize(Decimal(cents) / months / 100)
+    if months == 1 and ent.amount_period is None:
+        return amount, {}
     return amount, {
         "source_value": ent.value,
         "amount_period": period,
