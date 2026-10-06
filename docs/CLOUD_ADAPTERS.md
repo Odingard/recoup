@@ -9,7 +9,7 @@ charge fees.
 
 | Variable | Default | Supported values |
 | --- | --- | --- |
-| `RECOUP_OCR_PROVIDER` | `auto` | `auto`, `documentai`, `local`, `gemini` |
+| `RECOUP_OCR_PROVIDER` | `auto` | `auto`, `documentai`, `local`, `gemini`, `nvidia` |
 | `RECOUP_MODEL_PROVIDER` | `google` | `google`, `remote`, `disabled` |
 | `RECOUP_STORAGE_PROVIDER` | `firestore` | `firestore` |
 | `RECOUP_SECRET_PROVIDER` | `google` | `google`, `disabled` |
@@ -56,6 +56,40 @@ For a non-container development environment:
 ```bash
 sudo apt-get install tesseract-ocr tesseract-ocr-eng poppler-utils
 ```
+
+### NVIDIA OCR
+
+`RECOUP_OCR_PROVIDER=nvidia` sends each page image to NVIDIA Nemotron OCR.
+`auto` never selects it. Poppler renders PDFs exactly as for local OCR (1–25
+pages, 150 DPI, 2400-pixel maximum), and each page is one HTTPS request with
+`merge_levels: ["word"]`.
+
+```bash
+export RECOUP_OCR_PROVIDER=nvidia
+export RECOUP_NVIDIA_OCR_URL=https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1
+# RECOUP_NVIDIA_API_KEY comes from Secret Manager (recoup-nvidia-api-key).
+```
+
+A self-hosted NIM uses its `/v1/ocr` URL and needs no key. The endpoint must be
+HTTPS except on loopback, and redirects are rejected.
+
+Nemotron returns a confidence score and a page outline for each word. Words are
+grouped into lines, and lines into blocks where the gap between lines is at most
+one median word height. Each block carries its lowest word confidence and each
+page its mean, so the existing `RECOUP_OCR_CONFIDENCE_GATE` and structure checks
+apply unchanged. Missing confidence, HTTP errors, incomplete responses and empty
+pages produce an ingestion error. The model reads English only.
+
+Nemotron scores short words such as "a" lower than Tesseract does. On the
+recorded synthetic page (`golden/ocr/`), one 0.829 word holds every clause in
+its block at "Low OCR confidence". Calibrate the gate on real scans before
+relying on this provider.
+
+The NVIDIA-hosted API is licensed for development and trials, not production,
+and it sends documents to NVIDIA. Before enabling it for customer documents,
+self-host the NIM (or license NVIDIA AI Enterprise) and add NVIDIA to the data
+handling statement. `RECOUP_NVIDIA_LIVE_TEST=1` runs the live test against the
+hosted API with a synthetic document only.
 
 ### Model providers
 
