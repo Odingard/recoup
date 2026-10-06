@@ -22,10 +22,12 @@ from recoup_agent.cloud.google_search import GoogleClauseSearch
 from recoup_agent.cloud.google_storage import FirestoreAdapter
 from recoup_agent.cloud.local_documents import LocalDocumentAdapter, _tsv_page
 from recoup_agent.cloud.models import GenerationConfig, ProviderConfigurationError, get_model_adapter
+from recoup_agent.cloud.nvidia_documents import NvidiaOcrAdapter, _nim_page
 from recoup_agent.cloud.remote_models import ModelRequestError
 from recoup_agent.cloud.search import get_clause_search
 from recoup_agent.cloud.secrets import get_secret_store
 from recoup_agent.cloud.storage import get_storage_adapter
+from recoup_agent.document_quality import inspect_structure
 from recoup_agent.extraction.extractor import PageAnchoredEntitlement
 from recoup_agent.extraction.verifier import verify
 from recoup_agent.ingestion_doc import UnreadableDocumentError, extract_entitlements
@@ -354,3 +356,185 @@ def test_readiness_uses_remote_configuration_without_vertex(remote):
     checks = dependency_checks(deep=False)
     assert checks["model_config"]["ok"] is True
     assert "vertex_config" not in checks
+
+
+# Recorded Nemotron OCR response for a synthetic contract page (no customer data).
+NIM_RESPONSE = json.loads((ROOT / "golden" / "ocr" / "nemotron_ocr_synthetic_contract.json").read_text())
+
+
+def _png() -> bytes:
+    from PIL import Image
+    data = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(data, "PNG")
+    return data.getvalue()
+
+
+@pytest.fixture
+def nvidia_ocr(monkeypatch):
+    calls = []
+    result = {"status": 200, "body": NIM_RESPONSE}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            calls.append((self.headers.get("Authorization"),
+                          json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            self.send_response(result["status"])
+            self.end_headers()
+            self.wfile.write(json.dumps(result["body"]).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setenv("RECOUP_OCR_PROVIDER", "nvidia")
+    monkeypatch.setenv("RECOUP_NVIDIA_OCR_URL", f"http://127.0.0.1:{server.server_port}/v1/ocr")
+    monkeypatch.setenv("RECOUP_NVIDIA_API_KEY", "test-key")
+    try:
+        yield calls, result
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()
+
+
+def test_nvidia_ocr_builds_auditable_layout(nvidia_ocr):
+    calls, _ = nvidia_ocr
+    pages = get_document_adapter().page_texts(_png(), "image/png")
+    authorization, payload = calls[0]
+    assert authorization == "Bearer test-key"
+    assert payload["merge_levels"] == ["word"]
+    assert payload["input"][0]["type"] == "image_url"
+    assert payload["input"][0]["url"].startswith("data:image/png;base64,")
+    page = pages[0]
+    assert "Customer shall pay a minimum monthly fee of $10,000." in page.text
+    assert "sixty (60) days written notice of non-renewal." in page.text
+    assert inspect_structure(pages) == []
+    assert [round(block.confidence, 3) for block in page.blocks] == [0.936, 0.829]
+    assert 0.97 < page.ocr_confidence < 0.98
+
+
+def test_nvidia_word_confidence_gates_the_cited_block(remote, nvidia_ocr):
+    _, model = remote
+    _, ocr = nvidia_ocr
+    model["content"] = '{"results":[{"index":0,"verdict":"supports"},{"index":1,"verdict":"supports"}]}'
+    terms = [PageAnchoredEntitlement(term_type=kind, value=value, confidence_score=0.95,
+                                     provenance=quote, page=1)
+             for kind, value, quote in [("committed_seats", 240, "Customer commits to 240 licensed seats"),
+                                       ("renewal_notice_days", 60, "sixty (60) days written notice")]]
+    pages = get_document_adapter().page_texts(_png(), "image/png")
+    gated = verify(SimpleNamespace(entitlements=terms), pages)
+    assert [t.verification["ocr_gate"] for t in gated] == [True, True]
+    assert [t.confidence_score for t in gated] == [0.7, 0.7]
+    # The block is gated only by its low-confidence word ("a", 0.829).
+    clean = json.loads(json.dumps(NIM_RESPONSE))
+    for detection in clean["data"][0]["text_detections"]:
+        detection["text_prediction"]["confidence"] = max(detection["text_prediction"]["confidence"], 0.9)
+    ocr["body"] = clean
+    pages = get_document_adapter().page_texts(_png(), "image/png")
+    passed = verify(SimpleNamespace(entitlements=terms), pages)
+    assert [t.verification["ocr_gate"] for t in passed] == [False, False]
+    assert [t.confidence_score for t in passed] == [0.95, 0.95]
+
+
+def test_nvidia_ocr_failures_fail_closed(nvidia_ocr, tmp_path):
+    calls, result = nvidia_ocr
+    image = tmp_path / "scan.png"
+    image.write_bytes(_png())
+    result["status"], result["body"] = 500, {"detail": "unavailable"}
+    with pytest.raises(UnreadableDocumentError):
+        extract_entitlements(str(image))
+    assert calls
+    result["status"], result["body"] = 200, {"data": []}
+    with pytest.raises(ValueError, match="incomplete"):
+        NvidiaOcrAdapter().page_texts(_png(), "image/png")
+    square = {"points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.1}, {"x": 0.2, "y": 0.2}, {"x": 0.1, "y": 0.2}]}
+    with pytest.raises(ValueError, match="without confidence"):
+        _nim_page(1, [{"text_prediction": {"text": "Seats"}, "bounding_box": square}])
+
+
+def _detection(text: str, left: float, top: float, width: float = 0.08, height: float = 0.02) -> dict:
+    return {"text_prediction": {"text": text, "confidence": 0.99}, "bounding_box": {"points": [
+        {"x": left, "y": top}, {"x": left + width, "y": top},
+        {"x": left + width, "y": top + height}, {"x": left, "y": top + height}]}}
+
+
+def test_nvidia_two_columns_do_not_interleave():
+    rows = [("Monthly", "fee", "Service", "credit"), ("is", "$5,000", "is", "$500")]
+    detections = [_detection(word, left, 0.10 + row * 0.025)
+                  for row, words in enumerate(rows)
+                  for word, left in zip(words, (0.10, 0.20, 0.60, 0.70))]
+    page = _nim_page(1, detections)
+    assert [block.text for block in page.blocks] == ["Monthly fee\nis $5,000", "Service credit\nis $500"]
+    assert "fee Service" not in page.text and "$5,000 is" not in page.text
+    assert inspect_structure([page]) == []
+
+
+def test_nvidia_blank_page_holds_the_document(nvidia_ocr):
+    _, result = nvidia_ocr
+    page = _nim_page(2, [])
+    assert [issue.code for issue in inspect_structure([page])] == ["layout_unavailable"]
+    result["body"] = {"data": [{"index": 0, "text_detections": []}]}
+    with pytest.raises(ValueError, match="no text"):
+        NvidiaOcrAdapter().page_texts(_png(), "image/png")
+
+
+def test_nvidia_ocr_ignores_proxy_settings(nvidia_ocr, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    assert get_document_adapter().page_texts(_png(), "image/png")[0].text
+
+
+@pytest.mark.parametrize("url", ["", "http://ocr.example/v1/ocr", "https://user:pw@ocr.example/v1/ocr",
+                                 "https://ocr.example/v1/ocr?key=1"])
+def test_nvidia_endpoint_validation(monkeypatch, url):
+    monkeypatch.setenv("RECOUP_OCR_PROVIDER", "nvidia")
+    monkeypatch.setenv("RECOUP_NVIDIA_OCR_URL", url)
+    with pytest.raises(ProviderConfigurationError):
+        get_document_adapter()
+
+
+def test_nvidia_ocr_is_never_selected_automatically(monkeypatch):
+    monkeypatch.setenv("RECOUP_OCR_PROVIDER", "auto")
+    monkeypatch.delenv("RECOUP_DOCAI_PROCESSOR", raising=False)
+    monkeypatch.setenv("RECOUP_NVIDIA_OCR_URL", "https://ocr.example/v1/ocr")
+    monkeypatch.setenv("RECOUP_NVIDIA_API_KEY", "test-key")
+    assert isinstance(get_document_adapter(), LocalDocumentAdapter)
+
+
+@pytest.mark.skipif(not shutil.which("pdftoppm"), reason="Poppler required")
+def test_nvidia_ocr_sends_each_pdf_page(nvidia_ocr):
+    calls, _ = nvidia_ocr
+    data = io.BytesIO()
+    canvas = Canvas(data)
+    for _ in range(2):
+        canvas.drawString(40, 740, "Seats: 240")
+        canvas.showPage()
+    canvas.save()
+    pages = get_document_adapter().page_texts(data.getvalue(), "application/pdf")
+    assert [page.number for page in pages] == [1, 2]
+    assert len(calls) == 2
+    assert all(payload["input"][0]["url"].startswith("data:image/png;base64,") for _, payload in calls)
+
+
+@pytest.mark.skipif(os.getenv("RECOUP_NVIDIA_LIVE_TEST") != "1" or not os.getenv("RECOUP_NVIDIA_API_KEY"),
+                    reason="Live NVIDIA OCR is opt-in and sends only this synthetic document")
+def test_nvidia_hosted_ocr_live(monkeypatch):
+    monkeypatch.setenv("RECOUP_OCR_PROVIDER", "nvidia")
+    monkeypatch.setenv("RECOUP_NVIDIA_OCR_URL", os.getenv(
+        "RECOUP_NVIDIA_OCR_URL") or "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1")
+    data = io.BytesIO()
+    canvas = Canvas(data)
+    canvas.setFont("Helvetica", 18)
+    canvas.drawString(40, 740, "License: 240 seats at $65 per month.")
+    canvas.showPage()
+    canvas.setFont("Helvetica", 18)
+    canvas.drawString(40, 740, "Renewal notice: sixty (60) days.")
+    canvas.save()
+    pages = get_document_adapter().page_texts(data.getvalue(), "application/pdf")
+    assert "240" in pages[0].text and "$65" in pages[0].text
+    assert "sixty" in pages[1].text and "60" in pages[1].text
+    assert inspect_structure(pages) == []

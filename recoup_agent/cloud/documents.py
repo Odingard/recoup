@@ -102,4 +102,6 @@ def get_document_adapter(*, client=None) -> CloudDocumentAdapter:
         return GeminiOcr(client=client)
     if provider == "local":
         return import_module(".local_documents", __package__).LocalDocumentAdapter()
+    if provider == "nvidia":
+        return import_module(".nvidia_documents", __package__).NvidiaOcrAdapter()
     raise ProviderConfigurationError(f"Unsupported RECOUP_OCR_PROVIDER: {provider}")
