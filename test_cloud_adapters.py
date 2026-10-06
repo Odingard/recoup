@@ -449,12 +449,43 @@ def test_nvidia_ocr_failures_fail_closed(nvidia_ocr, tmp_path):
     result["status"], result["body"] = 200, {"data": []}
     with pytest.raises(ValueError, match="incomplete"):
         NvidiaOcrAdapter().page_texts(_png(), "image/png")
-    result["body"] = {"data": [{"index": 0, "text_detections": []}]}
-    with pytest.raises(ValueError, match="no text"):
-        NvidiaOcrAdapter().page_texts(_png(), "image/png")
     square = {"points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.1}, {"x": 0.2, "y": 0.2}, {"x": 0.1, "y": 0.2}]}
     with pytest.raises(ValueError, match="without confidence"):
         _nim_page(1, [{"text_prediction": {"text": "Seats"}, "bounding_box": square}])
+
+
+def _detection(text: str, left: float, top: float, width: float = 0.08, height: float = 0.02) -> dict:
+    return {"text_prediction": {"text": text, "confidence": 0.99}, "bounding_box": {"points": [
+        {"x": left, "y": top}, {"x": left + width, "y": top},
+        {"x": left + width, "y": top + height}, {"x": left, "y": top + height}]}}
+
+
+def test_nvidia_two_columns_do_not_interleave():
+    rows = [("Monthly", "fee", "Service", "credit"), ("is", "$5,000", "is", "$500")]
+    detections = [_detection(word, left, 0.10 + row * 0.025)
+                  for row, words in enumerate(rows)
+                  for word, left in zip(words, (0.10, 0.20, 0.60, 0.70))]
+    page = _nim_page(1, detections)
+    assert [block.text for block in page.blocks] == ["Monthly fee\nis $5,000", "Service credit\nis $500"]
+    assert "fee Service" not in page.text and "$5,000 is" not in page.text
+    assert inspect_structure([page]) == []
+
+
+def test_nvidia_blank_page_holds_the_document(nvidia_ocr):
+    _, result = nvidia_ocr
+    page = _nim_page(2, [])
+    assert [issue.code for issue in inspect_structure([page])] == ["layout_unavailable"]
+    result["body"] = {"data": [{"index": 0, "text_detections": []}]}
+    with pytest.raises(ValueError, match="no text"):
+        NvidiaOcrAdapter().page_texts(_png(), "image/png")
+
+
+def test_nvidia_ocr_ignores_proxy_settings(nvidia_ocr, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    assert get_document_adapter().page_texts(_png(), "image/png")[0].text
 
 
 @pytest.mark.parametrize("url", ["", "http://ocr.example/v1/ocr", "https://user:pw@ocr.example/v1/ocr",

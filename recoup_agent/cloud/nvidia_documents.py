@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import median
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 from .documents import LayoutToken, Page, Point, TextBlock, TextSpan
 from .local_documents import ocr_deadline, page_images, rectangle
@@ -35,9 +35,17 @@ def _middle(word: Word) -> float:
     return (top + bottom) / 2
 
 
+def _span(words: list[Word]) -> tuple[float, float, float, float]:
+    boxes = [_box(w) for w in words]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
 def _blocks(words: list[Word]) -> list[list[list[Word]]]:
-    """Group word detections into lines by vertical centre, then lines into
-    blocks wherever the gap between lines is at most one median word height."""
+    """Group word detections into lines by vertical centre and split each line
+    at gaps wider than two median word heights, so columns never interleave.
+    A segment joins the block whose last segment sits on an earlier line, at
+    most one median word height above it, and overlaps it horizontally."""
     height = median(_box(w)[3] - _box(w)[1] for w in words)
     lines: list[list[Word]] = []
     for word in sorted(words, key=lambda w: (_middle(w), _box(w)[0])):
@@ -45,15 +53,27 @@ def _blocks(words: list[Word]) -> list[list[list[Word]]]:
             lines[-1].append(word)
         else:
             lines.append([word])
-    lines = [sorted(line, key=lambda w: _box(w)[0]) for line in lines]
-    blocks = [[lines[0]]]
-    for previous, line in zip(lines, lines[1:]):
-        gap = min(_box(w)[1] for w in line) - max(_box(w)[3] for w in previous)
-        if gap <= height:
-            blocks[-1].append(line)
-        else:
-            blocks.append([line])
-    return blocks
+    blocks: list[tuple[int, list[list[Word]]]] = []
+    for number, line in enumerate(lines):
+        line = sorted(line, key=lambda w: _box(w)[0])
+        segments = [[line[0]]]
+        for previous, word in zip(line, line[1:]):
+            if _box(word)[0] - _box(previous)[2] > 2 * height:
+                segments.append([word])
+            else:
+                segments[-1].append(word)
+        for segment in segments:
+            left, top, right, _ = _span(segment)
+            for index, (last_line, block) in enumerate(blocks):
+                last_left, _, last_right, last_bottom = _span(block[-1])
+                if (last_line < number and top - last_bottom <= height
+                        and left < last_right and right > last_left):
+                    block.append(segment)
+                    blocks[index] = (number, block)
+                    break
+            else:
+                blocks.append((number, [segment]))
+    return [block for _, block in blocks]
 
 
 def _nim_page(number: int, detections: list[dict]) -> Page:
@@ -69,7 +89,8 @@ def _nim_page(number: int, detections: list[dict]) -> Page:
         polygon = tuple(Point(float(p["x"]), float(p["y"])) for p in detection["bounding_box"]["points"])
         words.append((text, float(confidence), polygon))
     if not words:
-        return Page(number, "", (), None, "", True)
+        # Blank OCR output may be an unread page, so it fails the layout check.
+        return Page(number, "", (), None, "", False)
     text = ""
     blocks = []
     for lines in _blocks(words):
@@ -108,7 +129,7 @@ class NvidiaOcrAdapter:
             raise ProviderConfigurationError("NVIDIA OCR endpoints require HTTPS.")
         if url.username or url.password or url.query or url.fragment:
             raise ProviderConfigurationError("NVIDIA OCR URL must not contain credentials, query or fragment.")
-        self.opener = build_opener(NoRedirects())
+        self.opener = build_opener(ProxyHandler({}), NoRedirects())
 
     def _detections(self, image: Path, remaining) -> list[dict]:
         encoded = base64.b64encode(image.read_bytes()).decode()
@@ -124,6 +145,7 @@ class NvidiaOcrAdapter:
                 body = json.load(response)
         except HTTPError as exc:
             raise OcrRequestError(exc.code) from None
+        remaining()
         data = body.get("data")
         if not isinstance(data, list) or len(data) != 1 or data[0].get("index", 0) != 0:
             raise ValueError("NVIDIA OCR response was incomplete.")

@@ -71,14 +71,21 @@ export RECOUP_NVIDIA_OCR_URL=https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr
 ```
 
 A self-hosted NIM uses its `/v1/ocr` URL and needs no key. The endpoint must be
-HTTPS except on loopback, and redirects are rejected.
+HTTPS except on loopback. Redirects are rejected, proxy settings are ignored, and
+`RECOUP_NVIDIA_OCR_TIMEOUT_SECONDS` caps the whole document.
 
 Nemotron returns a confidence score and a page outline for each word. Words are
-grouped into lines, and lines into blocks where the gap between lines is at most
-one median word height. Each block carries its lowest word confidence and each
-page its mean, so the existing `RECOUP_OCR_CONFIDENCE_GATE` and structure checks
-apply unchanged. Missing confidence, HTTP errors, incomplete responses and empty
-pages produce an ingestion error. The model reads English only.
+grouped into lines, and each line is split wherever the gap between words exceeds
+two median word heights, so two-column text never interleaves. A segment joins
+the block directly above it when the line gap is at most one median word height
+and the two overlap horizontally. A table row split by a wide gap therefore lands
+in separate blocks, and a quote spanning it fails verification instead of
+matching text that never appears on the page. Each block carries its lowest word
+confidence and each page its mean, so the existing `RECOUP_OCR_CONFIDENCE_GATE`
+and structure checks apply unchanged. A page with no detected text fails the
+layout check and holds the document for review. Missing confidence, HTTP errors,
+incomplete responses and documents with no text produce an ingestion error. The
+model reads English only.
 
 Nemotron scores short words such as "a" lower than Tesseract does. On the
 recorded synthetic page (`golden/ocr/`), one 0.829 word holds every clause in
